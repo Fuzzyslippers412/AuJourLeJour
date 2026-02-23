@@ -186,6 +186,19 @@ function createSchemaV2() {
       error TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS agent_command_log (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      user_text TEXT,
+      kind TEXT NOT NULL,
+      summary TEXT,
+      payload TEXT,
+      result TEXT,
+      status TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_log_created ON agent_command_log (created_at);
   `);
 }
 
@@ -539,6 +552,23 @@ function nowIsoLocal() {
     .toISOString()
     .slice(0, 19);
   return `${local}${sign}${hours}:${minutes}`;
+}
+
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value ?? null);
+  } catch (err) {
+    return null;
+  }
+}
+
+function safeJsonParse(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    return null;
+  }
 }
 
 function todayDate() {
@@ -3010,6 +3040,47 @@ app.post("/internal/advisor/query", async (req, res) => {
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+app.post("/internal/agent/log", (req, res) => {
+  const body = req.body || {};
+  const id = randomUUID();
+  const createdAt = nowIso();
+  const kind = String(body.kind || "command").trim() || "command";
+  const status = String(body.status || "ok").trim() || "ok";
+  const userText = typeof body.user_text === "string" ? body.user_text.trim() : null;
+  const summary = typeof body.summary === "string" ? body.summary.trim() : null;
+  const payload = safeJsonStringify(body.payload);
+  const result = safeJsonStringify(body.result);
+
+  db.prepare(
+    `INSERT INTO agent_command_log
+      (id, created_at, user_text, kind, summary, payload, result, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, createdAt, userText, kind, summary, payload, result, status);
+
+  res.json({ ok: true, id });
+});
+
+app.get("/internal/agent/log", (req, res) => {
+  const limitRaw = Number(req.query.limit || 20);
+  const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
+  const rows = db
+    .prepare(
+      "SELECT * FROM agent_command_log ORDER BY datetime(created_at) DESC LIMIT ?"
+    )
+    .all(limit);
+  const items = rows.map((row) => ({
+    id: row.id,
+    created_at: row.created_at,
+    user_text: row.user_text,
+    kind: row.kind,
+    summary: row.summary,
+    status: row.status,
+    payload: safeJsonParse(row.payload),
+    result: safeJsonParse(row.result),
+  }));
+  res.json({ ok: true, items });
 });
 
 app.get("/internal/behavior/features", (req, res) => {

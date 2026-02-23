@@ -11,6 +11,7 @@ const state = {
   llmChecked: false,
   qwenAuth: { connected: false, status: "unknown", session_id: null, verification_uri_complete: null, interval_seconds: null },
   llmHistory: [],
+  commandLog: [],
   pendingAgentAction: null,
   monthLocked: false,
   lastAutoMonthKey: null,
@@ -84,6 +85,7 @@ const els = {
   llmAgentSend: document.getElementById("llm-agent-send"),
   llmAgentOutput: document.getElementById("llm-agent-output"),
   llmAgentHistory: document.getElementById("llm-agent-history"),
+  llmCommandLog: document.getElementById("llm-command-log"),
   llmAgentActions: document.getElementById("llm-agent-actions"),
   llmAgentConfirm: document.getElementById("llm-agent-confirm"),
   llmAgentCancel: document.getElementById("llm-agent-cancel"),
@@ -471,6 +473,31 @@ async function postAction(payload) {
     body: JSON.stringify({ action_id: crypto.randomUUID(), ...payload }),
   });
   return res.json();
+}
+
+async function logAgentCommand(entry) {
+  try {
+    await fetch("/internal/agent/log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry || {}),
+    });
+  } catch (err) {
+    // ignore log errors
+  }
+}
+
+async function loadCommandLog() {
+  if (!els.llmCommandLog) return;
+  try {
+    const res = await fetch("/internal/agent/log?limit=12");
+    if (!res.ok) return;
+    const data = await res.json();
+    state.commandLog = Array.isArray(data.items) ? data.items : [];
+    renderCommandLog();
+  } catch (err) {
+    // ignore
+  }
 }
 
 function updateInstanceInState(updated) {
@@ -1249,6 +1276,36 @@ function pushLlmMessage(role, text, meta = "") {
   renderLlmHistory();
 }
 
+function renderCommandLog() {
+  if (!els.llmCommandLog) return;
+  els.llmCommandLog.innerHTML = "";
+  const list = Array.isArray(state.commandLog) ? state.commandLog : [];
+  if (list.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "assistant-log-empty";
+    empty.textContent = "No commands logged yet.";
+    els.llmCommandLog.appendChild(empty);
+    return;
+  }
+  list.forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = `assistant-log-row ${entry.status === "error" ? "error" : "ok"}`;
+
+    const title = document.createElement("div");
+    title.className = "assistant-log-title";
+    title.textContent = entry.summary || entry.user_text || "Command";
+
+    const meta = document.createElement("div");
+    meta.className = "assistant-log-meta";
+    const when = entry.created_at ? formatShortDate(entry.created_at.slice(0, 10)) : "";
+    meta.textContent = `${entry.status === "error" ? "Failed" : "Executed"}${when ? ` · ${when}` : ""}`;
+
+    row.appendChild(title);
+    row.appendChild(meta);
+    els.llmCommandLog.appendChild(row);
+  });
+}
+
 function renderLlmHistory() {
   if (!els.llmAgentHistory) return;
   els.llmAgentHistory.innerHTML = "";
@@ -1755,7 +1812,7 @@ async function sendLlmAgent() {
         return;
       }
       const summary = summarizeProposal(proposal);
-      setPendingAgentAction({ kind: "command", proposal, summary });
+      setPendingAgentAction({ kind: "command", proposal, summary, source_text: text });
       els.llmAgentOutput.textContent = `${summary}. Confirm to proceed.`;
       pushLlmMessage("assistant", `${summary}. Waiting for confirmation.`);
       return;
@@ -1772,7 +1829,7 @@ async function sendLlmAgent() {
       }
       const templates = result.templates || [];
       const summary = summarizeIntake(templates);
-      setPendingAgentAction({ kind: "intake", templates, warnings, summary });
+      setPendingAgentAction({ kind: "intake", templates, warnings, summary, source_text: text });
       const warningText = warnings.length > 0 ? warnings.join(" ") : "";
       els.llmAgentOutput.textContent = `${summary}. Confirm to proceed.`;
       pushLlmMessage("assistant", `${summary}. Waiting for confirmation.`);
@@ -3026,6 +3083,7 @@ async function refreshAll() {
     loadMonthSettings(),
     loadFunds(),
     loadQwenAuthStatus(),
+    loadCommandLog(),
   ]);
   renderDashboard();
   renderTemplates();
@@ -3345,6 +3403,18 @@ function bindEvents() {
       } else if (pending.kind === "intake") {
         outcome = await applyIntakeTemplates(pending.templates || []);
       }
+      await logAgentCommand({
+        user_text: pending.source_text || "",
+        kind: pending.kind || "command",
+        summary: pending.summary || "",
+        status: outcome?.ok ? "ok" : "error",
+        payload:
+          pending.kind === "intake"
+            ? { templates: pending.templates || [] }
+            : { proposal: pending.proposal || null },
+        result: outcome,
+      });
+      await loadCommandLog();
       els.llmAgentOutput.textContent = "";
       pushLlmMessage("assistant", outcome.message, pending.summary || "");
       clearPendingAgentAction();
