@@ -46,78 +46,91 @@
 
         <div class="card hero">
           <div class="hero-left">
-            <div class="hero-grid">
-              <div class="metric">
-                <div class="metric-label">Required (Month)</div>
-                <div id="required-amount" class="metric-value">$0.00</div>
+            <div class="hero-primary">
+              <div class="hero-metric">
+                <div class="hero-label">Required</div>
+                <div id="required-amount" class="hero-value">$0.00</div>
               </div>
-              <div class="metric">
-                <div class="metric-label">Paid</div>
-                <div id="paid-amount" class="metric-value">$0.00</div>
+              <div class="hero-metric">
+                <div class="hero-label">Paid</div>
+                <div id="paid-amount" class="hero-value">$0.00</div>
               </div>
-              <div class="metric">
-                <div class="metric-label">Remaining</div>
-                <div id="remaining-amount" class="metric-value">$0.00</div>
-              </div>
-              <div class="metric">
-                <div class="metric-label">Need / Day</div>
-                <div id="need-day" class="metric-value">$0.00</div>
-                <div id="need-day-plan" class="metric-sub">Planning avg: $0.00/day</div>
-              </div>
-              <div class="metric">
-                <div class="metric-label">Need / Week</div>
-                <div id="need-week" class="metric-value">$0.00</div>
-                <div id="need-week-plan" class="metric-sub">Planning avg: $0.00/week</div>
+              <div class="hero-metric">
+                <div class="hero-label">Remaining</div>
+                <div id="remaining-amount" class="hero-value">$0.00</div>
               </div>
             </div>
-            <div class="hero-subline">Future obligations reserved: <span id="future-reserved">$0.00</span></div>
+            <div class="hero-subline">
+              <span>Future reserved: <span id="future-reserved">$0.00</span></span>
+              <button id="piggy-cta" class="link-btn">Add piggy bank</button>
+            </div>
           </div>
           <div class="hero-right">
+            <div class="hero-side">
+              <div class="hero-mini">
+                <div class="hero-label">Need / Day</div>
+                <div id="need-day" class="hero-mini-value">$0.00</div>
+                <div id="need-day-plan" class="hero-caption">Planning avg: $0.00/day</div>
+              </div>
+              <div class="hero-mini">
+                <div class="hero-label">Need / Week</div>
+                <div id="need-week" class="hero-mini-value">$0.00</div>
+                <div id="need-week-plan" class="hero-caption">Planning avg: $0.00/week</div>
+              </div>
+            </div>
             <div class="cash-block">
-              <label for="cash-start">Cash on hand (starting)</label>
+              <label for="cash-start">Cash on hand</label>
               <div class="cash-row">
-                <input id="cash-start" type="number" min="0" step="0.01" placeholder="0.00" />
+                <div class="cash-input">
+                  <span class="cash-prefix">$</span>
+                  <input id="cash-start" type="number" min="0" step="0.01" placeholder="0.00" />
+                </div>
                 <button id="cash-save" class="btn-small btn-primary" disabled>Save</button>
               </div>
+              <div class="cash-caption">Updates as you log payments.</div>
+              <div id="cash-empty" class="cash-empty">Set cash to track runway.</div>
+              <div class="cash-remaining"><span id="cash-remaining">$0.00</span></div>
               <div id="cash-save-status" class="meta"></div>
-              <div class="cash-remaining">Cash remaining: <span id="cash-remaining">$0.00</span></div>
             </div>
             <div id="hero-status" class="status-box">
-              <div id="status-main" class="status-main">Still need to cover $0.00</div>
-              <div id="status-sub" class="status-sub">Keep essentials tight.</div>
+              <div id="status-main" class="status-main">Remaining this month: $0</div>
+              <div id="status-sub" class="status-sub">You're not free yet.</div>
             </div>
           </div>
         </div>
 
         <div id="urgency-row" class="row">
           <div class="col col-8">
-            <div class="card">
+            <div id="overdue-card" class="card compact-card">
               <div class="card-title">Overdue</div>
               <div id="overdue-list" class="list"></div>
             </div>
-            <div class="card">
+            <div id="due-soon-card" class="card compact-card">
               <div class="card-title">Due soon</div>
               <div id="due-soon-list" class="list"></div>
             </div>
           </div>
           <div class="col col-4">
-            <div class="card">
-              <div class="card-title">Nudges</div>
-              <div id="nudges-list" class="list"></div>
-              <div class="assistant-box">
-                <div class="assistant-title">Mamdou</div>
-                <div class="assistant-sub">Ask, add bills, or run commands in one box.</div>
-                <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Rent $1200 on the 1st, Electric $140 on the 10th” or “mark rent paid”"></textarea>
-                <div class="assistant-actions">
-                  <button id="llm-agent-send" class="btn-small btn-primary">Send</button>
-                </div>
-                <div id="llm-agent-output" class="assistant-status meta"></div>
-                <div id="llm-agent-history" class="assistant-thread"></div>
-              </div>
-            </div>
-            <div class="card">
+            <div class="card compact-card">
               <div class="card-title">Recent activity</div>
               <div id="activity-list" class="list"></div>
+            </div>
+            <div id="assistant-card" class="card compact-card assistant-card collapsed">
+              <div class="card-title">Nudges</div>
+              <div id="nudges-list" class="list"></div>
+              <button id="assistant-toggle" class="assistant-pill">Assistant</button>
+              <div id="assistant-panel" class="assistant-panel collapsed">
+                <div class="assistant-box">
+                  <div class="assistant-title">Mamdou</div>
+                  <div class="assistant-sub">Ask, add bills, or run commands in one box.</div>
+                  <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Rent $1200 on the 1st, Electric $140 on the 10th” or “mark rent paid”"></textarea>
+                  <div class="assistant-actions">
+                    <button id="llm-agent-send" class="btn-small btn-primary">Send</button>
+                  </div>
+                  <div id="llm-agent-output" class="assistant-status meta"></div>
+                  <div id="llm-agent-history" class="assistant-thread"></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

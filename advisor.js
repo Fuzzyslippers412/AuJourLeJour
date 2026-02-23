@@ -10,7 +10,32 @@ const LLM_TEMPERATURE = Number(process.env.LLM_TEMPERATURE) || 0.2;
 const { execFile } = require("child_process");
 const QWEN_CLI_BIN = process.env.QWEN_CLI_BIN || "qwen";
 const QWEN_CLI_MODEL = process.env.QWEN_CLI_MODEL || "";
-const QWEN_OAUTH_MODEL = process.env.QWEN_OAUTH_MODEL || "qwen3.5";
+const QWEN_OAUTH_MODEL = process.env.QWEN_OAUTH_MODEL || "qwen3-coder-plus";
+
+const QWEN_OAUTH_MODEL_ALIASES = new Map([
+  ["qwen3.5", "qwen3-coder-plus"],
+  ["qwen-3.5", "qwen3-coder-plus"],
+  ["qwen3.5-coder", "qwen3-coder-plus"],
+  ["qwen3.5-coder-plus", "qwen3-coder-plus"],
+]);
+
+function resolveQwenOAuthModel(model) {
+  const raw = String(model || "").trim();
+  if (!raw) return "qwen3-coder-plus";
+  const key = raw.toLowerCase();
+  return QWEN_OAUTH_MODEL_ALIASES.get(key) || raw;
+}
+
+function isUnsupportedModelError(text) {
+  if (!text) return false;
+  try {
+    const parsed = JSON.parse(text);
+    const message = parsed?.error?.message || "";
+    return message.includes("model") && message.includes("not supported");
+  } catch (err) {
+    return text.includes("model") && text.includes("not supported");
+  }
+}
 
 const SYSTEM_PROMPT = `You are the Au Jour Le Jour Advisory Assistant running locally.
 You must output ONLY valid JSON that matches the required schema for the task.
@@ -294,9 +319,9 @@ async function callQwenOAuth(prompt, oauth, systemPrompt) {
 
   const base = String(oauth.resource_url || "").replace(/\/+$/, "");
   const url = `${base}/chat/completions`;
-  let res;
-  try {
-    res = await withRetries(() =>
+
+  const send = async (modelName) => {
+    return withRetries(() =>
       fetchWithTimeout(
         url,
         {
@@ -306,7 +331,7 @@ async function callQwenOAuth(prompt, oauth, systemPrompt) {
             Authorization: `Bearer ${oauth.access_token}`,
           },
           body: JSON.stringify({
-            model: QWEN_OAUTH_MODEL,
+            model: modelName,
             stream: false,
             max_tokens: LLM_MAX_TOKENS,
             temperature: LLM_TEMPERATURE,
@@ -319,15 +344,30 @@ async function callQwenOAuth(prompt, oauth, systemPrompt) {
         REQUEST_TIMEOUT_MS
       )
     );
+  };
+
+  const requestedModel = resolveQwenOAuthModel(QWEN_OAUTH_MODEL);
+  const fallbackModel = "qwen3-coder-plus";
+  let res;
+  try {
+    res = await send(requestedModel);
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 401) {
+        return { ok: false, error: "Agent login expired. Reconnect." };
+      }
+      if (isUnsupportedModelError(text) && requestedModel !== fallbackModel) {
+        res = await send(fallbackModel);
+      } else {
+        return { ok: false, error: `LLM request failed: ${text}` };
+      }
+    }
   } catch (err) {
     return { ok: false, error: `LLM request failed: ${err.message}` };
   }
 
   if (!res.ok) {
     const text = await res.text();
-    if (res.status === 401) {
-      return { ok: false, error: "Agent login expired. Reconnect." };
-    }
     return { ok: false, error: `LLM request failed: ${text}` };
   }
 

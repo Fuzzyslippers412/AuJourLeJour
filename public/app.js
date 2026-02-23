@@ -27,6 +27,7 @@ const state = {
 const weeksPerMonth = 4.33;
 const daysPerMonthAvg = 30.4;
 let cashSaveTimer = null;
+let flashTimer = null;
 const MAX_LLM_INSTANCES = 60;
 const MAX_LLM_TEMPLATES = 60;
 const MAX_LLM_DUE = 8;
@@ -57,17 +58,24 @@ const els = {
   cashStart: document.getElementById("cash-start"),
   cashSave: document.getElementById("cash-save"),
   cashSaveStatus: document.getElementById("cash-save-status"),
+  cashEmpty: document.getElementById("cash-empty"),
   cashRemaining: document.getElementById("cash-remaining"),
   statusMain: document.getElementById("status-main"),
   statusSub: document.getElementById("status-sub"),
   heroStatus: document.getElementById("hero-status"),
   overdueList: document.getElementById("overdue-list"),
   dueSoonList: document.getElementById("due-soon-list"),
+  overdueCard: document.getElementById("overdue-card"),
+  dueSoonCard: document.getElementById("due-soon-card"),
   nudgesList: document.getElementById("nudges-list"),
+  assistantCard: document.getElementById("assistant-card"),
+  assistantToggle: document.getElementById("assistant-toggle"),
+  assistantPanel: document.getElementById("assistant-panel"),
   activityList: document.getElementById("activity-list"),
   piggyList: document.getElementById("piggy-list"),
   piggyCard: document.getElementById("piggy-card"),
   openPiggyManage: document.getElementById("open-piggy-manage"),
+  piggyCta: document.getElementById("piggy-cta"),
   llmAgentInput: document.getElementById("llm-agent-input"),
   llmAgentSend: document.getElementById("llm-agent-send"),
   llmAgentOutput: document.getElementById("llm-agent-output"),
@@ -295,7 +303,7 @@ async function startQwenAuth() {
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     state.qwenAuth.status = "error";
-    state.qwenAuth.error = data.error || "Unable to start agent auth.";
+    state.qwenAuth.error = data.error || "Unable to start assistant auth.";
     renderNudges();
     return;
   }
@@ -388,8 +396,19 @@ async function addPayment(instanceId, amount) {
   }
   const data = await res.json();
   if (data.instance) updateInstanceInState(data.instance);
+  flashRow(instanceId);
   await loadPayments();
   renderDashboard();
+}
+
+function flashRow(instanceId) {
+  state.flashInstanceId = instanceId;
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    const el = document.querySelector(`.item-row[data-id="${instanceId}"]`);
+    if (el) el.classList.remove("row-flash");
+    state.flashInstanceId = null;
+  }, 650);
 }
 
 async function undoPayment(paymentId) {
@@ -594,7 +613,14 @@ function renderCash() {
     0
   );
   const remaining = Math.max(0, state.cashStart - totalPaidCash);
-  els.cashRemaining.textContent = formatMoney(remaining);
+  const hasCash = Number(state.cashStart || 0) > 0;
+  if (els.cashRemaining) {
+    els.cashRemaining.textContent = formatMoney(remaining);
+    els.cashRemaining.parentElement?.classList.toggle("hidden", !hasCash);
+  }
+  if (els.cashEmpty) {
+    els.cashEmpty.classList.toggle("hidden", hasCash);
+  }
 }
 
 function renderStatus(summary, baseList) {
@@ -628,10 +654,10 @@ function renderStatus(summary, baseList) {
     els.statusSub.textContent = "Anything else is saving or optional.";
   } else {
     els.heroStatus.classList.remove("free");
-    els.statusMain.textContent = `Still need to cover ${formatMoney(
+    els.statusMain.textContent = `Remaining this month: ${formatMoney(
       summary.remaining
     )}`;
-    els.statusSub.textContent = "Keep essentials tight.";
+    els.statusSub.textContent = "You're not free yet.";
   }
 
   return { isFree };
@@ -658,7 +684,7 @@ function renderUrgency(baseList, isFree) {
     empty.className = "meta";
     empty.textContent = "Nothing urgent right now.";
     els.overdueList.appendChild(empty.cloneNode(true));
-    els.dueSoonList.appendChild(empty);
+    if (els.dueSoonCard) els.dueSoonCard.classList.add("hidden");
     return;
   }
 
@@ -667,7 +693,7 @@ function renderUrgency(baseList, isFree) {
     empty.className = "meta";
     empty.textContent = "Nothing urgent right now.";
     els.overdueList.appendChild(empty);
-    els.dueSoonList.appendChild(empty.cloneNode(true));
+    if (els.dueSoonCard) els.dueSoonCard.classList.add("hidden");
     return;
   }
 
@@ -694,7 +720,7 @@ function renderUrgency(baseList, isFree) {
 
   const renderItem = (item, overdueFlag) => {
     const row = document.createElement("div");
-    row.className = `list-item ${overdueFlag ? "overdue" : ""}`.trim();
+    row.className = `list-item ${overdueFlag ? "overdue" : "due-soon"}`.trim();
 
     const left = document.createElement("div");
     const name = document.createElement("div");
@@ -702,9 +728,7 @@ function renderUrgency(baseList, isFree) {
     name.textContent = item.name_snapshot;
     const meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = `Due ${formatShortDate(item.due_date)} · Remaining ${formatMoney(
-      item.amount_remaining
-    )}`;
+    meta.textContent = `Due ${formatShortDate(item.due_date)}`;
     left.appendChild(name);
     left.appendChild(meta);
 
@@ -720,7 +744,7 @@ function renderUrgency(baseList, isFree) {
     actions.className = "list-actions";
 
     const payFull = document.createElement("button");
-    payFull.className = "btn-small btn-primary";
+    payFull.className = "btn-pill primary";
     payFull.textContent = "Pay full";
     payFull.addEventListener("click", () => {
       if (item.amount_remaining > 0) {
@@ -729,7 +753,7 @@ function renderUrgency(baseList, isFree) {
     });
 
     const addBtn = document.createElement("button");
-    addBtn.className = "btn-small";
+    addBtn.className = "btn-pill";
     addBtn.textContent = "Add payment";
     addBtn.addEventListener("click", () => {
       const raw = window.prompt("Payment amount:");
@@ -742,7 +766,12 @@ function renderUrgency(baseList, isFree) {
     actions.appendChild(payFull);
     actions.appendChild(addBtn);
 
+    const amount = document.createElement("div");
+    amount.className = "urgent-amount";
+    amount.textContent = formatMoney(item.amount_remaining);
+
     row.appendChild(left);
+    row.appendChild(amount);
     row.appendChild(actions);
     return row;
   };
@@ -757,11 +786,9 @@ function renderUrgency(baseList, isFree) {
   }
 
   if (dueSoon.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "meta";
-    empty.textContent = "Nothing urgent right now.";
-    els.dueSoonList.appendChild(empty);
+    if (els.dueSoonCard) els.dueSoonCard.classList.add("hidden");
   } else {
+    if (els.dueSoonCard) els.dueSoonCard.classList.remove("hidden");
     dueSoon.forEach((item) => els.dueSoonList.appendChild(renderItem(item, false)));
   }
 }
@@ -809,13 +836,14 @@ function renderPiggy() {
   if (!els.piggyList) return;
   els.piggyList.innerHTML = "";
   const activeFunds = (state.funds || []).filter((fund) => fund.active);
+  const piggyCta = els.piggyCta;
   if (activeFunds.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "meta";
-    empty.textContent = "No piggy banks yet.";
-    els.piggyList.appendChild(empty);
+    if (els.piggyCard) els.piggyCard.classList.add("hidden");
+    if (piggyCta) piggyCta.classList.remove("hidden");
     return;
   }
+  if (els.piggyCard) els.piggyCard.classList.remove("hidden");
+  if (piggyCta) piggyCta.classList.add("hidden");
 
   activeFunds.forEach((fund) => {
     const row = document.createElement("div");
@@ -937,7 +965,7 @@ function renderActivity() {
 
   state.payments.slice(0, 10).forEach((payment) => {
     const row = document.createElement("div");
-    row.className = "list-item";
+    row.className = "list-item activity-item";
 
     const left = document.createElement("div");
     const name = instanceMap.get(payment.instance_id) || "Payment";
@@ -952,7 +980,7 @@ function renderActivity() {
 
     const actions = document.createElement("div");
     const undo = document.createElement("button");
-    undo.className = "btn-small";
+    undo.className = "btn-link";
     undo.textContent = "Undo";
     undo.addEventListener("click", () => undoPayment(payment.id));
     actions.appendChild(undo);
@@ -1083,7 +1111,7 @@ async function fetchNudges(events) {
       if (data.auth_url) {
         state.llmStatus = { status: "auth_required", auth_url: data.auth_url, error: data.error || "" };
       } else {
-        state.llmStatus = { status: "unavailable", auth_url: null, error: data.error || "Agent unavailable" };
+        state.llmStatus = { status: "unavailable", auth_url: null, error: data.error || "Assistant unavailable" };
       }
       state.nudges = fallbackNudges(events);
       renderNudges();
@@ -1094,7 +1122,7 @@ async function fetchNudges(events) {
     state.nudges = data?.data?.messages || fallbackNudges(events);
     renderNudges();
   } catch (err) {
-    state.llmStatus = { status: "unavailable", auth_url: null, error: err.message || "Agent unavailable" };
+    state.llmStatus = { status: "unavailable", auth_url: null, error: err.message || "Assistant unavailable" };
     state.nudges = fallbackNudges(events);
     renderNudges();
   }
@@ -1314,7 +1342,7 @@ async function applyIntakeTemplates(templates) {
 async function sendLlmAgent() {
   if (!els.llmAgentInput || !els.llmAgentOutput) return;
   if (state.qwenAuth && !state.qwenAuth.connected) {
-    els.llmAgentOutput.textContent = "Connect agent first.";
+    els.llmAgentOutput.textContent = "Connect assistant first.";
     return;
   }
   const text = els.llmAgentInput.value.trim();
@@ -1337,11 +1365,11 @@ async function sendLlmAgent() {
       if (data?.auth_url) {
         state.llmStatus = { status: "auth_required", auth_url: data.auth_url, error: data.error || "" };
       } else {
-        state.llmStatus = { status: "unavailable", auth_url: null, error: data?.error || "Agent unavailable" };
+        state.llmStatus = { status: "unavailable", auth_url: null, error: data?.error || "Assistant unavailable" };
       }
       renderNudges();
-      els.llmAgentOutput.textContent = data?.error || "Agent unavailable.";
-      pushLlmMessage("assistant", "Agent unavailable.", data?.error || "");
+      els.llmAgentOutput.textContent = data?.error || "Assistant unavailable.";
+      pushLlmMessage("assistant", "Assistant unavailable.", data?.error || "");
       return;
     }
 
@@ -1388,8 +1416,8 @@ async function sendLlmAgent() {
     els.llmAgentOutput.textContent = "";
     pushLlmMessage("assistant", "No response.");
   } catch (err) {
-    els.llmAgentOutput.textContent = "Agent unavailable.";
-    pushLlmMessage("assistant", "Agent unavailable.");
+    els.llmAgentOutput.textContent = "Assistant unavailable.";
+    pushLlmMessage("assistant", "Assistant unavailable.");
   }
 }
 
@@ -1440,17 +1468,17 @@ function renderNudges() {
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = "Connect agent";
+    title.textContent = "Connect assistant";
     const body = document.createElement("div");
     body.className = "meta";
     if (state.qwenAuth.status === "pending" && state.qwenAuth.verification_uri_complete) {
       body.textContent = "Authorize in browser, then return here.";
     } else if (state.qwenAuth.status === "error") {
-      body.textContent = state.qwenAuth.error || "Unable to start agent auth.";
+      body.textContent = state.qwenAuth.error || "Unable to start assistant auth.";
     } else if (state.qwenAuth.status === "expired") {
       body.textContent = "Login expired. Start again.";
     } else {
-      body.textContent = "Use agent login to enable nudges.";
+      body.textContent = "Use assistant login to enable nudges.";
     }
     left.appendChild(title);
     left.appendChild(body);
@@ -1480,10 +1508,10 @@ function renderNudges() {
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = "Agent connected";
+    title.textContent = "Assistant ready.";
     const body = document.createElement("div");
     body.className = "meta";
-    body.textContent = "Mamdou is ready.";
+    body.textContent = "";
     left.appendChild(title);
     left.appendChild(body);
     row.appendChild(left);
@@ -1497,10 +1525,10 @@ function renderNudges() {
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = "Agent error";
+    title.textContent = "Assistant error";
     const body = document.createElement("div");
     body.className = "meta";
-    body.textContent = state.llmStatus.error || "Agent unavailable.";
+    body.textContent = state.llmStatus.error || "Assistant unavailable.";
     left.appendChild(title);
     left.appendChild(body);
     row.appendChild(left);
@@ -1514,7 +1542,7 @@ function renderNudges() {
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = "Agent login required";
+    title.textContent = "Assistant login required";
     const body = document.createElement("div");
     body.className = "meta";
     body.textContent = "Click to complete the device authorization.";
@@ -1536,7 +1564,7 @@ function renderNudges() {
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = "Agent unavailable";
+    title.textContent = "Assistant unavailable";
     const body = document.createElement("div");
     body.className = "meta";
     body.textContent = state.llmStatus.error || "Check your gateway connection.";
@@ -1672,13 +1700,31 @@ function renderItems(baseList) {
   const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
 
   list.forEach((item) => {
+    const daysUntilDue = currentMonth ? diffDays(item.due_date, today) : null;
     const isOverdue =
-      currentMonth && item.amount_remaining > 0 && item.due_date < today;
+      currentMonth && item.amount_remaining > 0 && daysUntilDue !== null && daysUntilDue < 0;
+    const isDueSoon =
+      currentMonth &&
+      item.amount_remaining > 0 &&
+      daysUntilDue !== null &&
+      daysUntilDue >= 0 &&
+      daysUntilDue <= 7;
+
+    let stateClass = "";
+    if (isOverdue) stateClass = "state-overdue";
+    else if (isDueSoon) stateClass = "state-due-soon";
+    else if (item.status_derived === "partial") stateClass = "state-partial";
+    else if (item.status_derived === "paid") stateClass = "state-paid";
 
     const row = document.createElement("div");
-    row.className = `item-row ${isOverdue ? "overdue" : ""}`;
+    row.className = `item-row ${stateClass}`;
+    row.dataset.id = item.id;
+    if (state.flashInstanceId && item.id === state.flashInstanceId) {
+      row.classList.add("row-flash");
+    }
 
     const statusCell = document.createElement("div");
+    statusCell.className = "status-cell";
     const statusPill = document.createElement("div");
     statusPill.className = `status-pill status-${item.status_derived}`;
     statusPill.textContent = item.status_derived.charAt(0).toUpperCase() + item.status_derived.slice(1);
@@ -1703,13 +1749,6 @@ function renderItems(baseList) {
       badge.textContent = "Autopay";
       metaParts.push(badge);
     }
-    if (item.status_derived === "partial") {
-      const span = document.createElement("span");
-      span.textContent = `${formatMoney(item.amount_paid)} paid / ${formatMoney(
-        item.amount
-      )} due`;
-      metaParts.push(span);
-    }
     metaParts.forEach((part, index) => {
       if (index > 0) {
         const dot = document.createElement("span");
@@ -1728,22 +1767,52 @@ function renderItems(baseList) {
     main.appendChild(meta);
 
     const due = document.createElement("div");
+    due.className = "item-due";
     due.textContent = formatShortDate(item.due_date);
 
     const amountDue = document.createElement("div");
+    amountDue.className = "item-amount";
     amountDue.textContent = formatMoney(item.amount);
 
-    const amountPaid = document.createElement("div");
-    amountPaid.textContent = formatMoney(item.amount_paid);
+    const progress = document.createElement("div");
+    progress.className = "progress-wrap";
+    const progressBar = document.createElement("div");
+    progressBar.className = "progress-bar";
+    const progressFill = document.createElement("span");
+    const ratio =
+      item.amount > 0
+        ? Math.min(1, Math.max(0, item.amount_paid / item.amount))
+        : item.status_derived === "paid"
+        ? 1
+        : 0;
+    progressFill.style.width = `${Math.round(ratio * 100)}%`;
+    progressBar.appendChild(progressFill);
+    const progressText = document.createElement("div");
+    progressText.className = "progress-text";
+    if (item.status_derived === "skipped") {
+      progressText.textContent = "Skipped";
+    } else if (item.amount_remaining <= 0) {
+      progressText.textContent = "Paid in full";
+    } else {
+      progressText.textContent = `${formatMoney(item.amount_remaining)} remaining`;
+    }
+    progress.appendChild(progressBar);
+    progress.appendChild(progressText);
+    if (item.status_derived === "partial" || item.status_derived === "paid") {
+      const paidLine = document.createElement("div");
+      paidLine.className = "progress-sub";
+      paidLine.textContent = `${formatMoney(item.amount_paid)} paid of ${formatMoney(
+        item.amount
+      )}`;
+      progress.appendChild(paidLine);
+    }
 
-    const remaining = document.createElement("div");
-    remaining.textContent = formatMoney(item.amount_remaining);
-
-    const paymentWrap = document.createElement("div");
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "row-actions";
     const paymentGroup = document.createElement("div");
     paymentGroup.className = "payment-inline";
     const plus = document.createElement("span");
-    plus.textContent = "+";
+    plus.textContent = "+$";
     const paymentInput = document.createElement("input");
     paymentInput.type = "number";
     paymentInput.min = "0";
@@ -1751,31 +1820,39 @@ function renderItems(baseList) {
     paymentInput.className = "inline-input";
     paymentInput.placeholder = "0.00";
     const applyBtn = document.createElement("button");
-    applyBtn.className = "btn-small";
+    applyBtn.className = "btn-pill";
     applyBtn.textContent = "Apply";
-    applyBtn.addEventListener("click", () => {
+    const applyPayment = () => {
       const value = Number(paymentInput.value);
       if (!Number.isFinite(value) || value <= 0) return;
       addPayment(item.id, value);
       paymentInput.value = "";
+    };
+    applyBtn.addEventListener("click", applyPayment);
+    paymentInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyPayment();
+      }
     });
     paymentGroup.appendChild(plus);
     paymentGroup.appendChild(paymentInput);
     paymentGroup.appendChild(applyBtn);
-    paymentWrap.appendChild(paymentGroup);
+    actionsWrap.appendChild(paymentGroup);
 
-    const payFullWrap = document.createElement("div");
     const payFull = document.createElement("button");
-    payFull.className = "btn-small btn-primary";
+    payFull.className = "btn-pill primary";
     payFull.textContent = "Pay full";
+    payFull.disabled = item.amount_remaining <= 0;
     payFull.addEventListener("click", () => {
       if (item.amount_remaining > 0) {
         addPayment(item.id, item.amount_remaining);
       }
     });
-    payFullWrap.appendChild(payFull);
+    actionsWrap.appendChild(payFull);
 
-    const actionsWrap = document.createElement("div");
+    const kebabWrap = document.createElement("div");
+    kebabWrap.className = "kebab-wrap";
     const kebab = document.createElement("button");
     kebab.className = "kebab";
     kebab.textContent = "⋯";
@@ -1794,17 +1871,15 @@ function renderItems(baseList) {
         patchInstance(item.id, { status: "pending" });
       }
     });
-    actionsWrap.appendChild(kebab);
+    kebabWrap.appendChild(kebab);
 
     row.appendChild(statusCell);
     row.appendChild(main);
     row.appendChild(due);
     row.appendChild(amountDue);
-    row.appendChild(amountPaid);
-    row.appendChild(remaining);
-    row.appendChild(paymentWrap);
-    row.appendChild(payFullWrap);
+    row.appendChild(progress);
     row.appendChild(actionsWrap);
+    row.appendChild(kebabWrap);
 
     els.itemsList.appendChild(row);
   });
@@ -2402,6 +2477,14 @@ function bindEvents() {
     });
   }
 
+  if (els.piggyCta) {
+    els.piggyCta.addEventListener("click", () => {
+      state.view = "templates";
+      renderView();
+      document.getElementById("funds-section")?.scrollIntoView({ behavior: "smooth" });
+    });
+  }
+
   if (els.zeroIntakeBtn) {
     els.zeroIntakeBtn.addEventListener("click", () => {
       els.llmAgentInput?.focus();
@@ -2628,6 +2711,15 @@ function bindEvents() {
   if (els.llmAgentSend) {
     els.llmAgentSend.addEventListener("click", () => {
       sendLlmAgent();
+    });
+  }
+
+  if (els.assistantToggle && els.assistantPanel) {
+    els.assistantToggle.addEventListener("click", () => {
+      const isCollapsed = els.assistantPanel.classList.toggle("collapsed");
+      if (els.assistantCard) {
+        els.assistantCard.classList.toggle("collapsed", isCollapsed);
+      }
     });
   }
 
