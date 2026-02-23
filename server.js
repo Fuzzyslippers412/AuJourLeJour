@@ -1542,6 +1542,55 @@ function ensureMonth(year, month) {
   run();
 }
 
+function applyTemplateToMonth(template, year, month) {
+  if (!template || !year || !month) return;
+  if (template.active) {
+    ensureMonth(year, month);
+  }
+  const dueDay = ledger.clampDueDay(year, month, template.due_day);
+  const dueDate = ledger.toDateString(year, month, dueDay);
+  db.prepare(
+    `UPDATE instances
+     SET name_snapshot = ?, category_snapshot = ?, amount = ?, due_date = ?, autopay_snapshot = ?, essential_snapshot = ?, updated_at = ?
+     WHERE template_id = ? AND year = ? AND month = ?`
+  ).run(
+    template.name,
+    template.category || null,
+    template.amount_default,
+    dueDate,
+    template.autopay ? 1 : 0,
+    template.essential ? 1 : 0,
+    nowIso(),
+    template.id,
+    year,
+    month
+  );
+}
+
+function deleteTemplateFromMonth(id, year, month) {
+  const rows = db
+    .prepare(
+      `SELECT id FROM instances
+       WHERE template_id = ?
+         AND (year > ? OR (year = ? AND month >= ?))`
+    )
+    .all(id, year, year, month);
+  const instanceIds = rows.map((r) => r.id);
+  const run = db.transaction(() => {
+    if (instanceIds.length > 0) {
+      const placeholders = instanceIds.map(() => "?").join(",");
+      db.prepare(
+        `DELETE FROM payment_events WHERE instance_id IN (${placeholders})`
+      ).run(...instanceIds);
+      db.prepare(`DELETE FROM instances WHERE id IN (${placeholders})`).run(
+        ...instanceIds
+      );
+    }
+    db.prepare("DELETE FROM templates WHERE id = ?").run(id);
+  });
+  return run();
+}
+
 function getInstances(year, month) {
   const rows = db
     .prepare(
@@ -1592,8 +1641,11 @@ app.post("/api/templates", (req, res) => {
     stamp
   );
 
+  const parsed = parseYearMonth(req);
   const now = new Date();
-  ensureMonth(now.getFullYear(), now.getMonth() + 1);
+  const year = parsed?.year ?? now.getFullYear();
+  const month = parsed?.month ?? now.getMonth() + 1;
+  ensureMonth(year, month);
   const template = db.prepare("SELECT * FROM templates WHERE id = ?").get(id);
   res.json(normalizeTemplate(template));
 });
@@ -1631,6 +1683,11 @@ app.put("/api/templates/:id", (req, res) => {
   }
 
   const row = db.prepare("SELECT * FROM templates WHERE id = ?").get(id);
+  const parsed = parseYearMonth(req);
+  const now = new Date();
+  const year = parsed?.year ?? now.getFullYear();
+  const month = parsed?.month ?? now.getMonth() + 1;
+  applyTemplateToMonth(row, year, month);
   res.json(normalizeTemplate(row));
 });
 
@@ -1648,8 +1705,13 @@ app.post("/api/templates/:id/archive", (req, res) => {
 app.delete("/api/templates/:id", (req, res) => {
   const id = String(req.params.id || "");
   if (!id) return res.status(400).json({ error: "Invalid id" });
-  const result = db.prepare("DELETE FROM templates WHERE id = ?").run(id);
-  if (result.changes === 0) return res.status(404).json({ error: "Template not found" });
+  const parsed = parseYearMonth(req);
+  const now = new Date();
+  const year = parsed?.year ?? now.getFullYear();
+  const month = parsed?.month ?? now.getMonth() + 1;
+  const exists = db.prepare("SELECT id FROM templates WHERE id = ?").get(id);
+  if (!exists) return res.status(404).json({ error: "Template not found" });
+  deleteTemplateFromMonth(id, year, month);
   res.json({ ok: true });
 });
 
@@ -2712,7 +2774,23 @@ app.post("/api/v1/actions", (req, res) => {
         );
         if (changes.changes === 0) throw new Error("Template not found");
         const row = db.prepare("SELECT * FROM templates WHERE id = ?").get(id);
+        const now = new Date();
+        const year = Number(action.year) || now.getFullYear();
+        const month = Number(action.month) || now.getMonth() + 1;
+        applyTemplateToMonth(row, year, month);
         result = { ok: true, template: normalizeTemplate(row) };
+        break;
+      }
+      case "DELETE_TEMPLATE": {
+        const id = String(action.template_id || action.id || "");
+        if (!id) throw new Error("template_id is required");
+        const now = new Date();
+        const year = Number(action.year) || now.getFullYear();
+        const month = Number(action.month) || now.getMonth() + 1;
+        const exists = db.prepare("SELECT id FROM templates WHERE id = ?").get(id);
+        if (!exists) throw new Error("Template not found");
+        deleteTemplateFromMonth(id, year, month);
+        result = { ok: true };
         break;
       }
       case "ARCHIVE_TEMPLATE": {

@@ -1216,6 +1216,8 @@ async function applyProposal(proposal) {
       default_note: payload.default_note || null,
       match_payee_key: payload.match_payee_key || null,
       match_amount_tolerance: Number(payload.match_amount_tolerance || 5),
+      year: state.selectedYear,
+      month: state.selectedMonth,
     });
     await refreshAll();
     return { ok: true, message: "Template created." };
@@ -1239,6 +1241,8 @@ async function applyProposal(proposal) {
     await postAction({
       type: "UPDATE_TEMPLATE",
       template_id: template.id,
+      year: state.selectedYear,
+      month: state.selectedMonth,
       ...payload,
     });
     await refreshAll();
@@ -1250,6 +1254,18 @@ async function applyProposal(proposal) {
     await postAction({ type: "ARCHIVE_TEMPLATE", template_id: template.id });
     await refreshAll();
     return { ok: true, message: "Template archived." };
+  }
+
+  if (intent === "DELETE_TEMPLATE") {
+    if (!template) return { ok: false, message: "Template not found." };
+    await postAction({
+      type: "DELETE_TEMPLATE",
+      template_id: template.id,
+      year: state.selectedYear,
+      month: state.selectedMonth,
+    });
+    await refreshAll();
+    return { ok: true, message: "Template deleted." };
   }
 
   if (!instance) {
@@ -2087,11 +2103,14 @@ function renderTemplates() {
         match_amount_tolerance: Number(matchToleranceInput.value || 0),
       };
 
-      const res = await fetch(`/api/templates/${template.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetch(
+        `/api/templates/${template.id}?year=${state.selectedYear}&month=${state.selectedMonth}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
 
       if (!res.ok) {
         let message = "Unable to save template.";
@@ -2105,24 +2124,24 @@ function renderTemplates() {
         return;
       }
 
-      await loadTemplates();
-      renderTemplates();
+      await refreshAll();
     });
 
     archiveBtn.addEventListener("click", async (event) => {
       event.preventDefault();
       await fetch(`/api/templates/${template.id}/archive`, { method: "POST" });
-      await loadTemplates();
-      renderTemplates();
+      await refreshAll();
     });
 
     deleteBtn.addEventListener("click", async (event) => {
       event.preventDefault();
       const confirmed = window.confirm("Delete this template? This cannot be undone.");
       if (!confirmed) return;
-      await fetch(`/api/templates/${template.id}`, { method: "DELETE" });
-      await loadTemplates();
-      renderTemplates();
+      await fetch(
+        `/api/templates/${template.id}?year=${state.selectedYear}&month=${state.selectedMonth}`,
+        { method: "DELETE" }
+      );
+      await refreshAll();
     });
 
     row.appendChild(selectWrap);
@@ -2192,11 +2211,14 @@ async function saveDirtyTemplates() {
   if (dirtyEntries.length === 0) return 0;
   for (const { id, entry } of dirtyEntries) {
     const payload = buildTemplatePayload(entry);
-    const res = await fetch(`/api/templates/${id}`, {
+    const res = await fetch(
+      `/api/templates/${id}?year=${state.selectedYear}&month=${state.selectedMonth}`,
+      {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    });
+      }
+    );
     if (!res.ok) {
       let message = "Unable to save template.";
       try {
@@ -2209,8 +2231,7 @@ async function saveDirtyTemplates() {
       throw new Error(message);
     }
   }
-  await loadTemplates();
-  renderTemplates();
+  await refreshAll();
   return dirtyEntries.length;
 }
 
@@ -2616,11 +2637,14 @@ function bindEvents() {
       match_amount_tolerance: Number(els.templateMatchTolerance.value || 0),
     };
 
-    const res = await fetch("/api/templates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const res = await fetch(
+      `/api/templates?year=${state.selectedYear}&month=${state.selectedMonth}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    );
 
     if (res.ok) {
       els.templateForm.reset();
@@ -2687,8 +2711,7 @@ function bindEvents() {
         await fetch(`/api/templates/${id}/archive`, { method: "POST" });
       }
       state.selectedTemplates = new Set();
-      await loadTemplates();
-      renderTemplates();
+      await refreshAll();
     });
   }
 
@@ -2700,11 +2723,13 @@ function bindEvents() {
       );
       if (!confirmed) return;
       for (const id of state.selectedTemplates) {
-        await fetch(`/api/templates/${id}`, { method: "DELETE" });
+        await fetch(
+          `/api/templates/${id}?year=${state.selectedYear}&month=${state.selectedMonth}`,
+          { method: "DELETE" }
+        );
       }
       state.selectedTemplates = new Set();
-      await loadTemplates();
-      renderTemplates();
+      await refreshAll();
     });
   }
 

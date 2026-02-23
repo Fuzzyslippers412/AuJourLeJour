@@ -2,6 +2,8 @@
 
 Local-first essentials tracker. Runs fully offline with a local SQLite file.
 
+Built to plug into the **MyCasaPro Finance Agent (Mamdou)** later via a stable contract. AJL remains a standalone ledger and exposes a clean integration surface for the agent to read summaries and propose actions.
+
 ## Run
 
 ```sh
@@ -31,7 +33,7 @@ Use the **Backup/Export** button:
 
 ## Integration Contract (v1)
 
-AJL owns its own data. Integrations must use the v1 contract (no direct DB access).
+AJL owns its own data. Integrations (including MyCasaPro Finance Agent) must use the v1 contract (no direct DB access).
 
 Endpoints:
 - `GET /api/v1/summary?year=YYYY&month=MM&essentials_only=true`
@@ -61,7 +63,7 @@ Environment variables:
 Qwen OAuth (recommended):
 - Open the app → **Nudges** → **Start login** to authorize via web.
 - Uses Qwen device flow at `https://chat.qwen.ai/authorize`.
- - Default model: `qwen3.5` (override via `QWEN_OAUTH_MODEL`)
+ - Default model: `qwen3-coder-plus` (override via `QWEN_OAUTH_MODEL`)
 
 Qwen Code CLI (optional):
 - `QWEN_CLI_BIN` (default `qwen`)
@@ -73,7 +75,7 @@ Ollama (optional fallback):
 ## Notes
 
 - Month generation is idempotent (no duplicates).
-- Template edits only affect future months unless you apply them to the current month.
+- Template edits sync to the **selected month** immediately; history remains frozen unless you explicitly apply updates.
 - “Free for the month — essentials covered.” appears when remaining essentials are 0 and nothing is overdue.
 - Partial payments are supported via payment events; totals update live.
 - Cash on hand is stored per month and decreases as payments are logged.
