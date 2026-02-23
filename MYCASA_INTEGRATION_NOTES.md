@@ -50,7 +50,7 @@ Suggested pattern (similar to `backend/skills/polymarket_btc_15m/skill_interface
   - `POST /api/v1/actions` (only with explicit confirmation)
 
 **5) Add configuration**
-- Store AJL base URL in MyCasa settings or env (e.g., `AJL_BASE_URL=http://localhost:6709`)
+- Store AJL base URL in MyCasa settings or env (e.g., `AJL_BASE_URL=http://localhost:6709` or `AJL_BASE_URL=https://aujourlejour.xyz`)
 - Optionally include auth/token if you decide to add one later (AJL currently local-only)
 
 ## AJL Contract Reminder (for MyCasa integration)

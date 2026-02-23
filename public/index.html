@@ -115,19 +115,38 @@
               <div class="card-title">Recent activity</div>
               <div id="activity-list" class="list"></div>
             </div>
-            <div id="assistant-card" class="card compact-card assistant-card collapsed">
-              <div class="card-title">Nudges</div>
+            <div id="assistant-card" class="card compact-card assistant-card">
+              <div class="card-title">Mamdou</div>
               <div id="nudges-list" class="list"></div>
-              <button id="assistant-toggle" class="assistant-pill">Assistant</button>
-              <div id="assistant-panel" class="assistant-panel collapsed">
+              <button id="assistant-toggle" class="assistant-pill">Hide Mamdou</button>
+              <div id="assistant-panel" class="assistant-panel">
                 <div class="assistant-box">
                   <div class="assistant-title">Mamdou</div>
                   <div class="assistant-sub">Ask, add bills, or run commands in one box.</div>
+                  <div class="assistant-capabilities">
+                    <div class="cap-title">What Mamdou Can Do</div>
+                    <div class="cap-sub">All actions require confirmation.</div>
+                    <div class="cap-tags">
+                      <span class="cap-chip">Pay / undo payments</span>
+                      <span class="cap-chip">Update bills</span>
+                      <span class="cap-chip">Create / update templates</span>
+                      <span class="cap-chip">Apply templates</span>
+                      <span class="cap-chip">Piggy banks</span>
+                      <span class="cap-chip">Cash on hand</span>
+                      <span class="cap-chip">Exports</span>
+                      <span class="cap-chip">Switch month</span>
+                      <span class="cap-chip">Toggle essentials</span>
+                    </div>
+                  </div>
                   <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Rent $1200 on the 1st, Electric $140 on the 10th” or “mark rent paid”"></textarea>
                   <div class="assistant-actions">
                     <button id="llm-agent-send" class="btn-small btn-primary">Send</button>
                   </div>
                   <div id="llm-agent-output" class="assistant-status meta"></div>
+                  <div id="llm-agent-actions" class="assistant-actions-row hidden">
+                    <button id="llm-agent-confirm" class="btn-pill primary">Confirm</button>
+                    <button id="llm-agent-cancel" class="btn-pill">Cancel</button>
+                  </div>
                   <div id="llm-agent-history" class="assistant-thread"></div>
                 </div>
               </div>
@@ -171,6 +190,12 @@
           </div>
 
           <div id="items-list" class="items-list"></div>
+        </div>
+
+        <div id="review-card" class="card">
+          <div class="card-title">Month review</div>
+          <div id="review-summary" class="review-grid"></div>
+          <div id="review-list" class="list"></div>
         </div>
       </section>
 

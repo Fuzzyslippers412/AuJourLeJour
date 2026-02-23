@@ -13,6 +13,7 @@ const SCHEMA_VERSION = "2";
 const app = express();
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT) || 4567;
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
 
 const dataDir = path.join(__dirname, "data");
 const dbFile = path.join(dataDir, "au_jour_le_jour.sqlite");
@@ -3035,4 +3036,7 @@ app.get("/api/health", (req, res) => {
 ensureSingleInstance();
 app.listen(PORT, HOST, () => {
   console.log(`Au Jour Le Jour running on http://${HOST}:${PORT}`);
+  if (PUBLIC_BASE_URL) {
+    console.log(`Public URL: ${PUBLIC_BASE_URL}`);
+  }
 });

@@ -48,7 +48,7 @@ Never include any content outside of JSON.`;
 const SYSTEM_PROMPT_AGENT = `You are Mamdou, the Finance Agent for Au Jour Le Jour.
 Return ONLY valid JSON. No extra text.
 Do not compute totals or business logic; use provided context.
-Never write to the database; only propose actions.
+Never write to the database; only propose actions for user confirmation.
 If ambiguous, ask a clarifying question.`;
 
 function buildPrompt(task, payload) {
@@ -63,6 +63,7 @@ Rules:
 - essential_guess: true for utilities/insurance/debt/food/transport; false for entertainment unless user says otherwise.
 - autopay_guess: true only if user implies autopay.
 - match_payee_key_guess: normalized short token if obvious.
+- amount_default must be a number only (no $ or commas).
 - confidence: 0..1; if <0.6, add to warnings.
 Output JSON object:
 {
@@ -139,10 +140,25 @@ Output JSON object:
 }
 Rules:
 - If user_text lists bills or amounts, use kind="intake" and output templates in TemplateCandidate schema (same fields as intake).
-- If user_text asks to pay/skip/mark/update bills, use kind="command" and output a single ActionProposal object (same fields as command).
+- If user_text asks to pay/skip/mark/update anything, use kind="command" and output a single ActionProposal object (same fields as command).
 - If user_text is a question, use kind="ask" and put the response in "answer".
 - If ambiguous, ask a clarifying question in "questions" (intake) or "proposal.clarifying_question" (command).
-- For explicit commands ("mark tesla paid"), you may set proposal.needs_confirmation = false.
+- For any amount fields, output numbers only (no currency symbols or commas).
+Supported command intents:
+MARK_PAID, MARK_PENDING, SKIP_INSTANCE, ADD_PAYMENT, UNDO_PAYMENT, UPDATE_INSTANCE_FIELDS,
+CREATE_TEMPLATE, UPDATE_TEMPLATE, ARCHIVE_TEMPLATE, DELETE_TEMPLATE, APPLY_TEMPLATES,
+SET_CASH_START,
+CREATE_FUND, UPDATE_FUND, ARCHIVE_FUND, DELETE_FUND, ADD_SINKING_EVENT, MARK_FUND_PAID,
+SHOW_DUE_SOON, SHOW_OVERDUE, SHOW_TEMPLATES, SHOW_PIGGY, SHOW_BACKUP, SHOW_SUMMARY,
+EXPORT_MONTH, EXPORT_BACKUP, GENERATE_MONTH, SET_MONTH, SET_ESSENTIALS_ONLY.
+
+Target types:
+- instance (monthly bill), template (recurring bill), fund (piggy bank), month (cash).
+
+Fund payloads:
+- CREATE_FUND / UPDATE_FUND: name, category, target_amount, due_date (YYYY-MM-DD), cadence, months_per_cycle, essential, auto_contribute, active
+- ADD_SINKING_EVENT: event_type (CONTRIBUTION|WITHDRAWAL|ADJUSTMENT), amount, note
+- MARK_FUND_PAID: amount (optional)
 INPUT:
 ${input}`;
     default:

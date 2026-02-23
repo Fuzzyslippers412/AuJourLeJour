@@ -13,6 +13,12 @@ cd /path/to/au-jour-le-jour
 
 Open `http://localhost:6709` or `http://<your-ip>:6709` on your local network.
 
+## Domain / Public URL
+
+Planned public domain: `https://aujourlejour.xyz`
+
+If you deploy AJL publicly, set `PUBLIC_BASE_URL` and point DNS to your host.
+
 Requirements:
 - Node.js 18+ (start.sh will install dependencies automatically if missing)
 
@@ -53,7 +59,7 @@ Endpoints:
 
 Environment variables:
 - `LLM_PROVIDER` = `qwen-oauth` (default), `qwen-cli`, or `ollama`
-- `LLM_MODEL` (default `qwen2.5-coder:7b-instruct`) — used by Ollama
+- `LLM_MODEL` (default `qwen3-coder-plus`) — used by Ollama
 - `LLM_DISABLED=1` to turn LLM off
 - `LLM_TIMEOUT_MS` (default `15000`)
 - `LLM_MAX_RETRIES` (default `1`)
@@ -61,7 +67,7 @@ Environment variables:
 - `LLM_TEMPERATURE` (default `0.2`)
 
 Qwen OAuth (recommended):
-- Open the app → **Nudges** → **Start login** to authorize via web.
+- Open the app → **Mamdou** → **Connect agent** to authorize via web.
 - Uses Qwen device flow at `https://chat.qwen.ai/authorize`.
  - Default model: `qwen3-coder-plus` (override via `QWEN_OAUTH_MODEL`)
 
