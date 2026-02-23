@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Au Jour Le Jour — Essentials Ledger</title>
+    <meta
+      name="description"
+      content="Local-first essentials ledger to keep monthly obligations tight, prevent lifestyle creep, and take it one day at a time."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Manrope:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="nav">
+        <div class="logo">
+          <div class="mark"></div>
+          <span>Au Jour Le Jour</span>
+        </div>
+        <nav class="nav-links">
+          <a href="#why">Why</a>
+          <a href="#features">Features</a>
+          <a href="#flow">Flow</a>
+          <a href="#install">Install</a>
+          <a href="#integrations">Integrations</a>
+        </nav>
+        <a class="btn ghost" href="#install">Get it</a>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Local-first essentials ledger</p>
+          <h1>Control the basics. Avoid lifestyle creep. Take it one day at a time.</h1>
+          <p class="lead">
+            Au Jour Le Jour is a fast, offline-first ledger for bare-minimum obligations.
+            It shows what must be paid, what is already handled, and the exact daily runway
+            needed to stay stable.
+          </p>
+          <div class="cta-row">
+            <a class="btn primary" href="https://github.com/Fuzzyslippers412/AuJourLeJour">Download on GitHub</a>
+            <a class="btn secondary" href="#install">Install locally</a>
+          </div>
+          <p class="subtle">No accounts. No bank connections. One portable database.</p>
+        </div>
+        <div class="hero-panel">
+          <div class="panel-title">This month at a glance</div>
+          <div class="panel-metrics">
+            <div class="metric">
+              <span class="label">Required</span>
+              <span class="value">$4,736</span>
+            </div>
+            <div class="metric">
+              <span class="label">Paid</span>
+              <span class="value">$2,500</span>
+            </div>
+            <div class="metric">
+              <span class="label">Remaining</span>
+              <span class="value">$2,236</span>
+            </div>
+          </div>
+          <div class="panel-strip">
+            <div>
+              <span class="label">Need / Day</span>
+              <span class="value">$169</span>
+            </div>
+            <div>
+              <span class="label">Need / Week</span>
+              <span class="value">$1,184</span>
+            </div>
+            <div>
+              <span class="label">Status</span>
+              <span class="status">Still need to cover $2,236</span>
+            </div>
+          </div>
+          <div class="panel-note">
+            Monthly bills are generated from your templates and never overwritten.
+          </div>
+        </div>
+      </section>
+
+      <section id="why" class="split">
+        <div>
+          <h2>Why it exists</h2>
+          <p>
+            Most budgeting apps are noisy. Au Jour Le Jour is the opposite: a clean ledger
+            that keeps essentials tight and makes the monthly survival number obvious.
+            It is designed for discipline, not lifestyle creep.
+          </p>
+          <ul class="bullet">
+            <li>Single-source-of-truth ledger you own</li>
+            <li>Instant clarity on what is required vs. optional</li>
+            <li>Motivating but simple: no charts, just the numbers that matter</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Local-first by default</h3>
+          <p>
+            The app runs entirely on your machine. Data lives in one SQLite file and
+            survives reloads, reboots, and travel. Export any month as CSV or backup
+            the full ledger as JSON.
+          </p>
+          <div class="pill-row">
+            <span class="pill">SQLite</span>
+            <span class="pill">Offline</span>
+            <span class="pill">Portable</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="feature-grid">
+        <div class="card">
+          <h3>Essentials runway</h3>
+          <p>Exact daily and weekly need based on the selected month.</p>
+        </div>
+        <div class="card">
+          <h3>Partial payments</h3>
+          <p>Log incremental payments and watch remaining balances update instantly.</p>
+        </div>
+        <div class="card">
+          <h3>Free for the month</h3>
+          <p>Clear signal once essentials are covered. Everything else becomes optional.</p>
+        </div>
+        <div class="card">
+          <h3>Overdue + due soon</h3>
+          <p>Above-the-fold urgency lists so nothing slips by.</p>
+        </div>
+        <div class="card">
+          <h3>Piggy banks</h3>
+          <p>Sinking funds for yearly or quarterly obligations with automatic set-asides.</p>
+        </div>
+        <div class="card">
+          <h3>Actionable history</h3>
+          <p>See which bills get paid first, last, and how your pace changes over time.</p>
+        </div>
+      </section>
+
+      <section id="flow" class="flow">
+        <div class="flow-header">
+          <h2>How it works</h2>
+          <p>Short loop, repeated monthly. Nothing hidden. Nothing overwritten.</p>
+        </div>
+        <div class="flow-steps">
+          <div class="step">
+            <span class="step-num">1</span>
+            <h4>Create recurring templates</h4>
+            <p>Define essentials once. Every month generates clean instances.</p>
+          </div>
+          <div class="step">
+            <span class="step-num">2</span>
+            <h4>Log payments</h4>
+            <p>Partial or full payments update totals instantly and build history.</p>
+          </div>
+          <div class="step">
+            <span class="step-num">3</span>
+            <h4>Track pace</h4>
+            <p>Stay ahead of due dates with daily and weekly runway numbers.</p>
+          </div>
+          <div class="step">
+            <span class="step-num">4</span>
+            <h4>Export anytime</h4>
+            <p>CSV for a month, JSON for the full ledger, no vendor lock-in.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="install" class="install">
+        <div class="install-copy">
+          <h2>Install locally</h2>
+          <p>
+            Runs on macOS, Windows, and Linux. No cloud. No accounts.
+            Once installed, open the app on your local network.
+          </p>
+          <div class="card code">
+            <pre><code>git clone https://github.com/Fuzzyslippers412/AuJourLeJour.git
+cd AuJourLeJour
+./start.sh
+# open http://localhost:6709</code></pre>
+          </div>
+          <p class="subtle">
+            One command starts everything. The SQLite ledger lives in <strong>data/</strong>.
+          </p>
+        </div>
+        <div class="install-card">
+          <h3>What you get</h3>
+          <ul class="bullet">
+            <li>Monthly essentials dashboard</li>
+            <li>Recurring bill templates</li>
+            <li>Payment log with undo</li>
+            <li>Backup/export built-in</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="integrations" class="card integration">
+        <h2>Integration-ready</h2>
+        <p>
+          Au Jour Le Jour is designed to plug into the MyCasaPro Finance Agent (Mamdou)
+          via a stable local contract. The ledger remains authoritative; external agents
+          can only read summaries and propose explicit actions.
+        </p>
+        <div class="pill-row">
+          <span class="pill">/api/v1/summary</span>
+          <span class="pill">/api/v1/month</span>
+          <span class="pill">/api/v1/templates</span>
+          <span class="pill">/api/v1/actions</span>
+        </div>
+      </section>
+
+      <section class="cta">
+        <div>
+          <h2>Ready to run tight?</h2>
+          <p>Download the app and keep essentials disciplined, day by day.</p>
+        </div>
+        <a class="btn primary" href="https://github.com/Fuzzyslippers412/AuJourLeJour">Download on GitHub</a>
+      </section>
+
+      <footer class="footer">
+        <div>Au Jour Le Jour — local essentials ledger.</div>
+        <div>Built for clarity, discipline, and calm.</div>
+      </footer>
+    </div>
+  </body>
+</html>
