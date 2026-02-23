@@ -55,6 +55,8 @@ Environment variables:
 - `LLM_DISABLED=1` to turn LLM off
 - `LLM_TIMEOUT_MS` (default `15000`)
 - `LLM_MAX_RETRIES` (default `1`)
+- `LLM_MAX_TOKENS` (default `512`)
+- `LLM_TEMPERATURE` (default `0.2`)
 
 Qwen OAuth (recommended):
 - Open the app → **Nudges** → **Start login** to authorize via web.

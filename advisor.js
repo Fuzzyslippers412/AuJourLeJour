@@ -4,6 +4,8 @@ const DEFAULT_MODEL = process.env.LLM_MODEL || "qwen2.5-coder:7b-instruct";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
 const REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 15000;
 const MAX_RETRIES = Number(process.env.LLM_MAX_RETRIES) || 1;
+const LLM_MAX_TOKENS = Number(process.env.LLM_MAX_TOKENS) || 512;
+const LLM_TEMPERATURE = Number(process.env.LLM_TEMPERATURE) || 0.2;
 
 const { execFile } = require("child_process");
 const QWEN_CLI_BIN = process.env.QWEN_CLI_BIN || "qwen";
@@ -17,6 +19,12 @@ You never write to the database. You only propose templates, messages, or action
 If ambiguous, ask a clarifying question in the \"questions\" or \"clarifying_question\" field.
 Prefer short, direct phrasing. No moralizing. No shaming.
 Never include any content outside of JSON.`;
+
+const SYSTEM_PROMPT_AGENT = `You are Mamdou, the Finance Agent for Au Jour Le Jour.
+Return ONLY valid JSON. No extra text.
+Do not compute totals or business logic; use provided context.
+Never write to the database; only propose actions.
+If ambiguous, ask a clarifying question.`;
 
 function buildPrompt(task, payload) {
   const input = JSON.stringify(payload || {}, null, 2);
@@ -151,7 +159,7 @@ async function withRetries(fn) {
   throw lastErr;
 }
 
-async function callOllama(prompt) {
+async function callOllama(prompt, systemPrompt) {
   if (process.env.LLM_DISABLED === "1") {
     return { ok: false, error: "LLM disabled" };
   }
@@ -168,9 +176,10 @@ async function callOllama(prompt) {
             model: DEFAULT_MODEL,
             stream: false,
             messages: [
-              { role: "system", content: SYSTEM_PROMPT },
+              { role: "system", content: systemPrompt },
               { role: "user", content: prompt },
             ],
+            options: { num_predict: LLM_MAX_TOKENS, temperature: LLM_TEMPERATURE },
           }),
         },
         REQUEST_TIMEOUT_MS
@@ -229,12 +238,12 @@ function extractQwenCliContent(output) {
   return String(output).trim();
 }
 
-async function callQwenCli(prompt) {
+async function callQwenCli(prompt, systemPrompt) {
   if (process.env.LLM_DISABLED === "1") {
     return { ok: false, error: "LLM disabled" };
   }
 
-  const args = ["--prompt", `${SYSTEM_PROMPT}\n\n${prompt}`, "--output-format", "json"];
+  const args = ["--prompt", `${systemPrompt}\n\n${prompt}`, "--output-format", "json"];
   if (QWEN_CLI_MODEL) {
     args.push("--model", QWEN_CLI_MODEL);
   }
@@ -275,7 +284,7 @@ function extractJson(text) {
   }
 }
 
-async function callQwenOAuth(prompt, oauth) {
+async function callQwenOAuth(prompt, oauth, systemPrompt) {
   if (process.env.LLM_DISABLED === "1") {
     return { ok: false, error: "LLM disabled" };
   }
@@ -299,8 +308,10 @@ async function callQwenOAuth(prompt, oauth) {
           body: JSON.stringify({
             model: QWEN_OAUTH_MODEL,
             stream: false,
+            max_tokens: LLM_MAX_TOKENS,
+            temperature: LLM_TEMPERATURE,
             messages: [
-              { role: "system", content: SYSTEM_PROMPT },
+              { role: "system", content: systemPrompt },
               { role: "user", content: prompt },
             ],
           }),
@@ -327,14 +338,15 @@ async function callQwenOAuth(prompt, oauth) {
 
 async function query(task, payload, options = {}) {
   const prompt = buildPrompt(task, payload);
+  const systemPrompt = task === "agent" ? SYSTEM_PROMPT_AGENT : SYSTEM_PROMPT;
   let response;
   const provider = (options.provider || PROVIDER).toLowerCase();
   if (provider === "ollama") {
-    response = await callOllama(prompt);
+    response = await callOllama(prompt, systemPrompt);
   } else if (provider === "qwen-cli" || provider === "qwen") {
-    response = await callQwenCli(prompt);
+    response = await callQwenCli(prompt, systemPrompt);
   } else if (provider === "qwen-oauth") {
-    response = await callQwenOAuth(prompt, options.oauth);
+    response = await callQwenOAuth(prompt, options.oauth, systemPrompt);
   } else {
     return { ok: false, error: `Unknown LLM provider: ${provider}` };
   }
