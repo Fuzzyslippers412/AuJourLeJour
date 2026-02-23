@@ -1,0 +1,15 @@
+{
+  "name": "au-jour-le-jour",
+  "version": "1.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "start:6709": "PORT=6709 node server.js",
+    "seed": "node scripts/seed_templates.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.1",
+    "express": "^4.19.2"
+  }
+}

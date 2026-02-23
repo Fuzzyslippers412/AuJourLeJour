@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Au Jour Le Jour</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">AJL</div>
+        <div>
+          <div class="brand-title">Au Jour Le Jour</div>
+          <div class="brand-sub">Essentials ledger</div>
+        </div>
+      </div>
+
+      <div class="month-nav">
+        <button id="prev-month" class="icon-btn" aria-label="Previous month">&#x2039;</button>
+        <input id="month-picker" class="month-input" type="month" />
+        <button id="next-month" class="icon-btn" aria-label="Next month">&#x203A;</button>
+      </div>
+
+      <div class="top-actions">
+        <label class="toggle">
+          <input id="essentials-toggle" type="checkbox" checked />
+          <span>Essentials only</span>
+        </label>
+        <button id="nav-dashboard" class="tab-btn active">This Month</button>
+        <button id="nav-templates" class="tab-btn">Templates</button>
+        <button id="open-backup" class="primary-btn">Backup/Export</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <section id="dashboard-view" class="view">
+        <div id="zero-state" class="zero-state hidden">
+          <div class="zero-card">
+            <div class="zero-title">No bills yet.</div>
+            <div class="zero-sub">Add essentials to generate your monthly list.</div>
+            <button id="zero-templates-btn" class="primary-btn">Go to Templates</button>
+            <button id="zero-intake-btn" class="ghost-btn">Add bills by describing them</button>
+          </div>
+        </div>
+
+        <div class="card hero">
+          <div class="hero-left">
+            <div class="hero-grid">
+              <div class="metric">
+                <div class="metric-label">Required (Month)</div>
+                <div id="required-amount" class="metric-value">$0.00</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Paid</div>
+                <div id="paid-amount" class="metric-value">$0.00</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Remaining</div>
+                <div id="remaining-amount" class="metric-value">$0.00</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Need / Day</div>
+                <div id="need-day" class="metric-value">$0.00</div>
+                <div id="need-day-plan" class="metric-sub">Planning avg: $0.00/day</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Need / Week</div>
+                <div id="need-week" class="metric-value">$0.00</div>
+                <div id="need-week-plan" class="metric-sub">Planning avg: $0.00/week</div>
+              </div>
+            </div>
+            <div class="hero-subline">Future obligations reserved: <span id="future-reserved">$0.00</span></div>
+          </div>
+          <div class="hero-right">
+            <div class="cash-block">
+              <label for="cash-start">Cash on hand (starting)</label>
+              <div class="cash-row">
+                <input id="cash-start" type="number" min="0" step="0.01" placeholder="0.00" />
+                <button id="cash-save" class="btn-small btn-primary" disabled>Save</button>
+              </div>
+              <div id="cash-save-status" class="meta"></div>
+              <div class="cash-remaining">Cash remaining: <span id="cash-remaining">$0.00</span></div>
+            </div>
+            <div id="hero-status" class="status-box">
+              <div id="status-main" class="status-main">Still need to cover $0.00</div>
+              <div id="status-sub" class="status-sub">Keep essentials tight.</div>
+            </div>
+          </div>
+        </div>
+
+        <div id="urgency-row" class="row">
+          <div class="col col-8">
+            <div class="card">
+              <div class="card-title">Overdue</div>
+              <div id="overdue-list" class="list"></div>
+            </div>
+            <div class="card">
+              <div class="card-title">Due soon</div>
+              <div id="due-soon-list" class="list"></div>
+            </div>
+          </div>
+          <div class="col col-4">
+            <div class="card">
+              <div class="card-title">Nudges</div>
+              <div id="nudges-list" class="list"></div>
+              <div class="assistant-box">
+                <div class="assistant-title">Mamdou</div>
+                <div class="assistant-sub">Ask, add bills, or run commands in one box.</div>
+                <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Comcast $90, Tesla $1300 on the 1st” or “mark tesla paid”"></textarea>
+                <div class="assistant-actions">
+                  <button id="llm-agent-send" class="btn-small btn-primary">Send</button>
+                </div>
+                <div id="llm-agent-output" class="assistant-status meta"></div>
+                <div id="llm-agent-history" class="assistant-thread"></div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-title">Recent activity</div>
+              <div id="activity-list" class="list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="piggy-card" class="card">
+          <div class="card-title-row">
+            <div class="card-title">Piggy Banks</div>
+            <button id="open-piggy-manage" class="ghost-btn">Manage</button>
+          </div>
+          <div id="piggy-list" class="piggy-list"></div>
+        </div>
+
+        <div id="items-card" class="card all-items">
+          <div class="card-title">All items</div>
+          <div class="filters">
+            <input id="search-input" class="search-input" type="search" placeholder="Search bills..." />
+            <div class="filter-group">
+              <span>Status</span>
+              <label class="chip"><input type="checkbox" data-status="pending" checked />Pending</label>
+              <label class="chip"><input type="checkbox" data-status="partial" checked />Partial</label>
+              <label class="chip"><input type="checkbox" data-status="paid" checked />Paid</label>
+              <label class="chip"><input type="checkbox" data-status="skipped" checked />Skipped</label>
+            </div>
+            <div class="filter-group">
+              <span>Category</span>
+              <select id="category-filter" class="select">
+                <option value="all">All</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <span>Sort</span>
+              <select id="sort-filter" class="select">
+                <option value="due_date">Due date</option>
+                <option value="amount">Amount</option>
+                <option value="name">Name</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="items-list" class="items-list"></div>
+        </div>
+      </section>
+
+      <section id="templates-view" class="view hidden">
+        <div class="page-title">Recurring bills</div>
+        <div class="page-sub">These generate your monthly checklist.</div>
+        <button id="open-intake" class="ghost-btn">Add bills (Mamdou)</button>
+
+        <form id="template-form" class="template-form">
+          <input id="template-name" type="text" placeholder="Name" required />
+          <input id="template-category" type="text" placeholder="Category" />
+          <input id="template-amount" type="number" min="0" step="0.01" placeholder="Amount" required />
+          <input id="template-due-day" type="number" min="1" max="31" placeholder="Due day" required />
+          <label class="toggle small">
+            <input id="template-essential" type="checkbox" checked />
+            <span>Essential</span>
+          </label>
+          <label class="toggle small">
+            <input id="template-autopay" type="checkbox" />
+            <span>Autopay</span>
+          </label>
+          <label class="toggle small">
+            <input id="template-active" type="checkbox" checked />
+            <span>Active</span>
+          </label>
+          <input id="template-note" type="text" placeholder="Default note" />
+          <input id="template-match-key" type="text" placeholder="Match key" />
+          <input id="template-match-tolerance" type="number" min="0" step="0.01" placeholder="Match tolerance" />
+          <button class="primary-btn" type="submit">Add bill</button>
+        </form>
+        <div id="template-error" class="form-error hidden"></div>
+
+        <div class="template-actions">
+          <label class="toggle small">
+            <input id="select-all-templates" type="checkbox" />
+            <span>Select all</span>
+          </label>
+          <button id="archive-selected" class="ghost-btn" disabled>Archive selected</button>
+          <button id="delete-selected" class="ghost-btn" disabled>Delete selected</button>
+          <button id="apply-templates" class="ghost-btn">Apply template updates to this month</button>
+        </div>
+
+        <div id="templates-list" class="templates-list"></div>
+
+        <div id="funds-section" class="section-title">Piggy banks</div>
+        <div class="page-sub">Sinking funds for yearly or quarterly obligations.</div>
+
+        <form id="fund-form" class="template-form">
+          <input id="fund-name" type="text" placeholder="Name" required />
+          <input id="fund-category" type="text" placeholder="Category" />
+          <input id="fund-target" type="number" min="0" step="0.01" placeholder="Target amount" required />
+          <input id="fund-due-date" type="date" required />
+          <select id="fund-cadence" class="select">
+            <option value="yearly">Yearly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="custom_months">Custom months</option>
+          </select>
+          <input id="fund-months" type="number" min="1" step="1" placeholder="Months per cycle" />
+          <label class="toggle small">
+            <input id="fund-essential" type="checkbox" checked />
+            <span>Essential</span>
+          </label>
+          <label class="toggle small">
+            <input id="fund-auto" type="checkbox" checked />
+            <span>Auto contribute</span>
+          </label>
+          <label class="toggle small">
+            <input id="fund-active" type="checkbox" checked />
+            <span>Active</span>
+          </label>
+          <button class="primary-btn" type="submit">Add fund</button>
+        </form>
+        <div id="fund-error" class="form-error hidden"></div>
+        <div id="funds-list" class="templates-list"></div>
+      </section>
+    </main>
+
+    <div id="backup-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">Backup & Export</div>
+            <div class="modal-sub">Keeps your data portable across computers.</div>
+          </div>
+          <button id="close-backup" class="icon-btn" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-actions">
+          <button id="export-month" class="primary-btn">Export month CSV</button>
+          <button id="export-backup" class="ghost-btn">Export full backup (JSON)</button>
+          <label class="ghost-btn file-input">
+            Import backup (JSON)
+            <input id="import-backup" type="file" accept="application/json" />
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Intake modal removed: use the unified assistant box instead. -->
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+node_modules/
+data/
+*.sqlite
+*.log
+*.pid
+.DS_Store
+coverage/
+dist/
