@@ -4,6 +4,7 @@ const Database = require("better-sqlite3");
 const { randomUUID } = require("crypto");
 
 const seedPath = path.join(__dirname, "..", "seeds", "monthly_expenses.json");
+const samplePath = path.join(__dirname, "..", "seeds", "monthly_expenses.sample.json");
 const dataDir = path.join(__dirname, "..", "data");
 const dbFile = path.join(dataDir, "au_jour_le_jour.sqlite");
 
@@ -70,7 +71,8 @@ db.exec(`
   );
 `);
 
-const seed = JSON.parse(fs.readFileSync(seedPath, "utf8"));
+const usePath = fs.existsSync(seedPath) ? seedPath : samplePath;
+const seed = JSON.parse(fs.readFileSync(usePath, "utf8"));
 const templates = Array.isArray(seed.templates) ? seed.templates : [];
 
 const findTemplate = db.prepare("SELECT id FROM templates WHERE name = ?");

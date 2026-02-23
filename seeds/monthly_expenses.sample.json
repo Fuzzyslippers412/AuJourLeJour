@@ -1,0 +1,34 @@
+{
+  "templates": [
+    {
+      "name": "Rent",
+      "category": "Housing",
+      "amount_default": 1200,
+      "due_day": 1,
+      "autopay": false,
+      "essential": true,
+      "active": true,
+      "default_note": ""
+    },
+    {
+      "name": "Electric",
+      "category": "Utilities",
+      "amount_default": 140,
+      "due_day": 10,
+      "autopay": false,
+      "essential": true,
+      "active": true,
+      "default_note": ""
+    },
+    {
+      "name": "Internet",
+      "category": "Utilities",
+      "amount_default": 65,
+      "due_day": 15,
+      "autopay": false,
+      "essential": true,
+      "active": true,
+      "default_note": ""
+    }
+  ]
+}
