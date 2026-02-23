@@ -10,7 +10,7 @@ const LLM_TEMPERATURE = Number(process.env.LLM_TEMPERATURE) || 0.2;
 const { execFile } = require("child_process");
 const QWEN_CLI_BIN = process.env.QWEN_CLI_BIN || "qwen";
 const QWEN_CLI_MODEL = process.env.QWEN_CLI_MODEL || "";
-const QWEN_OAUTH_MODEL = process.env.QWEN_OAUTH_MODEL || "qwen3-coder-plus";
+const QWEN_OAUTH_MODEL = process.env.QWEN_OAUTH_MODEL || "qwen3.5";
 
 const SYSTEM_PROMPT = `You are the Au Jour Le Jour Advisory Assistant running locally.
 You must output ONLY valid JSON that matches the required schema for the task.

@@ -61,6 +61,7 @@ Environment variables:
 Qwen OAuth (recommended):
 - Open the app → **Nudges** → **Start login** to authorize via web.
 - Uses Qwen device flow at `https://chat.qwen.ai/authorize`.
+ - Default model: `qwen3.5` (override via `QWEN_OAUTH_MODEL`)
 
 Qwen Code CLI (optional):
 - `QWEN_CLI_BIN` (default `qwen`)
