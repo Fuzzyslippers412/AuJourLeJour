@@ -27,6 +27,9 @@ const state = {
 const weeksPerMonth = 4.33;
 const daysPerMonthAvg = 30.4;
 let cashSaveTimer = null;
+const MAX_LLM_INSTANCES = 60;
+const MAX_LLM_TEMPLATES = 60;
+const MAX_LLM_DUE = 8;
 
 const els = {
   monthPicker: document.getElementById("month-picker"),
@@ -472,6 +475,25 @@ function computeTotals(list) {
   return { required, paid, remaining };
 }
 
+function prioritizeInstancesForAgent(list) {
+  const today = getTodayDateString();
+  const scored = list.map((item) => {
+    const remaining = Number(item.amount_remaining || 0);
+    let priority = 2;
+    if (item.status_derived === "skipped") priority = 4;
+    if (remaining <= 0) priority = 3;
+    if (remaining > 0 && item.due_date < today) priority = 0;
+    else if (remaining > 0 && diffDays(item.due_date, today) <= 7) priority = 1;
+    return { item, priority, remaining };
+  });
+  scored.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    if (a.item.due_date !== b.item.due_date) return a.item.due_date.localeCompare(b.item.due_date);
+    return b.remaining - a.remaining;
+  });
+  return scored.map((entry) => entry.item);
+}
+
 function buildLlmContext() {
   const derived = deriveInstances();
   const base = getBaseInstances(derived);
@@ -499,12 +521,12 @@ function buildLlmContext() {
       paid: totals.paid,
       remaining: totals.remaining,
     },
-    overdue: overdue.map((item) => ({
+    overdue: overdue.slice(0, MAX_LLM_DUE).map((item) => ({
       name: item.name_snapshot,
       remaining: item.amount_remaining,
       due_date: item.due_date,
     })),
-    due_soon: dueSoon.map((item) => ({
+    due_soon: dueSoon.slice(0, MAX_LLM_DUE).map((item) => ({
       name: item.name_snapshot,
       remaining: item.amount_remaining,
       due_date: item.due_date,
@@ -518,16 +540,15 @@ function buildLlmContext() {
 function buildAgentPayload(userText) {
   const derived = deriveInstances();
   const base = getBaseInstances(derived);
-  const knownInstances = base.map((item) => ({
+  const prioritized = prioritizeInstancesForAgent(base);
+  const knownInstances = prioritized.slice(0, MAX_LLM_INSTANCES).map((item) => ({
     name: item.name_snapshot,
-    instance_id: item.id,
     remaining: item.amount_remaining,
     status: item.status_derived,
     due_date: item.due_date,
   }));
-  const knownTemplates = state.templates.map((t) => ({
+  const knownTemplates = state.templates.slice(0, MAX_LLM_TEMPLATES).map((t) => ({
     name: t.name,
-    template_id: t.id,
     active: t.active,
   }));
   return {
