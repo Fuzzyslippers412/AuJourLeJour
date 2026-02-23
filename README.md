@@ -22,6 +22,14 @@ If you deploy AJL publicly, set `PUBLIC_BASE_URL` and point DNS to your host.
 Requirements:
 - Node.js 18+ (start.sh will install dependencies automatically if missing)
 
+## Web PWA (Browser-Only)
+
+The public web version lives in `docs/app/` and runs entirely in the browser using IndexedDB.
+
+- Launch (GitHub Pages): `https://aujourlejour.xyz/app/`
+- Data stays on the user’s device (no accounts, no server).
+- The local server version remains unchanged and is still the recommended full experience.
+
 ## Data
 
 SQLite file path:

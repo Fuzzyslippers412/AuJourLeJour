@@ -199,6 +199,16 @@ function createSchemaV2() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_agent_log_created ON agent_command_log (created_at);
+
+    CREATE TABLE IF NOT EXISTS assistant_chat (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      role TEXT NOT NULL,
+      text TEXT NOT NULL,
+      meta TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assistant_chat_created ON assistant_chat (created_at);
   `);
 }
 
@@ -1894,6 +1904,34 @@ app.delete("/api/payments/:id", (req, res) => {
     instance_id: payment.instance_id,
     instance: instance ? attachPayments([instance])[0] : null,
   });
+});
+
+app.get("/api/chat", (req, res) => {
+  const limitRaw = Number(req.query.limit || 50);
+  const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, limitRaw)) : 50;
+  const rows = db
+    .prepare("SELECT * FROM assistant_chat ORDER BY datetime(created_at) ASC LIMIT ?")
+    .all(limit);
+  res.json({ ok: true, items: rows });
+});
+
+app.post("/api/chat", (req, res) => {
+  const body = req.body || {};
+  const role = String(body.role || "").trim();
+  const text = String(body.text || "").trim();
+  if (!role || !text) return res.status(400).json({ ok: false, error: "Invalid message" });
+  const meta = body.meta ? String(body.meta) : null;
+  const id = randomUUID();
+  const createdAt = nowIso();
+  db.prepare(
+    "INSERT INTO assistant_chat (id, created_at, role, text, meta) VALUES (?, ?, ?, ?, ?)"
+  ).run(id, createdAt, role, text, meta);
+  res.json({ ok: true, id });
+});
+
+app.delete("/api/chat", (req, res) => {
+  db.prepare("DELETE FROM assistant_chat").run();
+  res.json({ ok: true });
 });
 
 app.get("/api/month-settings", (req, res) => {

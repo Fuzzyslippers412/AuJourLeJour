@@ -4,7 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Au Jour Le Jour</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="manifest" href="manifest.json" />
+    <meta name="theme-color" content="#0f172a" />
   </head>
   <body>
     <header class="topbar">
@@ -309,6 +311,13 @@
 
     <!-- Intake modal removed: use the unified assistant box instead. -->
 
-    <script src="/app.js"></script>
+    <script src="vendor/dexie.min.js"></script>
+    <script src="pwa-adapter.js"></script>
+    <script src="app.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("sw.js").catch(() => {});
+      }
+    </script>
   </body>
 </html>
