@@ -72,7 +72,7 @@ function setCors(req, res) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-AJL-Session");
     res.setHeader("Vary", "Origin");
   }
 }
@@ -84,6 +84,14 @@ app.use((req, res, next) => {
 });
 
 function getSessionId(req, res) {
+  const headerSession = req.headers["x-ajl-session"];
+  if (headerSession && typeof headerSession === "string" && headerSession.trim()) {
+    const sessionId = headerSession.trim();
+    db.prepare("INSERT OR IGNORE INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)")
+      .run(sessionId, nowIso(), nowIso());
+    db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(nowIso(), sessionId);
+    return sessionId;
+  }
   const cookies = cookie.parse(req.headers.cookie || "");
   let sessionId = cookies[COOKIE_NAME];
   if (!sessionId) {

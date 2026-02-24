@@ -38,6 +38,51 @@ const MAX_LLM_INSTANCES = 60;
 const MAX_LLM_TEMPLATES = 60;
 const MAX_LLM_DUE = 8;
 const PROFILE_NAME_KEY = "ajl_profile_name";
+const PWA_DB_NAME = "ajl_pwa";
+const PWA_RESET_FLAG = "ajl_pwa_reset_in_progress";
+
+function looksLikeStorageError(err) {
+  const message = String(err?.message || err || "");
+  return message.includes("IDBKeyRange") || message.includes("DataError") || message.includes("IndexedDB");
+}
+
+async function resetPwaStorage() {
+  if (!window.AJL_PWA) return;
+  try {
+    if (window.localStorage.getItem(PWA_RESET_FLAG)) return;
+    window.localStorage.setItem(PWA_RESET_FLAG, "1");
+  } catch (err) {
+    // ignore
+  }
+  try {
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    }
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((reg) => reg.unregister()));
+    }
+    indexedDB.deleteDatabase(PWA_DB_NAME);
+  } catch (err) {
+    // ignore
+  }
+  setTimeout(() => window.location.reload(), 300);
+}
+
+function setupStorageRecovery() {
+  window.addEventListener("unhandledrejection", (event) => {
+    if (!looksLikeStorageError(event.reason)) return;
+    event.preventDefault();
+    const proceed = window.confirm("Local data appears corrupted. Reset local storage for this app?");
+    if (proceed) resetPwaStorage();
+  });
+  window.addEventListener("error", (event) => {
+    if (!looksLikeStorageError(event.error)) return;
+    const proceed = window.confirm("Local data appears corrupted. Reset local storage for this app?");
+    if (proceed) resetPwaStorage();
+  });
+}
 
 const els = {
   monthPicker: document.getElementById("month-picker"),
@@ -3765,6 +3810,7 @@ function init() {
   state.lastAutoMonthKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
   state.essentialsOnly = els.essentialsToggle.checked;
   state.profileName = loadProfileName();
+  setupStorageRecovery();
   if (els.assistantNameInput) {
     els.assistantNameInput.value = state.profileName;
   }
