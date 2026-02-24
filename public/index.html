@@ -25,7 +25,7 @@
       </div>
 
       <div class="top-actions">
-        <button id="share-open" class="ghost-btn">Share</button>
+        <button id="share-open" class="ghost-btn local-only">Share</button>
         <label class="toggle">
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
@@ -142,6 +142,12 @@
               <div class="card-title">Bills list</div>
               <div class="filter-bar">
                 <input id="search-input" class="search-input" type="search" placeholder="Search bills..." />
+              <div id="preset-chips" class="chip-group preset-chips">
+                <button class="chip" data-preset="due_soon">Due soon</button>
+                <button class="chip" data-preset="overdue">Overdue</button>
+                <button class="chip" data-preset="this_week">This week</button>
+                <button class="chip" data-preset="skipped">Skipped</button>
+              </div>
               <div class="chip-group" id="status-chips">
                 <button class="chip active" data-status="all">All</button>
                 <button class="chip" data-status="pending">Pending</button>
@@ -237,6 +243,25 @@
         <div class="page-title">Setup</div>
         <div class="page-sub">Templates, categories, backups, and reserved buckets.</div>
         <div class="disclaimer">This app tracks bills. You pay outside the app.</div>
+        <section class="setup-block web-only">
+          <div class="block-title">Install locally</div>
+          <div class="block-sub">Want the full local version? Install from GitHub and run it on your machine.</div>
+          <div class="meta">
+            <div><a href="https://github.com/Fuzzyslippers412/AuJourLeJour" target="_blank" rel="noopener">GitHub repo</a></div>
+            <pre class="install-code">git clone https://github.com/Fuzzyslippers412/AuJourLeJour.git
+cd AuJourLeJour
+./start.sh</pre>
+          </div>
+        </section>
+
+        <section id="setup-cta" class="setup-block setup-cta hidden">
+          <div class="block-title">You’re almost ready</div>
+          <div class="block-sub">Import a backup or add your first template to get started.</div>
+          <div class="backup-actions">
+            <button id="cta-import" class="primary-btn">Import backup</button>
+            <button id="cta-template" class="ghost-btn">Create template</button>
+          </div>
+        </section>
 
         <section id="backup-section" class="setup-block">
           <div class="block-title">Backup & Restore</div>
@@ -247,7 +272,7 @@
           </div>
           <div id="backup-last" class="meta">No backup saved yet.</div>
 
-          <div class="import-panel">
+          <div class="import-panel readonly-hide">
             <div id="backup-drop" class="drop-zone">
               Drop your backup JSON here (desktop)
             </div>
@@ -270,6 +295,7 @@
               <button id="import-confirm" class="btn-small btn-primary" disabled>Confirm import</button>
             </div>
           </div>
+          <div id="storage-health" class="meta"></div>
         </section>
 
         <section class="setup-block">
@@ -302,7 +328,7 @@
         <section class="setup-block">
           <div class="block-title">Categories</div>
           <div class="block-sub">Manage categories used for filtering.</div>
-          <div class="categories-row">
+          <div class="categories-row readonly-hide">
             <input id="category-input" type="text" placeholder="Add category" />
             <button id="category-add" class="ghost-btn">Add</button>
           </div>
@@ -317,7 +343,7 @@
             </div>
             <button id="open-backup" class="ghost-btn">Backup &amp; Restore</button>
           </div>
-          <form id="template-form" class="template-form">
+          <form id="template-form" class="template-form readonly-hide">
             <input id="template-name" type="text" placeholder="Name" required />
             <input id="template-category" type="text" placeholder="Category" />
             <input id="template-amount" type="number" min="0" step="0.01" placeholder="Amount" required />
@@ -337,7 +363,7 @@
           </form>
           <div id="template-error" class="form-error hidden"></div>
 
-          <div class="template-actions">
+          <div class="template-actions readonly-hide">
             <label class="toggle small">
               <input id="select-all-templates" type="checkbox" />
               <span>Select all</span>
@@ -354,7 +380,7 @@
           <div class="block-title">Reserved buckets</div>
           <div class="block-sub">Sinking funds for yearly or quarterly obligations.</div>
 
-          <form id="fund-form" class="template-form">
+          <form id="fund-form" class="template-form readonly-hide">
             <input id="fund-name" type="text" placeholder="Name" required />
             <input id="fund-category" type="text" placeholder="Category" />
             <input id="fund-target" type="number" min="0" step="0.01" placeholder="Target amount" required />
@@ -384,9 +410,18 @@
         </section>
 
         <section class="setup-block">
+          <div class="block-title">Preview</div>
+          <div class="block-sub">Simulate read-only sharing on this device.</div>
+          <label class="toggle">
+            <input id="preview-readonly" type="checkbox" />
+            <span>Preview read-only mode</span>
+          </label>
+        </section>
+
+        <section class="setup-block">
           <div class="block-title">Data safety</div>
           <div class="block-sub">Reset local data or start in safe mode if something breaks.</div>
-          <div class="safety-actions">
+          <div class="safety-actions readonly-hide">
             <button id="clear-filters" class="ghost-btn">Clear filters</button>
             <button id="reset-local-inline" class="ghost-btn danger">Reset local data</button>
             <button id="start-safe-mode" class="ghost-btn">Start in safe mode</button>
@@ -395,7 +430,7 @@
       </section>
     </main>
 
-    <div id="share-modal" class="modal hidden">
+    <div id="share-modal" class="modal hidden local-only">
       <div class="modal-content">
         <div class="modal-header">
           <div>
@@ -421,6 +456,23 @@
           <div class="modal-footer-hint">
             This link is read-only.
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="first-run-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">Get started</div>
+            <div class="modal-sub">Import a backup or create your first template.</div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="wizard-import" class="primary-btn">Import backup JSON</button>
+          <button id="wizard-template" class="ghost-btn">Add first template</button>
+          <button id="wizard-skip" class="ghost-btn">Skip for now</button>
+          <input id="wizard-file" type="file" accept="application/json" hidden />
         </div>
       </div>
     </div>
@@ -488,8 +540,8 @@
       <button id="toast-action" class="toast-action hidden">Undo</button>
     </div>
 
-    <button id="assistant-fab" class="fab">Mamdou</button>
-    <div id="assistant-drawer" class="drawer hidden">
+    <button id="assistant-fab" class="fab local-only">Mamdou</button>
+    <div id="assistant-drawer" class="drawer hidden local-only">
       <div class="drawer-scrim" data-close="assistant"></div>
       <div class="drawer-panel assistant-sheet">
         <div class="drawer-header">

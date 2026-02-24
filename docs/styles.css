@@ -27,6 +27,18 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+body.web .local-only {
+  display: none !important;
+}
+
+.web-only {
+  display: none;
+}
+
+body.web .web-only {
+  display: block;
+}
+
 button,
 input,
 select,
@@ -45,6 +57,11 @@ textarea {
   padding: 12px 20px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
+  transition: box-shadow 0.2s ease;
+}
+
+body.scrolled .topbar {
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
 }
 
 .brand {
@@ -759,6 +776,15 @@ body.read-only .shared-header {
   margin-bottom: 12px;
 }
 
+.preset-chips {
+  flex: 1 1 100%;
+}
+
+.setup-cta {
+  border: 1px dashed var(--border);
+  background: #f8fafc;
+}
+
 .search-input {
   flex: 1 1 200px;
   border: 1px solid var(--border);
@@ -1232,6 +1258,17 @@ body.read-only .shared-header {
   margin-bottom: 24px;
 }
 
+.install-code {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 12px;
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
 .disclaimer {
   background: #f8fafc;
   border: 1px solid var(--border);
@@ -1337,6 +1374,9 @@ body.read-only .shared-header {
   .filter-bar {
     flex-direction: column;
     align-items: stretch;
+  }
+  .preset-chips {
+    order: 2;
   }
   .filter-btn {
     display: inline-flex;

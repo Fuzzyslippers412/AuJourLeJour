@@ -16,6 +16,7 @@ const state = {
   llmHistory: [],
   commandLog: [],
   profileName: "",
+  webMeta: null,
   pendingAgentAction: null,
   monthLocked: false,
   lastAutoMonthKey: null,
@@ -32,6 +33,7 @@ const state = {
     status: "all",
     category: "all",
     sort: "due_date",
+    preset: "none",
   },
   reviewRange: "month",
   selectedInstanceId: null,
@@ -52,6 +54,7 @@ let flashTimer = null;
 let autoMonthTimer = null;
 let refreshTimer = null;
 let splitViewTimer = null;
+let scrollShadowBound = false;
 let storageFailureHandled = false;
 const MAX_LLM_INSTANCES = 60;
 const MAX_LLM_TEMPLATES = 60;
@@ -61,6 +64,9 @@ const PROFILE_NAME_KEY = "ajl_profile_name";
 const BACKUP_LAST_KEY = "ajl_last_backup_at";
 const PWA_DB_NAME = "ajl_pwa";
 const PWA_DB_PREFIX = "ajl_pwa";
+const WEB_META_KEY = "auj_web_meta";
+const BACKUP_REMINDER_THRESHOLD = 25;
+const STORAGE_HEALTH_WARNING_BYTES = 4_000_000;
 
 function looksLikeStorageError(err) {
   const message = String(err?.message || err || "");
@@ -258,6 +264,16 @@ const els = {
   importBackup: document.getElementById("import-backup"),
   resetLocalInline: document.getElementById("reset-local-inline"),
   clearFilters: document.getElementById("clear-filters"),
+  storageHealth: document.getElementById("storage-health"),
+  previewReadonly: document.getElementById("preview-readonly"),
+  setupCta: document.getElementById("setup-cta"),
+  ctaImport: document.getElementById("cta-import"),
+  ctaTemplate: document.getElementById("cta-template"),
+  wizardModal: document.getElementById("first-run-modal"),
+  wizardImport: document.getElementById("wizard-import"),
+  wizardTemplate: document.getElementById("wizard-template"),
+  wizardSkip: document.getElementById("wizard-skip"),
+  wizardFile: document.getElementById("wizard-file"),
   todayView: document.getElementById("today-view"),
   reviewView: document.getElementById("review-view"),
   setupView: document.getElementById("setup-view"),
@@ -291,6 +307,7 @@ const els = {
   recentStrip: document.getElementById("recent-strip"),
   itemsList: document.getElementById("items-list"),
   searchInput: document.getElementById("search-input"),
+  presetChips: Array.from(document.querySelectorAll("#preset-chips .chip")),
   statusChips: Array.from(document.querySelectorAll("#status-chips .chip")),
   filterOpen: document.getElementById("filter-open"),
   filterSheet: document.getElementById("filter-sheet"),
@@ -421,6 +438,71 @@ function saveProfileName(name) {
   }
 }
 
+function loadWebMeta() {
+  try {
+    const raw = localStorage.getItem(WEB_META_KEY);
+    if (!raw) {
+      return {
+        schemaVersion: 1,
+        firstRunCompleted: false,
+        lastBackupAt: null,
+        editCountSinceBackup: 0,
+        readOnlyPreview: false,
+        lastSeenAppVersion: null,
+        lastBackupReminderAt: null,
+      };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      schemaVersion: 1,
+      firstRunCompleted: !!parsed.firstRunCompleted,
+      lastBackupAt: parsed.lastBackupAt || null,
+      editCountSinceBackup: Number(parsed.editCountSinceBackup || 0),
+      readOnlyPreview: !!parsed.readOnlyPreview,
+      lastSeenAppVersion: parsed.lastSeenAppVersion || null,
+      lastBackupReminderAt: parsed.lastBackupReminderAt || null,
+    };
+  } catch (err) {
+    return {
+      schemaVersion: 1,
+      firstRunCompleted: false,
+      lastBackupAt: null,
+      editCountSinceBackup: 0,
+      readOnlyPreview: false,
+      lastSeenAppVersion: null,
+      lastBackupReminderAt: null,
+    };
+  }
+}
+
+function saveWebMeta(meta) {
+  try {
+    localStorage.setItem(WEB_META_KEY, JSON.stringify(meta));
+  } catch (err) {
+    // ignore
+  }
+}
+
+function recordMutation() {
+  if (!AJL_WEB_MODE || !state.webMeta) return;
+  state.webMeta.editCountSinceBackup = (state.webMeta.editCountSinceBackup || 0) + 1;
+  saveWebMeta(state.webMeta);
+  maybeShowBackupReminder();
+}
+
+function maybeShowBackupReminder() {
+  if (!AJL_WEB_MODE || !state.webMeta) return;
+  if (state.webMeta.editCountSinceBackup < BACKUP_REMINDER_THRESHOLD) return;
+  const now = Date.now();
+  const last = state.webMeta.lastBackupReminderAt || 0;
+  if (now - last < 24 * 60 * 60 * 1000) return;
+  state.webMeta.lastBackupReminderAt = now;
+  saveWebMeta(state.webMeta);
+  showToast("Tip: Export a backup.", "Export", () => {
+    if (els.exportBackup) els.exportBackup.click();
+  });
+}
+
 function loadLastBackupAt() {
   try {
     const raw = localStorage.getItem(BACKUP_LAST_KEY);
@@ -442,7 +524,7 @@ function renderBackupStatus() {
   if (!els.backupLast) return;
   const ts = state.lastBackupAt;
   if (!ts) {
-    els.backupLast.textContent = "No backup saved yet.";
+    els.backupLast.textContent = "Last backup: Never.";
     return;
   }
   const date = new Date(ts);
@@ -786,6 +868,14 @@ async function handleResetFlag() {
   if (!flags.reset) return false;
   try {
     await fetch("/api/reset-local", { method: "POST" });
+    if (AJL_WEB_MODE) {
+      try {
+        localStorage.removeItem(WEB_META_KEY);
+        localStorage.removeItem(BACKUP_LAST_KEY);
+      } catch (err) {
+        // ignore
+      }
+    }
   } catch (err) {
     // ignore
   }
@@ -1126,6 +1216,7 @@ async function addPayment(instanceId, amount) {
   await loadPayments();
   await loadActivityEvents();
   renderDashboard();
+  recordMutation();
   scheduleSharePublish();
 }
 
@@ -1144,6 +1235,7 @@ async function markPaid(instanceId, options = {}) {
   await loadPayments();
   await loadActivityEvents();
   renderDashboard();
+  recordMutation();
   scheduleSharePublish();
   if (!options.silent) {
     showToast("Marked done.", "Undo", () => markPending(instanceId));
@@ -1164,6 +1256,7 @@ async function markPending(instanceId) {
   await loadPayments();
   await loadActivityEvents();
   renderDashboard();
+  recordMutation();
   scheduleSharePublish();
 }
 
@@ -1190,6 +1283,7 @@ async function undoPayment(paymentId) {
   await loadPayments();
   await loadActivityEvents();
   renderDashboard();
+  recordMutation();
   scheduleSharePublish();
 }
 
@@ -1209,6 +1303,7 @@ async function patchInstance(id, body) {
   updateInstanceInState(updated);
   await loadActivityEvents();
   renderDashboard();
+  recordMutation();
   scheduleSharePublish();
 }
 
@@ -1487,6 +1582,13 @@ function renderActionQueue(baseList) {
         event.stopPropagation();
         openInstanceDetail(item.id);
       });
+      const logBtn = document.createElement("button");
+      logBtn.className = "ghost-btn small";
+      logBtn.textContent = "Log update";
+      logBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openLogUpdateFor(item.id);
+      });
       const action = document.createElement("button");
       action.className = "btn-small btn-primary";
       action.textContent = "Mark done";
@@ -1495,6 +1597,7 @@ function renderActionQueue(baseList) {
         markPaid(item.id);
       });
       right.appendChild(kebab);
+      right.appendChild(logBtn);
       right.appendChild(action);
     }
 
@@ -1583,6 +1686,7 @@ async function handlePiggyEvent(fundId, type, amount) {
     amount,
   });
   await refreshAll();
+  recordMutation();
 }
 
 async function handleMarkFundPaid(fundId) {
@@ -1591,6 +1695,7 @@ async function handleMarkFundPaid(fundId) {
     fund_id: fundId,
   });
   await refreshAll();
+  recordMutation();
 }
 
 function renderPiggy() {
@@ -3315,6 +3420,13 @@ async function applyImport() {
     });
     state.pendingImport = null;
     renderImportPreview();
+    if (AJL_WEB_MODE && state.webMeta) {
+      state.webMeta.firstRunCompleted = true;
+      state.webMeta.editCountSinceBackup = 0;
+      saveWebMeta(state.webMeta);
+      state.lastBackupAt = state.webMeta.lastBackupAt || state.lastBackupAt;
+      renderBackupStatus();
+    }
     await refreshAll();
   } catch (err) {
     window.alert("Unable to import backup.");
@@ -3378,6 +3490,7 @@ async function addCategory() {
   els.categoryInput.value = "";
   renderCategories();
   renderCategoryFilter(state.instances || []);
+  recordMutation();
 }
 
 async function removeCategory(category) {
@@ -3386,6 +3499,7 @@ async function removeCategory(category) {
   await saveSettings({ categories: next });
   renderCategories();
   renderCategoryFilter(state.instances || []);
+  recordMutation();
 }
 
 function renderItems(baseList) {
@@ -3447,6 +3561,34 @@ function renderItems(baseList) {
   const today = getTodayDateString();
   const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
   const rowHeight = getRowHeight();
+
+  if (filters.preset && filters.preset !== "none") {
+    list = list.filter((item) => {
+      if (filters.preset === "skipped") return item.status_derived === "skipped";
+      if (item.status_derived === "skipped" || item.amount_remaining <= 0) return false;
+      if (filters.preset === "overdue") return currentMonth && item.due_date < today;
+      if (filters.preset === "due_soon") {
+        const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
+        const soonCutoff = new Date();
+        soonCutoff.setDate(soonCutoff.getDate() + Math.max(1, dueSoonDays));
+        const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
+        return currentMonth && item.due_date >= today && item.due_date <= soonCutoffString;
+      }
+      if (filters.preset === "this_week") {
+        const date = new Date(`${item.due_date}T00:00:00`);
+        if (Number.isNaN(date.valueOf())) return false;
+        const todayDate = new Date(`${today}T00:00:00`);
+        const day = todayDate.getDay();
+        const diffToMonday = (day + 6) % 7;
+        const monday = new Date(todayDate);
+        monday.setDate(todayDate.getDate() - diffToMonday);
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        return date >= monday && date <= sunday;
+      }
+      return true;
+    });
+  }
 
   const buildRow = (item) => {
     const row = document.createElement("div");
@@ -3599,6 +3741,67 @@ async function renderDetailHistory(instanceId) {
   });
 }
 
+function renderSetupCta() {
+  if (!els.setupCta) return;
+  const hasTemplates = Array.isArray(state.templates) && state.templates.length > 0;
+  const hasItems = Array.isArray(state.instances) && state.instances.length > 0;
+  const show = !hasTemplates || !hasItems;
+  els.setupCta.classList.toggle("hidden", !show);
+}
+
+async function updateStorageHealth() {
+  if (!els.storageHealth) return;
+  if (!AJL_WEB_MODE) {
+    els.storageHealth.textContent = "";
+    return;
+  }
+  try {
+    const res = await fetch("/api/export/backup.json");
+    const data = await readApiData(res);
+    const raw = JSON.stringify(data || {});
+    const size = raw.length * 2;
+    if (size >= STORAGE_HEALTH_WARNING_BYTES) {
+      els.storageHealth.textContent = "Storage health: At risk — export a backup soon.";
+    } else {
+      els.storageHealth.textContent = "Storage health: OK";
+    }
+  } catch (err) {
+    els.storageHealth.textContent = "Storage health: Unknown";
+  }
+}
+
+function maybeShowFirstRunWizard() {
+  if (!AJL_WEB_MODE || !state.webMeta || !els.wizardModal) return;
+  if (state.webMeta.firstRunCompleted) return;
+  const hasTemplates = Array.isArray(state.templates) && state.templates.length > 0;
+  const hasItems = Array.isArray(state.instances) && state.instances.length > 0;
+  if (hasTemplates || hasItems) {
+    state.webMeta.firstRunCompleted = true;
+    saveWebMeta(state.webMeta);
+    return;
+  }
+  els.wizardModal.classList.remove("hidden");
+}
+
+function closeWizard() {
+  if (!els.wizardModal) return;
+  els.wizardModal.classList.add("hidden");
+}
+
+function applyReadOnlyPreview(enabled) {
+  if (!AJL_WEB_MODE) return;
+  setReadOnlyMode(enabled);
+  if (enabled) {
+    if (els.sharedHeader) {
+      els.sharedHeader.classList.add("hidden");
+      els.sharedHeader.classList.remove("visible");
+    }
+    showSystemBanner("Read-only preview (sharing simulation).");
+  } else {
+    if (els.systemBanner) els.systemBanner.classList.add("hidden");
+  }
+}
+
 function isSplitView() {
   return window.matchMedia("(min-width: 1024px) and (orientation: landscape)").matches;
 }
@@ -3683,6 +3886,17 @@ function openInstanceDetail(instanceId) {
   } else {
     els.detailsDrawer.classList.remove("hidden");
   }
+}
+
+function openLogUpdateFor(instanceId) {
+  openInstanceDetail(instanceId);
+  if (state.readOnly) return;
+  setTimeout(() => {
+    if (els.detailLogAmount) {
+      els.detailLogAmount.focus();
+      els.detailLogAmount.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, 80);
 }
 
 function closeInstanceDetail() {
@@ -3791,7 +4005,7 @@ function renderMonthReview(baseList) {
   timeValue.textContent = paidCount > 0 ? `${onTimeRate}%` : "—";
   const timeSub = document.createElement("div");
   timeSub.className = "review-sub";
-  timeSub.textContent = paidCount > 0 ? `Avg ${avgDays} days vs due` : "No paid bills";
+  timeSub.textContent = paidCount > 0 ? `Avg ${avgDays} days vs due` : "No completed bills";
   timeMetric.appendChild(timeLabel);
   timeMetric.appendChild(timeValue);
   timeMetric.appendChild(timeSub);
@@ -4059,12 +4273,14 @@ function renderTemplates() {
       }
 
       await refreshAll();
+      recordMutation();
     });
 
     archiveBtn.addEventListener("click", async (event) => {
       event.preventDefault();
       await fetch(`/api/templates/${template.id}/archive`, { method: "POST" });
       await refreshAll();
+      recordMutation();
     });
 
     deleteBtn.addEventListener("click", async (event) => {
@@ -4076,6 +4292,7 @@ function renderTemplates() {
         { method: "DELETE" }
       );
       await refreshAll();
+      recordMutation();
     });
 
     row.appendChild(selectWrap);
@@ -4356,6 +4573,11 @@ function renderView() {
     renderCategories();
     renderBackupStatus();
     renderImportPreview();
+    renderSetupCta();
+    updateStorageHealth();
+    if (AJL_WEB_MODE && els.previewReadonly && state.webMeta) {
+      els.previewReadonly.checked = !!state.webMeta.readOnlyPreview;
+    }
   }
 }
 
@@ -4380,6 +4602,9 @@ async function refreshAll() {
     renderCategories();
     renderDashboard();
     renderTemplates();
+    renderSetupCta();
+    updateStorageHealth();
+    maybeShowFirstRunWizard();
     scheduleSharePublish();
   } catch (err) {
     if (!handleStorageFailure(err)) {
@@ -4615,7 +4840,14 @@ function bindEvents() {
     URL.revokeObjectURL(url);
     const now = Date.now();
     state.lastBackupAt = now;
-    saveLastBackupAt(now);
+    if (AJL_WEB_MODE && state.webMeta) {
+      state.webMeta.lastBackupAt = now;
+      state.webMeta.editCountSinceBackup = 0;
+      state.webMeta.lastBackupReminderAt = null;
+      saveWebMeta(state.webMeta);
+    } else {
+      saveLastBackupAt(now);
+    }
     renderBackupStatus();
   });
 
@@ -4630,6 +4862,58 @@ function bindEvents() {
       const file = event.target.files[0];
       await handleImportFile(file);
       event.target.value = "";
+    });
+  }
+
+  if (els.wizardImport && els.wizardFile) {
+    els.wizardImport.addEventListener("click", () => {
+      els.wizardFile.click();
+    });
+    els.wizardFile.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      await handleImportFile(file);
+      closeWizard();
+      state.view = "setup";
+      renderView();
+      els.backupSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+      event.target.value = "";
+    });
+  }
+
+  if (els.wizardTemplate) {
+    els.wizardTemplate.addEventListener("click", () => {
+      closeWizard();
+      state.view = "setup";
+      renderView();
+      els.templateForm?.scrollIntoView({ behavior: "smooth", block: "start" });
+      els.templateName?.focus();
+    });
+  }
+
+  if (els.wizardSkip) {
+    els.wizardSkip.addEventListener("click", () => {
+      if (AJL_WEB_MODE && state.webMeta) {
+        state.webMeta.firstRunCompleted = true;
+        saveWebMeta(state.webMeta);
+      }
+      closeWizard();
+      renderSetupCta();
+    });
+  }
+
+  if (els.ctaImport && els.importBackup) {
+    els.ctaImport.addEventListener("click", () => {
+      els.importBackup.click();
+    });
+  }
+
+  if (els.ctaTemplate) {
+    els.ctaTemplate.addEventListener("click", () => {
+      state.view = "setup";
+      renderView();
+      els.templateForm?.scrollIntoView({ behavior: "smooth", block: "start" });
+      els.templateName?.focus();
     });
   }
 
@@ -4699,19 +4983,32 @@ function bindEvents() {
       const confirmed = window.confirm("Reset all local data in this browser? This cannot be undone.");
       if (!confirmed) return;
       await fetch("/api/reset-local", { method: "POST" });
+      if (AJL_WEB_MODE) {
+        try {
+          localStorage.removeItem(WEB_META_KEY);
+          localStorage.removeItem(BACKUP_LAST_KEY);
+        } catch (err) {
+          // ignore
+        }
+      }
       window.location.reload();
     });
   }
 
   if (els.clearFilters) {
     els.clearFilters.addEventListener("click", () => {
-      state.filters = { search: "", status: "all", category: "all", sort: "due_date" };
+      state.filters = { search: "", status: "all", category: "all", sort: "due_date", preset: "none" };
       if (els.searchInput) els.searchInput.value = "";
       if (els.categoryFilter) els.categoryFilter.value = "all";
       if (els.sortFilter) els.sortFilter.value = "due_date";
       if (els.statusChips) {
         els.statusChips.forEach((chip) => {
           chip.classList.toggle("active", chip.dataset.status === "all");
+        });
+      }
+      if (els.presetChips) {
+        els.presetChips.forEach((chip) => {
+          chip.classList.toggle("active", false);
         });
       }
       renderDashboard();
@@ -4726,10 +5023,40 @@ function bindEvents() {
     });
   }
 
-  if (els.searchInput) {
-    els.searchInput.addEventListener("input", () => {
-      state.filters.search = els.searchInput.value.trim();
+  if (els.previewReadonly) {
+    els.previewReadonly.addEventListener("change", () => {
+      const enabled = !!els.previewReadonly.checked;
+      if (AJL_WEB_MODE && state.webMeta) {
+        state.webMeta.readOnlyPreview = enabled;
+        saveWebMeta(state.webMeta);
+      }
+      applyReadOnlyPreview(enabled);
       renderDashboard();
+    });
+  }
+
+  if (els.searchInput) {
+    let searchTimer = null;
+    els.searchInput.addEventListener("input", () => {
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        state.filters.search = els.searchInput.value.trim();
+        renderDashboard();
+      }, 250);
+    });
+  }
+
+  if (els.presetChips) {
+    els.presetChips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const preset = chip.dataset.preset || "none";
+        const next = state.filters.preset === preset ? "none" : preset;
+        state.filters.preset = next;
+        els.presetChips.forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.preset === next);
+        });
+        renderDashboard();
+      });
     });
   }
 
@@ -4929,6 +5256,12 @@ function bindEvents() {
       els.templateEssential.checked = true;
       els.templateActive.checked = true;
       await refreshAll();
+      recordMutation();
+      if (AJL_WEB_MODE && state.webMeta) {
+        state.webMeta.firstRunCompleted = true;
+        saveWebMeta(state.webMeta);
+        closeWizard();
+      }
     } else if (els.templateError) {
       let message = "Unable to add bill.";
       try {
@@ -4964,6 +5297,7 @@ function bindEvents() {
       { method: "POST" }
     );
     await refreshAll();
+    recordMutation();
     });
   }
 
@@ -5173,6 +5507,8 @@ async function init() {
   const flags = getQueryFlags();
   const crashGuard = checkCrashGuard();
   const shareToken = getShareTokenFromPath();
+  document.body.classList.toggle("web", AJL_WEB_MODE);
+  document.body.classList.toggle("local", !AJL_WEB_MODE);
   if (shareToken) {
     if (AJL_WEB_MODE) {
       showSystemBanner("Shared links are available in the local app only.");
@@ -5195,7 +5531,15 @@ async function init() {
   state.lastAutoMonthKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
   state.essentialsOnly = els.essentialsToggle.checked;
   state.profileName = loadProfileName();
-  state.lastBackupAt = loadLastBackupAt();
+  if (AJL_WEB_MODE) {
+    state.webMeta = loadWebMeta();
+    state.lastBackupAt = state.webMeta.lastBackupAt || null;
+    if (els.previewReadonly) {
+      els.previewReadonly.checked = !!state.webMeta.readOnlyPreview;
+    }
+  } else {
+    state.lastBackupAt = loadLastBackupAt();
+  }
   state.view = "today";
   if (AJL_WEB_MODE) {
     if (els.shareOpen) els.shareOpen.classList.add("hidden");
@@ -5210,6 +5554,9 @@ async function init() {
   }
   bindEvents();
   renderView();
+  if (AJL_WEB_MODE && state.webMeta?.readOnlyPreview) {
+    applyReadOnlyPreview(true);
+  }
   if (!AJL_WEB_MODE) {
     loadShareInfo().then((share) => {
       state.shareInfo = share ? normalizeShareInfo(share) : null;
@@ -5225,6 +5572,26 @@ async function init() {
     splitViewTimer = setTimeout(() => updateSplitView(), 150);
   });
   window.addEventListener("orientationchange", () => updateSplitView(true));
+  if (!scrollShadowBound) {
+    scrollShadowBound = true;
+    let ticking = false;
+    const updateShadow = () => {
+      document.body.classList.toggle("scrolled", window.scrollY > 4);
+    };
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (ticking) return;
+        ticking = true;
+        window.requestAnimationFrame(() => {
+          updateShadow();
+          ticking = false;
+        });
+      },
+      { passive: true }
+    );
+    updateShadow();
+  }
   if (!state.safeMode) {
     refreshAll();
     refreshTimer = setInterval(() => {

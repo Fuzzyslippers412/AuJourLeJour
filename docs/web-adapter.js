@@ -536,6 +536,12 @@
     }
 
     if (path === "/api/reset-local" && req.method === "POST") {
+      try {
+        localStorage.removeItem(DB_KEY);
+        localStorage.removeItem(META_KEY);
+      } catch (err) {
+        // ignore
+      }
       const fresh = defaultDb();
       const saved = safeSaveDb(fresh);
       if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
