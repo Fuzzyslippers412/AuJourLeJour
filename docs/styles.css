@@ -1698,3 +1698,19 @@ select:focus {
     justify-content: space-between;
   }
 }
+
+/* Web build: hide Mamdou (local-only agent). */
+.web-no-agent #assistant-card,
+.web-no-agent #assistant-panel,
+.web-no-agent #assistant-toggle,
+.web-no-agent #assistant-pill,
+.web-no-agent .assistant-card,
+.web-no-agent .assistant-panel,
+.web-no-agent .assistant-pill,
+.web-no-agent .assistant-box,
+.web-no-agent .assistant-connection,
+.web-no-agent .assistant-log,
+.web-no-agent .assistant-history,
+.web-no-agent .assistant-actions {
+  display: none !important;
+}
