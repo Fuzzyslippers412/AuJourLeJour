@@ -1,236 +1,326 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Au Jour Le Jour — Essentials Ledger</title>
-    <meta
-      name="description"
-      content="Local-first essentials ledger to keep monthly obligations tight, prevent lifestyle creep, and take it one day at a time."
-    />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Manrope:wght@300;400;500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Au Jour Le Jour</title>
     <link rel="stylesheet" href="styles.css" />
+    <link rel="manifest" href="manifest.json" />
+    <meta name="theme-color" content="#0f172a" />
   </head>
   <body>
-    <div class="page">
-      <header class="nav">
-        <div class="logo">
-          <div class="mark"></div>
-          <span>Au Jour Le Jour</span>
-        </div>
-        <nav class="nav-links">
-          <a href="#why">Why</a>
-          <a href="#features">Features</a>
-          <a href="#flow">Flow</a>
-          <a href="#install">Install</a>
-          <a href="#integrations">Integrations</a>
-        </nav>
-        <a class="btn ghost" href="#install">Get it</a>
-      </header>
-
-      <section class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Local-first essentials ledger</p>
-          <h1>Control the basics. Avoid lifestyle creep. Take it one day at a time.</h1>
-          <p class="lead">
-            Au Jour Le Jour is a fast, offline-first ledger for bare-minimum obligations.
-            It shows what must be paid, what is already handled, and the exact daily runway
-            needed to stay stable.
-          </p>
-          <div class="cta-row">
-            <a class="btn primary" href="https://github.com/Fuzzyslippers412/AuJourLeJour">Download on GitHub</a>
-            <a class="btn secondary" href="/app/">Launch web app</a>
-            <a class="btn secondary" href="#install">Install locally</a>
-          </div>
-          <p class="subtle">No accounts. No bank connections. One portable database.</p>
-        </div>
-        <div class="hero-panel">
-          <div class="panel-title">This month at a glance</div>
-          <div class="panel-metrics">
-            <div class="metric">
-              <span class="label">Required</span>
-              <span class="value">$4,736</span>
-            </div>
-            <div class="metric">
-              <span class="label">Paid</span>
-              <span class="value">$2,500</span>
-            </div>
-            <div class="metric">
-              <span class="label">Remaining</span>
-              <span class="value">$2,236</span>
-            </div>
-          </div>
-          <div class="panel-strip">
-            <div>
-              <span class="label">Need / Day</span>
-              <span class="value">$169</span>
-            </div>
-            <div>
-              <span class="label">Need / Week</span>
-              <span class="value">$1,184</span>
-            </div>
-            <div>
-              <span class="label">Status</span>
-              <span class="status">Still need to cover $2,236</span>
-            </div>
-          </div>
-          <div class="panel-note">
-            Monthly bills are generated from your templates and never overwritten.
-          </div>
-        </div>
-      </section>
-
-      <section id="why" class="split">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">AJL</div>
         <div>
-          <h2>Why it exists</h2>
-          <p>
-            Most budgeting apps are noisy. Au Jour Le Jour is the opposite: a clean ledger
-            that keeps essentials tight and makes the monthly survival number obvious.
-            It is designed for discipline, not lifestyle creep.
-          </p>
-          <ul class="bullet">
-            <li>Single-source-of-truth ledger you own</li>
-            <li>Instant clarity on what is required vs. optional</li>
-            <li>Motivating but simple: no charts, just the numbers that matter</li>
-          </ul>
+          <div class="brand-title">Au Jour Le Jour</div>
+          <div class="brand-sub">Essentials ledger</div>
         </div>
-        <div class="card">
-          <h3>Local-first by default</h3>
-          <p>
-            The app runs entirely on your machine. Data lives in one SQLite file and
-            survives reloads, reboots, and travel. Export any month as CSV or backup
-            the full ledger as JSON.
-          </p>
-          <div class="pill-row">
-            <span class="pill">SQLite</span>
-            <span class="pill">Offline</span>
-            <span class="pill">Portable</span>
+      </div>
+
+      <div class="month-nav">
+        <button id="prev-month" class="icon-btn" aria-label="Previous month">&#x2039;</button>
+        <input id="month-picker" class="month-input" type="month" />
+        <button id="next-month" class="icon-btn" aria-label="Next month">&#x203A;</button>
+      </div>
+
+      <div class="top-actions">
+        <label class="toggle">
+          <input id="essentials-toggle" type="checkbox" checked />
+          <span>Essentials only</span>
+        </label>
+        <button id="nav-dashboard" class="tab-btn active">This Month</button>
+        <button id="nav-templates" class="tab-btn">Templates</button>
+        <button id="open-backup" class="primary-btn">Backup/Export</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <section id="dashboard-view" class="view">
+        <div id="zero-state" class="zero-state hidden">
+          <div class="zero-card">
+            <div class="zero-title">No bills yet.</div>
+            <div class="zero-sub">Add essentials to generate your monthly list.</div>
+            <button id="zero-templates-btn" class="primary-btn">Go to Templates</button>
+            <button id="zero-intake-btn" class="ghost-btn">Add bills by describing them</button>
           </div>
+        </div>
+
+        <div class="card hero">
+          <div class="hero-left">
+            <div class="hero-primary">
+              <div class="hero-metric">
+                <div class="hero-label">Required</div>
+                <div id="required-amount" class="hero-value">$0.00</div>
+              </div>
+              <div class="hero-metric">
+                <div class="hero-label">Paid</div>
+                <div id="paid-amount" class="hero-value">$0.00</div>
+              </div>
+              <div class="hero-metric">
+                <div class="hero-label">Remaining</div>
+                <div id="remaining-amount" class="hero-value">$0.00</div>
+              </div>
+            </div>
+            <div class="hero-subline">
+              <span>Future reserved: <span id="future-reserved">$0.00</span></span>
+              <button id="piggy-cta" class="link-btn">Add piggy bank</button>
+            </div>
+          </div>
+          <div class="hero-right">
+            <div class="hero-side">
+              <div class="hero-mini">
+                <div class="hero-label">Need / Day</div>
+                <div id="need-day" class="hero-mini-value">$0.00</div>
+                <div id="need-day-plan" class="hero-caption">Planning avg: $0.00/day</div>
+              </div>
+              <div class="hero-mini">
+                <div class="hero-label">Need / Week</div>
+                <div id="need-week" class="hero-mini-value">$0.00</div>
+                <div id="need-week-plan" class="hero-caption">Planning avg: $0.00/week</div>
+              </div>
+            </div>
+            <div class="cash-block">
+              <label for="cash-start">Cash on hand</label>
+              <div class="cash-row">
+                <div class="cash-input">
+                  <span class="cash-prefix">$</span>
+                  <input id="cash-start" type="number" min="0" step="0.01" placeholder="0.00" />
+                </div>
+                <button id="cash-save" class="btn-small btn-primary" disabled>Save</button>
+              </div>
+              <div class="cash-caption">Updates as you log payments.</div>
+              <div id="cash-empty" class="cash-empty">Set cash to track runway.</div>
+              <div class="cash-remaining"><span id="cash-remaining">$0.00</span></div>
+              <div id="cash-save-status" class="meta"></div>
+            </div>
+            <div id="hero-status" class="status-box">
+              <div id="status-main" class="status-main">Remaining this month: $0</div>
+              <div id="status-sub" class="status-sub">You're not free yet.</div>
+            </div>
+          </div>
+        </div>
+
+        <div id="urgency-row" class="row">
+          <div class="col col-8">
+            <div id="overdue-card" class="card compact-card">
+              <div class="card-title">Overdue</div>
+              <div id="overdue-list" class="list"></div>
+            </div>
+            <div id="due-soon-card" class="card compact-card">
+              <div class="card-title">Due soon</div>
+              <div id="due-soon-list" class="list"></div>
+            </div>
+          </div>
+          <div class="col col-4">
+            <div class="card compact-card">
+              <div class="card-title">Recent activity</div>
+              <div id="activity-list" class="list"></div>
+            </div>
+            <div id="assistant-card" class="card compact-card assistant-card">
+              <div class="card-title">Mamdou</div>
+              <div id="nudges-list" class="list"></div>
+              <button id="assistant-toggle" class="assistant-pill">Hide Mamdou</button>
+              <div id="assistant-panel" class="assistant-panel">
+                <div class="assistant-box">
+                  <div class="assistant-title">Mamdou</div>
+                  <div class="assistant-sub">Ask, add bills, or run commands in one box.</div>
+                  <div class="assistant-personal">
+                    <div id="assistant-greeting" class="assistant-greeting">Hi there.</div>
+                    <label class="assistant-name-label" for="assistant-name-input">Call me</label>
+                    <div class="assistant-name-row">
+                      <input id="assistant-name-input" class="assistant-name-input" type="text" placeholder="Name (optional)" />
+                      <button id="assistant-name-save" class="btn-link">Save</button>
+                    </div>
+                    <div class="assistant-name-hint">Stored locally on this device.</div>
+                  </div>
+                  <div class="assistant-capabilities">
+                    <div class="cap-title">What Mamdou Can Do</div>
+                    <div class="cap-sub">All actions require confirmation.</div>
+                    <div class="cap-tags">
+                      <span class="cap-chip">Pay / undo payments</span>
+                      <span class="cap-chip">Update bills</span>
+                      <span class="cap-chip">Create / update templates</span>
+                      <span class="cap-chip">Apply templates</span>
+                      <span class="cap-chip">Piggy banks</span>
+                      <span class="cap-chip">Cash on hand</span>
+                      <span class="cap-chip">Exports</span>
+                      <span class="cap-chip">Switch month</span>
+                      <span class="cap-chip">Toggle essentials</span>
+                    </div>
+                  </div>
+                  <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Rent $1200 on the 1st, Electric $140 on the 10th” or “mark rent paid”"></textarea>
+                  <div class="assistant-actions">
+                    <button id="llm-agent-send" class="btn-small btn-primary">Send</button>
+                  </div>
+                  <div id="llm-agent-output" class="assistant-status meta"></div>
+                  <div id="llm-agent-actions" class="assistant-actions-row hidden">
+                    <button id="llm-agent-confirm" class="btn-pill primary">Confirm</button>
+                    <button id="llm-agent-cancel" class="btn-pill">Cancel</button>
+                  </div>
+                  <div id="llm-agent-history" class="assistant-thread"></div>
+                  <div class="assistant-log">
+                    <div class="assistant-log-heading">Command log</div>
+                    <div id="llm-command-log" class="assistant-log-list"></div>
+                  </div>
+                  <button id="llm-chat-clear" class="assistant-clear">Clear chat</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="piggy-card" class="card">
+          <div class="card-title-row">
+            <div class="card-title">Piggy Banks</div>
+            <button id="open-piggy-manage" class="ghost-btn">Manage</button>
+          </div>
+          <div id="piggy-list" class="piggy-list"></div>
+        </div>
+
+        <div id="items-card" class="card all-items">
+          <div class="card-title">All items</div>
+          <div class="filters">
+            <input id="search-input" class="search-input" type="search" placeholder="Search bills..." />
+            <div class="filter-group">
+              <span>Status</span>
+              <label class="chip"><input type="checkbox" data-status="pending" checked />Pending</label>
+              <label class="chip"><input type="checkbox" data-status="partial" checked />Partial</label>
+              <label class="chip"><input type="checkbox" data-status="paid" checked />Paid</label>
+              <label class="chip"><input type="checkbox" data-status="skipped" checked />Skipped</label>
+            </div>
+            <div class="filter-group">
+              <span>Category</span>
+              <select id="category-filter" class="select">
+                <option value="all">All</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <span>Sort</span>
+              <select id="sort-filter" class="select">
+                <option value="due_date">Due date</option>
+                <option value="amount">Amount</option>
+                <option value="name">Name</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="items-list" class="items-list"></div>
+        </div>
+
+        <div id="review-card" class="card">
+          <div class="card-title">Month review</div>
+          <div id="review-summary" class="review-grid"></div>
+          <div id="review-list" class="list"></div>
         </div>
       </section>
 
-      <section id="features" class="feature-grid">
-        <div class="card">
-          <h3>Essentials runway</h3>
-          <p>Exact daily and weekly need based on the selected month.</p>
-        </div>
-        <div class="card">
-          <h3>Partial payments</h3>
-          <p>Log incremental payments and watch remaining balances update instantly.</p>
-        </div>
-        <div class="card">
-          <h3>Free for the month</h3>
-          <p>Clear signal once essentials are covered. Everything else becomes optional.</p>
-        </div>
-        <div class="card">
-          <h3>Overdue + due soon</h3>
-          <p>Above-the-fold urgency lists so nothing slips by.</p>
-        </div>
-        <div class="card">
-          <h3>Piggy banks</h3>
-          <p>Sinking funds for yearly or quarterly obligations with automatic set-asides.</p>
-        </div>
-        <div class="card">
-          <h3>Actionable history</h3>
-          <p>See which bills get paid first, last, and how your pace changes over time.</p>
-        </div>
-      </section>
+      <section id="templates-view" class="view hidden">
+        <div class="page-title">Recurring bills</div>
+        <div class="page-sub">These generate your monthly checklist.</div>
+        <button id="open-intake" class="ghost-btn">Add bills (Mamdou)</button>
 
-      <section id="flow" class="flow">
-        <div class="flow-header">
-          <h2>How it works</h2>
-          <p>Short loop, repeated monthly. Nothing hidden. Nothing overwritten.</p>
-        </div>
-        <div class="flow-steps">
-          <div class="step">
-            <span class="step-num">1</span>
-            <h4>Create recurring templates</h4>
-            <p>Define essentials once. Every month generates clean instances.</p>
-          </div>
-          <div class="step">
-            <span class="step-num">2</span>
-            <h4>Log payments</h4>
-            <p>Partial or full payments update totals instantly and build history.</p>
-          </div>
-          <div class="step">
-            <span class="step-num">3</span>
-            <h4>Track pace</h4>
-            <p>Stay ahead of due dates with daily and weekly runway numbers.</p>
-          </div>
-          <div class="step">
-            <span class="step-num">4</span>
-            <h4>Export anytime</h4>
-            <p>CSV for a month, JSON for the full ledger, no vendor lock-in.</p>
-          </div>
-        </div>
-      </section>
+        <form id="template-form" class="template-form">
+          <input id="template-name" type="text" placeholder="Name" required />
+          <input id="template-category" type="text" placeholder="Category" />
+          <input id="template-amount" type="number" min="0" step="0.01" placeholder="Amount" required />
+          <input id="template-due-day" type="number" min="1" max="31" placeholder="Due day" required />
+          <label class="toggle small">
+            <input id="template-essential" type="checkbox" checked />
+            <span>Essential</span>
+          </label>
+          <label class="toggle small">
+            <input id="template-autopay" type="checkbox" />
+            <span>Autopay</span>
+          </label>
+          <label class="toggle small">
+            <input id="template-active" type="checkbox" checked />
+            <span>Active</span>
+          </label>
+          <input id="template-note" type="text" placeholder="Default note" />
+          <input id="template-match-key" type="text" placeholder="Match key" />
+          <input id="template-match-tolerance" type="number" min="0" step="0.01" placeholder="Match tolerance" />
+          <button class="primary-btn" type="submit">Add bill</button>
+        </form>
+        <div id="template-error" class="form-error hidden"></div>
 
-      <section id="install" class="install">
-        <div class="install-copy">
-          <h2>Install locally</h2>
-          <p>
-            Runs on macOS, Windows, and Linux. No cloud. No accounts.
-            Once installed, open the app on your local network.
-          </p>
-          <div class="card code">
-            <pre><code>git clone https://github.com/Fuzzyslippers412/AuJourLeJour.git
-cd AuJourLeJour
-./start.sh
-# open http://localhost:6709</code></pre>
+        <div class="template-actions">
+          <label class="toggle small">
+            <input id="select-all-templates" type="checkbox" />
+            <span>Select all</span>
+          </label>
+          <button id="archive-selected" class="ghost-btn" disabled>Archive selected</button>
+          <button id="delete-selected" class="ghost-btn" disabled>Delete selected</button>
+          <button id="apply-templates" class="ghost-btn">Apply template updates to this month</button>
+        </div>
+
+        <div id="templates-list" class="templates-list"></div>
+
+        <div id="funds-section" class="section-title">Piggy banks</div>
+        <div class="page-sub">Sinking funds for yearly or quarterly obligations.</div>
+
+        <form id="fund-form" class="template-form">
+          <input id="fund-name" type="text" placeholder="Name" required />
+          <input id="fund-category" type="text" placeholder="Category" />
+          <input id="fund-target" type="number" min="0" step="0.01" placeholder="Target amount" required />
+          <input id="fund-due-date" type="date" required />
+          <select id="fund-cadence" class="select">
+            <option value="yearly">Yearly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="custom_months">Custom months</option>
+          </select>
+          <input id="fund-months" type="number" min="1" step="1" placeholder="Months per cycle" />
+          <label class="toggle small">
+            <input id="fund-essential" type="checkbox" checked />
+            <span>Essential</span>
+          </label>
+          <label class="toggle small">
+            <input id="fund-auto" type="checkbox" checked />
+            <span>Auto contribute</span>
+          </label>
+          <label class="toggle small">
+            <input id="fund-active" type="checkbox" checked />
+            <span>Active</span>
+          </label>
+          <button class="primary-btn" type="submit">Add fund</button>
+        </form>
+        <div id="fund-error" class="form-error hidden"></div>
+        <div id="funds-list" class="templates-list"></div>
+      </section>
+    </main>
+
+    <div id="backup-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">Backup & Export</div>
+            <div class="modal-sub">Keeps your data portable across computers.</div>
           </div>
-          <p class="subtle">
-            One command starts everything. The SQLite ledger lives in <strong>data/</strong>.
-          </p>
-          <p class="subtle">
-            Web PWA runs in the browser. Mamdou on web requires the optional Agent Bridge.
-          </p>
+          <button id="close-backup" class="icon-btn" aria-label="Close">&times;</button>
         </div>
-        <div class="install-card">
-          <h3>What you get</h3>
-          <ul class="bullet">
-            <li>Monthly essentials dashboard</li>
-            <li>Recurring bill templates</li>
-            <li>Payment log with undo</li>
-            <li>Backup/export built-in</li>
-          </ul>
+        <div class="modal-actions">
+          <button id="export-month" class="primary-btn">Export month CSV</button>
+          <button id="export-backup" class="ghost-btn">Export full backup (JSON)</button>
+          <label class="ghost-btn file-input">
+            Import backup (JSON)
+            <input id="import-backup" type="file" accept="application/json" />
+          </label>
         </div>
-      </section>
-
-      <section id="integrations" class="card integration">
-        <h2>Integration-ready</h2>
-        <p>
-          Au Jour Le Jour is designed to plug into the MyCasaPro Finance Agent (Mamdou)
-          via a stable local contract. The ledger remains authoritative; external agents
-          can only read summaries and propose explicit actions.
-        </p>
-        <div class="pill-row">
-          <span class="pill">/api/v1/summary</span>
-          <span class="pill">/api/v1/month</span>
-          <span class="pill">/api/v1/templates</span>
-          <span class="pill">/api/v1/actions</span>
-        </div>
-      </section>
-
-      <section class="cta">
-        <div>
-          <h2>Ready to run tight?</h2>
-          <p>Download the app and keep essentials disciplined, day by day.</p>
-        </div>
-        <div class="cta-row">
-          <a class="btn primary" href="https://github.com/Fuzzyslippers412/AuJourLeJour">Download on GitHub</a>
-          <a class="btn secondary" href="/app/">Launch web app</a>
-        </div>
-      </section>
-
-      <footer class="footer">
-        <div>Au Jour Le Jour — local essentials ledger.</div>
-        <div>Built for clarity, discipline, and calm.</div>
-      </footer>
+      </div>
     </div>
+
+    <!-- Intake modal removed: use the unified assistant box instead. -->
+
+    <script>
+      window.AJL_LLM_BASE_URL = "https://agent.aujourlejour.xyz";
+    </script>
+    <script src="vendor/dexie.min.js"></script>
+    <script src="pwa-adapter.js"></script>
+    <script src="app.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("sw.js").catch(() => {});
+      }
+    </script>
   </body>
 </html>

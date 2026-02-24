@@ -24,11 +24,27 @@ Requirements:
 
 ## Web PWA (Browser-Only)
 
-The public web version lives in `docs/app/` and runs entirely in the browser using IndexedDB.
+The public web version lives in `docs/` and runs entirely in the browser using IndexedDB.
 
-- Launch (GitHub Pages): `https://aujourlejour.xyz/app/`
+- Launch (GitHub Pages): `https://aujourlejour.xyz/`
 - Data stays on the user’s device (no accounts, no server).
 - The local server version remains unchanged and is still the recommended full experience.
+
+### Mamdou on Web (Agent Bridge)
+
+To enable Mamdou on the web PWA, deploy the **Agent Bridge** (Fly.io). This is a thin OAuth + LLM proxy that never touches the ledger.
+
+Steps (Fly.io):
+1. `cd bridge`
+2. `fly launch --name ajl-agent --no-deploy`
+3. `fly volumes create ajl_agent_data --size 1 --region ord`
+4. `fly deploy`
+5. Add DNS:
+   - `agent.aujourlejour.xyz` → CNAME `ajl-agent.fly.dev`
+6. In `docs/index.html`, set:
+   - `window.AJL_LLM_BASE_URL = "https://agent.aujourlejour.xyz"`
+
+The PWA will then connect Mamdou via Qwen OAuth without storing ledger data on the server.
 
 ## Data
 
