@@ -1244,7 +1244,15 @@
     if (!url) return originalFetch(input, init);
     if (!window.__AJL_PWA_PURGE__) {
       window.__AJL_PWA_PURGE__ = true;
-      purgeInvalidRows().catch(() => {});
+      try {
+        await purgeInvalidRows();
+      } catch (err) {
+        if (isStorageError(err)) {
+          await hardResetDatabase();
+          setTimeout(() => window.location.reload(), 50);
+          return jsonResponse({ error: "Local storage error" }, 500);
+        }
+      }
     }
     const urlObj = new URL(url, window.location.origin);
     const pathname = urlObj.pathname;

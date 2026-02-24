@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reset Au Jour Le Jour</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 32px;
+        background: #f6f7f9;
+        color: #0f172a;
+      }
+      .card {
+        max-width: 520px;
+        margin: 0 auto;
+        background: #fff;
+        border: 1px solid #e6e8ee;
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+      p {
+        margin: 0 0 12px;
+        color: #475569;
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      .status {
+        font-size: 13px;
+        color: #0f172a;
+        margin-top: 12px;
+      }
+      .warn {
+        color: #b91c1c;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Resetting local storage…</h1>
+      <p>This page clears the Au Jour Le Jour browser storage, unregisters service workers, and reloads the app.</p>
+      <p class="status" id="status">Working…</p>
+    </div>
+    <script>
+      (async () => {
+        const status = document.getElementById("status");
+        const update = (msg, warn) => {
+          status.textContent = msg;
+          status.className = warn ? "status warn" : "status";
+        };
+        try {
+          if ("serviceWorker" in navigator) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map((reg) => reg.unregister()));
+          }
+          if ("caches" in window) {
+            const keys = await caches.keys();
+            await Promise.all(keys.map((key) => caches.delete(key)));
+          }
+          await new Promise((resolve) => {
+            const req = indexedDB.deleteDatabase("ajl_pwa");
+            req.onsuccess = () => resolve();
+            req.onerror = () => resolve();
+            req.onblocked = () => resolve();
+          });
+          update("Reset complete. Reloading…");
+          setTimeout(() => {
+            window.location.href = "/?reset=1";
+          }, 300);
+        } catch (err) {
+          update("Reset failed. Close all tabs and try again.", true);
+        }
+      })();
+    </script>
+  </body>
+</html>

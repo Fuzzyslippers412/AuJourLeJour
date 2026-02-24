@@ -1,7 +1,8 @@
-const CACHE = "ajl-pwa-v10";
+const CACHE = "ajl-pwa-v11";
 const CORE_ASSETS = [
   "./",
   "./index.html",
+  "./reset.html",
   "./styles.css",
   "./app.js",
   "./pwa-adapter.js",
