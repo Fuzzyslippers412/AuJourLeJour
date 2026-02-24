@@ -180,6 +180,19 @@ function createSchemaV2() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS shares (
+      token TEXT PRIMARY KEY,
+      mode TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      payload TEXT,
+      payload_version TEXT,
+      owner_label TEXT,
+      expires_at TEXT,
+      last_published_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sinking_fund ON sinking_events (fund_id);
     CREATE INDEX IF NOT EXISTS idx_sinking_event_date ON sinking_events (event_date);
 
@@ -332,6 +345,23 @@ function ensureSinkingTables() {
   `);
 }
 
+function ensureSharesTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shares (
+      token TEXT PRIMARY KEY,
+      mode TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      payload TEXT,
+      payload_version TEXT,
+      owner_label TEXT,
+      expires_at TEXT,
+      last_published_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
 function getTableInfo(name) {
   return db.prepare(`PRAGMA table_info(${name})`).all();
 }
@@ -366,6 +396,68 @@ function setMetaJson(key, value) {
   setMeta(key, JSON.stringify(value));
 }
 
+function parseCookies(req) {
+  const raw = req.headers.cookie || "";
+  return raw.split(";").reduce((acc, part) => {
+    const [key, ...rest] = part.trim().split("=");
+    if (!key) return acc;
+    acc[key] = decodeURIComponent(rest.join("="));
+    return acc;
+  }, {});
+}
+
+function getOwnerSecret() {
+  const existing = getMeta("share_owner_secret");
+  if (existing) return existing;
+  const secret = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
+  setMeta("share_owner_secret", secret);
+  return secret;
+}
+
+function ensureOwnerCookie(req, res) {
+  const cookies = parseCookies(req);
+  if (cookies.ajl_owner) return;
+  const secret = getOwnerSecret();
+  const secureFlag = req.secure || req.headers["x-forwarded-proto"] === "https";
+  const secure = secureFlag ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `ajl_owner=${encodeURIComponent(secret)}; Path=/; SameSite=Strict; HttpOnly${secure}`
+  );
+}
+
+function requireOwner(req, res) {
+  const cookies = parseCookies(req);
+  const secret = getOwnerSecret();
+  if (!cookies.ajl_owner || cookies.ajl_owner !== secret) {
+    res.status(401).json({ error: "Unauthorized" });
+    return false;
+  }
+  return true;
+}
+
+function generateShareToken() {
+  return require("crypto").randomBytes(24).toString("base64url");
+}
+
+const shareLookup = new Map();
+function rateLimitShareLookup(req, res) {
+  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+  const now = Date.now();
+  const entry = shareLookup.get(ip) || { count: 0, ts: now };
+  if (now - entry.ts > 60000) {
+    entry.count = 0;
+    entry.ts = now;
+  }
+  entry.count += 1;
+  shareLookup.set(ip, entry);
+  if (entry.count > 60) {
+    res.status(429).json({ error: "Too many requests" });
+    return false;
+  }
+  return true;
+}
+
 function initSchema() {
   const hasTemplates = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='templates'")
@@ -382,6 +474,7 @@ function initSchema() {
     ensureMonthSettingsTable();
     ensureMetaTable();
     ensureSinkingTables();
+    ensureSharesTable();
     return;
   }
 
@@ -419,6 +512,7 @@ function initSchema() {
   ensureMonthSettingsTable();
   ensureMetaTable();
   ensureSinkingTables();
+  ensureSharesTable();
 }
 
 function migrateLegacySchema() {
@@ -547,6 +641,12 @@ migrateLegacyPayments();
 ensureDailyBackup();
 
 app.use(express.json({ limit: "2mb" }));
+app.use((req, res, next) => {
+  if (req.path.startsWith("/s/")) return next();
+  if (req.path.startsWith("/api/shares/") && req.method === "GET") return next();
+  ensureOwnerCookie(req, res);
+  next();
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use("/api/v1", (req, res, next) => {
@@ -1224,6 +1324,7 @@ function initSchema() {
     ensureMonthSettingsTable();
     ensureMetaTable();
     ensureSinkingTables();
+    ensureSharesTable();
     return;
   }
 
@@ -1261,6 +1362,7 @@ function initSchema() {
   ensureMonthSettingsTable();
   ensureMetaTable();
   ensureSinkingTables();
+  ensureSharesTable();
 }
 
 function migrateLegacySchema() {
@@ -2137,6 +2239,140 @@ app.post("/api/reset-local", (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/s/:token", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.get("/api/shares", (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const row = db
+    .prepare("SELECT * FROM shares WHERE is_active = 1 ORDER BY datetime(updated_at) DESC LIMIT 1")
+    .get();
+  if (!row) return res.json({ share: null });
+  res.json({
+    share: {
+      token: row.token,
+      mode: row.mode,
+      is_active: !!row.is_active,
+      owner_label: row.owner_label || null,
+      last_published_at: row.last_published_at || null,
+    },
+  });
+});
+
+app.post("/api/shares", (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const mode = req.body?.mode === "snapshot" ? "snapshot" : "live";
+  const ownerLabel = req.body?.owner_label || null;
+  const token = generateShareToken();
+  const now = nowIso();
+  db.prepare(
+    `INSERT INTO shares (token, mode, is_active, payload, payload_version, owner_label, created_at, updated_at)
+     VALUES (?, ?, 1, NULL, NULL, ?, ?, ?)`
+  ).run(token, mode, ownerLabel, now, now);
+  const base = PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+  res.json({ shareUrl: `${base}/s/${token}`, shareToken: token, mode });
+});
+
+app.patch("/api/shares/:token", (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const token = String(req.params.token || "");
+  if (!token) return res.status(400).json({ error: "Invalid token" });
+  const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
+  if (!row) return res.status(404).json({ error: "Share not found" });
+  const updates = [];
+  const values = [];
+  if (req.body?.isActive !== undefined) {
+    updates.push("is_active = ?");
+    values.push(req.body.isActive ? 1 : 0);
+  }
+  if (req.body?.mode === "live" || req.body?.mode === "snapshot") {
+    updates.push("mode = ?");
+    values.push(req.body.mode);
+  }
+  if (req.body?.owner_label !== undefined) {
+    updates.push("owner_label = ?");
+    values.push(req.body.owner_label || null);
+  }
+  if (updates.length === 0) {
+    return res.json({ ok: true });
+  }
+  updates.push("updated_at = ?");
+  values.push(nowIso());
+  values.push(token);
+  db.prepare(`UPDATE shares SET ${updates.join(", ")} WHERE token = ?`).run(...values);
+  res.json({ ok: true });
+});
+
+app.post("/api/shares/:token/regenerate", (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const token = String(req.params.token || "");
+  if (!token) return res.status(400).json({ error: "Invalid token" });
+  const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
+  if (!row) return res.status(404).json({ error: "Share not found" });
+  const newToken = generateShareToken();
+  const now = nowIso();
+  db.prepare("UPDATE shares SET is_active = 0, updated_at = ? WHERE token = ?").run(now, token);
+  db.prepare(
+    `INSERT INTO shares (token, mode, is_active, payload, payload_version, owner_label, expires_at, last_published_at, created_at, updated_at)
+     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    newToken,
+    row.mode,
+    row.payload,
+    row.payload_version,
+    row.owner_label,
+    row.expires_at,
+    row.last_published_at,
+    now,
+    now
+  );
+  const base = PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+  res.json({ shareUrl: `${base}/s/${newToken}`, shareToken: newToken });
+});
+
+app.post("/api/shares/:token/publish", (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const token = String(req.params.token || "");
+  if (!token) return res.status(400).json({ error: "Invalid token" });
+  const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
+  if (!row) return res.status(404).json({ error: "Share not found" });
+  const payload = req.body?.payload;
+  if (!payload || !Array.isArray(payload.items)) {
+    return res.status(400).json({ error: "Invalid payload" });
+  }
+  const payloadString = safeJsonStringify(payload);
+  if (!payloadString) {
+    return res.status(400).json({ error: "Invalid payload" });
+  }
+  const version = req.body?.schema_version || payload.schema_version || null;
+  const ownerLabel = req.body?.owner_label || row.owner_label || null;
+  db.prepare(
+    "UPDATE shares SET payload = ?, payload_version = ?, owner_label = ?, last_published_at = ?, updated_at = ? WHERE token = ?"
+  ).run(payloadString, version, ownerLabel, nowIso(), nowIso(), token);
+  res.json({ ok: true });
+});
+
+app.get("/api/shares/:token", (req, res) => {
+  if (!rateLimitShareLookup(req, res)) return;
+  const token = String(req.params.token || "");
+  if (!token) return res.status(400).json({ error: "Invalid token" });
+  const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
+  if (!row) return res.status(404).json({ error: "This link is invalid or has been disabled." });
+  if (!row.is_active) return res.status(410).json({ error: "This link has been disabled by the owner." });
+  if (row.expires_at && row.expires_at < nowIso()) {
+    return res.status(410).json({ error: "This link has expired." });
+  }
+  const payload = safeJsonParse(row.payload);
+  if (!payload) return res.status(404).json({ error: "No shared data available yet." });
+  res.json({
+    payload,
+    mode: row.mode,
+    ownerLabel: row.owner_label || null,
+    lastPublishedAt: row.last_published_at || null,
+  });
+});
+
 app.get("/api/month-settings", (req, res) => {
   const parsed = parseYearMonth(req);
   if (!parsed) return res.status(400).json({ error: "Invalid year/month" });
@@ -2461,9 +2697,14 @@ app.get("/api/export/backup.json", (req, res) => {
   const templates = db.prepare("SELECT * FROM templates").all();
   const instances = db.prepare("SELECT * FROM instances").all();
   const payments = db.prepare("SELECT * FROM payment_events").all();
+  const instanceEvents = db.prepare("SELECT * FROM instance_events").all();
   const monthSettings = db.prepare("SELECT * FROM month_settings").all();
   const sinkingFunds = db.prepare("SELECT * FROM sinking_funds").all();
   const sinkingEvents = db.prepare("SELECT * FROM sinking_events").all();
+  const settings = getMetaJson("settings") || {
+    defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
+    categories: [],
+  };
   res.json({
     app: "au-jour-le-jour",
     app_version: APP_VERSION,
@@ -2472,9 +2713,11 @@ app.get("/api/export/backup.json", (req, res) => {
     templates: templates.map(normalizeTemplate),
     instances: instances.map(normalizeInstance),
     payment_events: payments,
+    instance_events: instanceEvents,
     month_settings: monthSettings,
     sinking_funds: sinkingFunds.map(normalizeSinkingFund),
     sinking_events: sinkingEvents,
+    settings,
   });
 });
 
@@ -2489,6 +2732,9 @@ app.post("/api/import/backup", (req, res) => {
   const incomingPayments = Array.isArray(payload.payment_events)
     ? payload.payment_events
     : [];
+  const incomingInstanceEvents = Array.isArray(payload.instance_events)
+    ? payload.instance_events
+    : [];
   const incomingMonthSettings = Array.isArray(payload.month_settings)
     ? payload.month_settings
     : [];
@@ -2498,6 +2744,10 @@ app.post("/api/import/backup", (req, res) => {
   const incomingSinkingEvents = Array.isArray(payload.sinking_events)
     ? payload.sinking_events
     : [];
+  const incomingSettings =
+    payload.settings && typeof payload.settings === "object"
+      ? payload.settings
+      : null;
 
   const existingTemplates = db.prepare("SELECT * FROM templates").all();
   const existingById = new Map(existingTemplates.map((t) => [t.id, t]));
@@ -2540,6 +2790,12 @@ app.post("/api/import/backup", (req, res) => {
   const insertPayment = db.prepare(
     `INSERT OR IGNORE INTO payment_events (
       id, instance_id, amount, paid_date, created_at
+    ) VALUES (?, ?, ?, ?, ?)`
+  );
+
+  const insertInstanceEvent = db.prepare(
+    `INSERT OR IGNORE INTO instance_events (
+      id, instance_id, type, detail, created_at
     ) VALUES (?, ?, ?, ?, ?)`
   );
 
@@ -2643,6 +2899,24 @@ app.post("/api/import/backup", (req, res) => {
       );
     }
 
+    for (const event of incomingInstanceEvents) {
+      const eventId = event.id ? String(event.id) : randomUUID();
+      const instanceId = event.instance_id ? String(event.instance_id) : null;
+      if (!instanceId) continue;
+      const type = String(event.type || "updated");
+      let detail = null;
+      if (event.detail !== undefined && event.detail !== null) {
+        detail = typeof event.detail === "string" ? event.detail : JSON.stringify(event.detail);
+      }
+      insertInstanceEvent.run(
+        eventId,
+        instanceId,
+        type,
+        detail,
+        event.created_at || stamp
+      );
+    }
+
     for (const setting of incomingMonthSettings) {
       const year = Number(setting.year);
       const month = Number(setting.month);
@@ -2655,6 +2929,20 @@ app.post("/api/import/backup", (req, res) => {
         cashStart,
         setting.updated_at || stamp
       );
+    }
+
+    if (incomingSettings) {
+      const payload = {
+        defaults: {
+          sort: incomingSettings.defaults?.sort || "due_date",
+          dueSoonDays: Number(incomingSettings.defaults?.dueSoonDays || 7),
+          defaultPeriod: incomingSettings.defaults?.defaultPeriod || "month",
+        },
+        categories: Array.isArray(incomingSettings.categories)
+          ? incomingSettings.categories.map((c) => String(c || "").trim()).filter(Boolean)
+          : [],
+      };
+      setMetaJson("settings", payload);
     }
 
     for (const fund of incomingSinkingFunds) {

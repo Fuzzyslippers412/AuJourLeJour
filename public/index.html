@@ -3,7 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Au Jour Le Jour</title>
+    <title>Au Jour Le Jour — Essentials tracker</title>
+    <meta name="description" content="Essentials bill tracker." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -23,6 +25,7 @@
       </div>
 
       <div class="top-actions">
+        <button id="share-open" class="ghost-btn">Share</button>
         <label class="toggle">
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
@@ -37,6 +40,13 @@
 
     <main class="container">
       <div id="system-banner" class="system-banner hidden"></div>
+      <div id="shared-header" class="shared-header hidden">
+        <div class="shared-left">
+          <div class="shared-title">Shared list</div>
+          <div id="shared-owner" class="shared-owner"></div>
+        </div>
+        <div class="shared-badge">Read-only</div>
+      </div>
       <section id="today-view" class="view">
         <div id="zero-state" class="zero-state hidden">
           <div class="zero-card">
@@ -106,7 +116,7 @@
                   <div class="queue-title">Action Queue</div>
                   <div id="queue-subtitle" class="queue-sub">Overdue: 0 items</div>
                 </div>
-                <button id="mark-all-overdue" class="btn-small btn-primary">Mark all overdue done</button>
+                <button id="mark-all-overdue" class="btn-small btn-primary readonly-hide">Mark all overdue done</button>
               </div>
 
               <div class="queue-section">
@@ -228,6 +238,40 @@
         <div class="page-sub">Templates, categories, backups, and reserved buckets.</div>
         <div class="disclaimer">This app tracks bills. You pay outside the app.</div>
 
+        <section id="backup-section" class="setup-block">
+          <div class="block-title">Backup & Restore</div>
+          <div class="block-sub">Keep your tracker portable. Export saves everything.</div>
+          <div class="backup-actions">
+            <button id="export-backup" class="primary-btn">Export backup JSON</button>
+            <button id="export-month" class="ghost-btn">Export month CSV</button>
+          </div>
+          <div id="backup-last" class="meta">No backup saved yet.</div>
+
+          <div class="import-panel">
+            <div id="backup-drop" class="drop-zone">
+              Drop your backup JSON here (desktop)
+            </div>
+            <div class="import-pick-row">
+              <button id="import-pick" class="ghost-btn">Choose JSON file</button>
+              <input id="import-backup" type="file" accept="application/json" hidden />
+            </div>
+            <div id="import-preview" class="import-preview hidden">
+              <div class="import-title">Import preview</div>
+              <div id="import-summary" class="import-summary"></div>
+              <div id="import-conflicts" class="meta"></div>
+              <div class="import-mode">
+                <div class="section-title">Import mode</div>
+                <div id="import-mode" class="chip-group">
+                  <button class="chip active" data-mode="merge">Merge</button>
+                  <button class="chip" data-mode="replace">Replace</button>
+                </div>
+                <div class="meta">Merge keeps existing items when conflicts occur.</div>
+              </div>
+              <button id="import-confirm" class="btn-small btn-primary" disabled>Confirm import</button>
+            </div>
+          </div>
+        </section>
+
         <section class="setup-block">
           <div class="block-title">Defaults</div>
           <div class="block-sub">Period view, sort order, and due-soon window.</div>
@@ -271,7 +315,7 @@
               <div class="block-title">Recurring bills</div>
               <div class="block-sub">These generate your monthly checklist.</div>
             </div>
-            <button id="open-backup" class="ghost-btn">Backup / Export</button>
+            <button id="open-backup" class="ghost-btn">Backup &amp; Restore</button>
           </div>
           <form id="template-form" class="template-form">
             <input id="template-name" type="text" placeholder="Name" required />
@@ -343,6 +387,7 @@
           <div class="block-title">Data safety</div>
           <div class="block-sub">Reset local data or start in safe mode if something breaks.</div>
           <div class="safety-actions">
+            <button id="clear-filters" class="ghost-btn">Clear filters</button>
             <button id="reset-local-inline" class="ghost-btn danger">Reset local data</button>
             <button id="start-safe-mode" class="ghost-btn">Start in safe mode</button>
           </div>
@@ -350,25 +395,33 @@
       </section>
     </main>
 
-    <div id="backup-modal" class="modal hidden">
+    <div id="share-modal" class="modal hidden">
       <div class="modal-content">
         <div class="modal-header">
           <div>
-            <div class="modal-title">Backup & Export</div>
-            <div class="modal-sub">Keeps your data portable across computers.</div>
+            <div class="modal-title">Share read-only link</div>
+            <div class="modal-sub">Anyone with this link can view your list.</div>
           </div>
-          <button id="close-backup" class="icon-btn" aria-label="Close">&times;</button>
+          <button id="share-close" class="icon-btn" aria-label="Close">&times;</button>
         </div>
         <div class="modal-actions">
-          <button id="export-month" class="primary-btn">Export month CSV</button>
-          <button id="export-backup" class="ghost-btn">Export full backup (JSON)</button>
-          <label class="ghost-btn file-input">
-            Import backup (JSON)
-            <input id="import-backup" type="file" accept="application/json" />
+          <div class="share-row">
+            <input id="share-link" class="share-link" type="text" readonly />
+            <button id="share-copy" class="btn-small btn-primary">Copy link</button>
+          </div>
+          <label class="toggle">
+            <input id="share-live" type="checkbox" checked />
+            <span>Live updates</span>
           </label>
-          <button id="reset-local" class="ghost-btn danger">Reset local data</button>
+          <div class="share-actions">
+            <button id="share-create" class="ghost-btn">Create link</button>
+            <button id="share-regenerate" class="ghost-btn">Regenerate link</button>
+            <button id="share-disable" class="ghost-btn danger">Disable link</button>
+          </div>
+          <div class="modal-footer-hint">
+            This link is read-only.
+          </div>
         </div>
-        <div class="modal-footer-hint">Saved in this browser. To move devices: Export JSON → Import on the new device.</div>
       </div>
     </div>
 
@@ -383,11 +436,11 @@
           <button class="icon-btn" data-close="details" aria-label="Close">&times;</button>
         </div>
         <div class="drawer-body">
-          <div class="drawer-actions">
+          <div class="drawer-actions readonly-hide">
             <button id="detail-mark-done" class="btn-primary">Mark done</button>
             <button id="detail-skip" class="ghost-btn">Mark skipped</button>
           </div>
-          <div class="drawer-section">
+          <div class="drawer-section readonly-hide">
             <div class="section-title">Log update</div>
             <div class="log-update-row">
               <input id="detail-log-amount" type="number" min="0" step="0.01" placeholder="Amount completed" />
@@ -395,7 +448,7 @@
             </div>
             <div id="detail-log-status" class="meta"></div>
           </div>
-          <div class="drawer-section">
+          <div class="drawer-section readonly-hide">
             <div class="section-title">Edit bill</div>
             <div class="drawer-grid">
               <label>
@@ -422,7 +475,7 @@
             <button id="detail-save" class="btn-small">Save changes</button>
             <div id="detail-save-status" class="meta"></div>
           </div>
-          <div class="drawer-section">
+          <div class="drawer-section readonly-hide">
             <div class="section-title">Activity</div>
             <div id="detail-history" class="list"></div>
           </div>

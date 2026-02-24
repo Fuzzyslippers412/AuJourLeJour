@@ -39,6 +39,11 @@ const state = {
   loading: false,
   instanceEvents: {},
   activityEvents: [],
+  pendingImport: null,
+  lastBackupAt: null,
+  readOnly: false,
+  shareToken: null,
+  shareInfo: null,
 };
 
 const weeksPerMonth = 4.33;
@@ -53,6 +58,7 @@ const MAX_LLM_TEMPLATES = 60;
 const MAX_LLM_DUE = 8;
 const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
 const PROFILE_NAME_KEY = "ajl_profile_name";
+const BACKUP_LAST_KEY = "ajl_last_backup_at";
 const PWA_DB_NAME = "ajl_pwa";
 const PWA_DB_PREFIX = "ajl_pwa";
 
@@ -228,14 +234,30 @@ const els = {
   navToday: document.getElementById("nav-today"),
   navReview: document.getElementById("nav-review"),
   navSetup: document.getElementById("nav-setup"),
+  shareOpen: document.getElementById("share-open"),
+  shareModal: document.getElementById("share-modal"),
+  shareClose: document.getElementById("share-close"),
+  shareLink: document.getElementById("share-link"),
+  shareCopy: document.getElementById("share-copy"),
+  shareLive: document.getElementById("share-live"),
+  shareCreate: document.getElementById("share-create"),
+  shareRegenerate: document.getElementById("share-regenerate"),
+  shareDisable: document.getElementById("share-disable"),
   backupOpen: document.getElementById("open-backup"),
-  backupModal: document.getElementById("backup-modal"),
-  backupClose: document.getElementById("close-backup"),
+  backupSection: document.getElementById("backup-section"),
+  backupLast: document.getElementById("backup-last"),
+  backupDrop: document.getElementById("backup-drop"),
+  importPick: document.getElementById("import-pick"),
+  importPreview: document.getElementById("import-preview"),
+  importSummary: document.getElementById("import-summary"),
+  importConflicts: document.getElementById("import-conflicts"),
+  importConfirm: document.getElementById("import-confirm"),
+  importModeChips: Array.from(document.querySelectorAll("#import-mode .chip")),
   exportMonth: document.getElementById("export-month"),
   exportBackup: document.getElementById("export-backup"),
   importBackup: document.getElementById("import-backup"),
-  resetLocal: document.getElementById("reset-local"),
   resetLocalInline: document.getElementById("reset-local-inline"),
+  clearFilters: document.getElementById("clear-filters"),
   todayView: document.getElementById("today-view"),
   reviewView: document.getElementById("review-view"),
   setupView: document.getElementById("setup-view"),
@@ -258,6 +280,8 @@ const els = {
   summaryCountOverdue: document.getElementById("summary-count-overdue"),
   summaryCountSoon: document.getElementById("summary-count-soon"),
   summaryCountDone: document.getElementById("summary-count-done"),
+  sharedHeader: document.getElementById("shared-header"),
+  sharedOwner: document.getElementById("shared-owner"),
   queueOverdue: document.getElementById("queue-overdue"),
   queueSoon: document.getElementById("queue-soon"),
   queueLater: document.getElementById("queue-later"),
@@ -397,6 +421,34 @@ function saveProfileName(name) {
   }
 }
 
+function loadLastBackupAt() {
+  try {
+    const raw = localStorage.getItem(BACKUP_LAST_KEY);
+    return raw ? Number(raw) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function saveLastBackupAt(timestamp) {
+  try {
+    localStorage.setItem(BACKUP_LAST_KEY, String(timestamp));
+  } catch (err) {
+    // ignore
+  }
+}
+
+function renderBackupStatus() {
+  if (!els.backupLast) return;
+  const ts = state.lastBackupAt;
+  if (!ts) {
+    els.backupLast.textContent = "No backup saved yet.";
+    return;
+  }
+  const date = new Date(ts);
+  els.backupLast.textContent = `Last backup: ${date.toLocaleString("en-US")}`;
+}
+
 function getTimeGreeting() {
   const hour = new Date().getHours();
   if (hour < 5) return "Good night";
@@ -490,6 +542,162 @@ function formatChangeValue(field, value) {
 
 function getRowHeight() {
   return window.innerWidth >= 1024 ? 64 : 56;
+}
+
+function normalizeBackupPayload(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  return {
+    app: payload.app || "",
+    app_version: payload.app_version || "",
+    schema_version: payload.schema_version || payload.schemaVersion || "",
+    exported_at: payload.exported_at || payload.exportedAt || null,
+    templates: Array.isArray(payload.templates) ? payload.templates : [],
+    instances: Array.isArray(payload.instances) ? payload.instances : [],
+    payment_events: Array.isArray(payload.payment_events) ? payload.payment_events : [],
+    instance_events: Array.isArray(payload.instance_events) ? payload.instance_events : [],
+    month_settings: Array.isArray(payload.month_settings) ? payload.month_settings : [],
+    sinking_funds: Array.isArray(payload.sinking_funds) ? payload.sinking_funds : [],
+    sinking_events: Array.isArray(payload.sinking_events) ? payload.sinking_events : [],
+    settings: payload.settings && typeof payload.settings === "object" ? payload.settings : null,
+  };
+}
+
+function getPeriodRange(instances) {
+  if (!Array.isArray(instances) || instances.length === 0) return null;
+  const months = instances
+    .map((inst) => {
+      const y = Number(inst.year);
+      const m = Number(inst.month);
+      if (!Number.isInteger(y) || !Number.isInteger(m)) return null;
+      return `${y}-${pad2(m)}`;
+    })
+    .filter(Boolean)
+    .sort();
+  if (months.length === 0) return null;
+  return { start: months[0], end: months[months.length - 1] };
+}
+
+function summarizeBackup(payload) {
+  const normalized = normalizeBackupPayload(payload);
+  if (!normalized) return null;
+  const range = getPeriodRange(normalized.instances);
+  return {
+    templates: normalized.templates.length,
+    instances: normalized.instances.length,
+    payments: normalized.payment_events.length,
+    events: normalized.instance_events.length,
+    exported_at: normalized.exported_at,
+    range,
+  };
+}
+
+function templateMatchKey(template) {
+  const name = String(template.name || "").trim().toLowerCase();
+  const due = Number(template.due_day || template.dueDay || 0);
+  const amount = Number(template.amount_default || template.amountDefault || 0);
+  return `${name}::${due}::${amount}`;
+}
+
+function mergeBackups(existingRaw, incomingRaw) {
+  const existing = normalizeBackupPayload(existingRaw);
+  const incoming = normalizeBackupPayload(incomingRaw);
+  if (!existing || !incoming) return { merged: null, conflicts: 0 };
+
+  const merged = {
+    app: "au-jour-le-jour",
+    app_version: existing.app_version || incoming.app_version || "",
+    schema_version: existing.schema_version || incoming.schema_version || "",
+    exported_at: incoming.exported_at || existing.exported_at || null,
+    templates: [],
+    instances: [],
+    payment_events: [],
+    instance_events: [],
+    month_settings: [],
+    sinking_funds: [],
+    sinking_events: [],
+    settings: existing.settings || incoming.settings || { defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" }, categories: [] },
+  };
+
+  let conflicts = 0;
+  const templateMap = new Map();
+  const templateFallback = new Map();
+  existing.templates.forEach((tmpl) => {
+    templateMap.set(String(tmpl.id), tmpl);
+    templateFallback.set(templateMatchKey(tmpl), String(tmpl.id));
+  });
+
+  incoming.templates.forEach((tmpl) => {
+    const id = String(tmpl.id || "");
+    if (id && templateMap.has(id)) {
+      conflicts += 1;
+      return;
+    }
+    const fallbackKey = templateMatchKey(tmpl);
+    if (templateFallback.has(fallbackKey)) {
+      conflicts += 1;
+      return;
+    }
+    templateMap.set(id || `incoming_${templateMap.size}`, tmpl);
+    templateFallback.set(fallbackKey, id || `incoming_${templateMap.size}`);
+  });
+  merged.templates = Array.from(templateMap.values());
+
+  const instanceKey = (inst) => `${String(inst.template_id || inst.templateId || inst.template || "")}|${inst.year}|${inst.month}`;
+  const instanceMap = new Map();
+  existing.instances.forEach((inst) => instanceMap.set(String(inst.id || instanceKey(inst)), inst));
+  incoming.instances.forEach((inst) => {
+    const key = String(inst.id || instanceKey(inst));
+    if (instanceMap.has(key)) return;
+    instanceMap.set(key, inst);
+  });
+  merged.instances = Array.from(instanceMap.values());
+
+  const instanceIds = new Set(merged.instances.map((inst) => String(inst.id || "")));
+
+  const addUnique = (existingList, incomingList, keyFn, target) => {
+    const map = new Map();
+    existingList.forEach((item) => map.set(keyFn(item), item));
+    incomingList.forEach((item) => {
+      const key = keyFn(item);
+      if (!map.has(key)) map.set(key, item);
+    });
+    target.push(...map.values());
+  };
+
+  addUnique(existing.payment_events, incoming.payment_events, (p) => String(p.id || ""), merged.payment_events);
+  merged.payment_events = merged.payment_events.filter((p) => instanceIds.has(String(p.instance_id || "")));
+
+  addUnique(existing.instance_events, incoming.instance_events, (e) => String(e.id || ""), merged.instance_events);
+  merged.instance_events = merged.instance_events.filter((e) => instanceIds.has(String(e.instance_id || "")));
+
+  const monthMap = new Map();
+  existing.month_settings.forEach((m) => monthMap.set(`${m.year}-${m.month}`, m));
+  incoming.month_settings.forEach((m) => {
+    const key = `${m.year}-${m.month}`;
+    if (!monthMap.has(key)) monthMap.set(key, m);
+  });
+  merged.month_settings = Array.from(monthMap.values());
+
+  const fundMap = new Map();
+  existing.sinking_funds.forEach((f) => fundMap.set(String(f.id || ""), f));
+  incoming.sinking_funds.forEach((f) => {
+    const key = String(f.id || "");
+    if (!fundMap.has(key)) fundMap.set(key, f);
+  });
+  merged.sinking_funds = Array.from(fundMap.values());
+
+  addUnique(existing.sinking_events, incoming.sinking_events, (e) => String(e.id || ""), merged.sinking_events);
+
+  if (existing.settings || incoming.settings) {
+    const existingSettings = existing.settings || { defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" }, categories: [] };
+    const incomingSettings = incoming.settings || { defaults: {}, categories: [] };
+    merged.settings = {
+      defaults: { ...incomingSettings.defaults, ...existingSettings.defaults },
+      categories: Array.from(new Set([...(existingSettings.categories || []), ...(incomingSettings.categories || [])])),
+    };
+  }
+
+  return { merged, conflicts };
 }
 
 function isCurrentMonth(year, month) {
@@ -901,6 +1109,7 @@ function updateInstanceInState(updated) {
 }
 
 async function addPayment(instanceId, amount) {
+  if (state.readOnly) return;
   const res = await fetch(`/api/instances/${instanceId}/payments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -917,9 +1126,11 @@ async function addPayment(instanceId, amount) {
   await loadPayments();
   await loadActivityEvents();
   renderDashboard();
+  scheduleSharePublish();
 }
 
 async function markPaid(instanceId, options = {}) {
+  if (state.readOnly) return;
   const result = await postAction({
     type: "MARK_PAID",
     instance_id: instanceId,
@@ -933,12 +1144,14 @@ async function markPaid(instanceId, options = {}) {
   await loadPayments();
   await loadActivityEvents();
   renderDashboard();
+  scheduleSharePublish();
   if (!options.silent) {
     showToast("Marked done.", "Undo", () => markPending(instanceId));
   }
 }
 
 async function markPending(instanceId) {
+  if (state.readOnly) return;
   const result = await postAction({
     type: "MARK_PENDING",
     instance_id: instanceId,
@@ -951,6 +1164,7 @@ async function markPending(instanceId) {
   await loadPayments();
   await loadActivityEvents();
   renderDashboard();
+  scheduleSharePublish();
 }
 
 function flashRow(instanceId) {
@@ -964,6 +1178,7 @@ function flashRow(instanceId) {
 }
 
 async function undoPayment(paymentId) {
+  if (state.readOnly) return;
   const res = await fetch(`/api/payments/${paymentId}`, { method: "DELETE" });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -975,9 +1190,11 @@ async function undoPayment(paymentId) {
   await loadPayments();
   await loadActivityEvents();
   renderDashboard();
+  scheduleSharePublish();
 }
 
 async function patchInstance(id, body) {
+  if (state.readOnly) return;
   const res = await fetch(`/api/instances/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -992,6 +1209,7 @@ async function patchInstance(id, body) {
   updateInstanceInState(updated);
   await loadActivityEvents();
   renderDashboard();
+  scheduleSharePublish();
 }
 
 function deriveInstances() {
@@ -1259,24 +1477,26 @@ function renderActionQueue(baseList) {
     const amount = document.createElement("div");
     amount.className = "item-amount";
     amount.textContent = formatMoney(item.amount_remaining);
-    const kebab = document.createElement("button");
-    kebab.className = "ghost-btn small";
-    kebab.textContent = "…";
-    kebab.setAttribute("aria-label", "Open details");
-    kebab.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openInstanceDetail(item.id);
-    });
-    const action = document.createElement("button");
-    action.className = "btn-small btn-primary";
-    action.textContent = "Mark done";
-    action.addEventListener("click", (event) => {
-      event.stopPropagation();
-      markPaid(item.id);
-    });
     right.appendChild(amount);
-    right.appendChild(kebab);
-    right.appendChild(action);
+    if (!state.readOnly) {
+      const kebab = document.createElement("button");
+      kebab.className = "ghost-btn small";
+      kebab.textContent = "…";
+      kebab.setAttribute("aria-label", "Open details");
+      kebab.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openInstanceDetail(item.id);
+      });
+      const action = document.createElement("button");
+      action.className = "btn-small btn-primary";
+      action.textContent = "Mark done";
+      action.addEventListener("click", (event) => {
+        event.stopPropagation();
+        markPaid(item.id);
+      });
+      right.appendChild(kebab);
+      right.appendChild(action);
+    }
 
     row.appendChild(main);
     row.appendChild(right);
@@ -2727,6 +2947,380 @@ function renderDefaults() {
   els.defaultsPeriod.value = state.settings.defaults.defaultPeriod || "month";
 }
 
+function renderImportPreview() {
+  if (!els.importPreview || !els.importSummary) return;
+  const pending = state.pendingImport;
+  if (!pending) {
+    els.importPreview.classList.add("hidden");
+    if (els.importConfirm) {
+      els.importConfirm.disabled = true;
+    }
+    return;
+  }
+  const summary = pending.summary;
+  els.importPreview.classList.remove("hidden");
+  const range = summary.range ? `${summary.range.start} → ${summary.range.end}` : "—";
+  const exportedAt = summary.exported_at ? formatDateTime(summary.exported_at) : "Unknown";
+  els.importSummary.innerHTML = `
+    <div><strong>Templates:</strong> ${summary.templates}</div>
+    <div><strong>Items:</strong> ${summary.instances}</div>
+    <div><strong>Updates:</strong> ${summary.payments}</div>
+    <div><strong>Period:</strong> ${range}</div>
+    <div><strong>Exported:</strong> ${exportedAt}</div>
+  `;
+  if (els.importConflicts) {
+    if (pending.mode === "merge" && pending.conflicts > 0) {
+      els.importConflicts.textContent = `Conflicts detected: ${pending.conflicts}. Existing items will be kept.`;
+    } else {
+      els.importConflicts.textContent = "";
+    }
+  }
+  if (els.importConfirm) {
+    els.importConfirm.disabled = false;
+  }
+}
+
+function getShareTokenFromPath() {
+  const match = window.location.pathname.match(/^\/s\/([A-Za-z0-9_-]+)$/);
+  return match ? match[1] : null;
+}
+
+function setReadOnlyMode(enabled) {
+  state.readOnly = enabled;
+  document.body.classList.toggle("read-only", enabled);
+  if (enabled && els.sharedHeader) {
+    els.sharedHeader.classList.remove("hidden");
+    els.sharedHeader.classList.add("visible");
+  }
+  if (!enabled && els.sharedHeader) {
+    els.sharedHeader.classList.add("hidden");
+    els.sharedHeader.classList.remove("visible");
+  }
+}
+
+function renderSharedHeader(label, meta = {}) {
+  if (!els.sharedHeader) return;
+  if (label) {
+    els.sharedOwner.textContent = label;
+  } else {
+    els.sharedOwner.textContent = meta.ownerLabel ? meta.ownerLabel : "";
+  }
+  els.sharedHeader.classList.remove("hidden");
+  els.sharedHeader.classList.add("visible");
+}
+
+function buildSharePayload() {
+  const derived = deriveInstances();
+  const base = getBaseInstances(derived);
+  return {
+    schema_version: "1",
+    period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
+    owner_label: state.profileName || null,
+    generated_at: new Date().toISOString(),
+    items: base.map((item) => ({
+      id: item.id,
+      template_id: item.template_id,
+      year: item.year,
+      month: item.month,
+      name_snapshot: item.name_snapshot,
+      category_snapshot: item.category_snapshot || null,
+      amount: Number(item.amount || 0),
+      due_date: item.due_date,
+      status: item.status_derived,
+      paid_date: item.paid_date || null,
+      amount_paid: Number(item.amount_paid || 0),
+      amount_remaining: Number(item.amount_remaining || 0),
+      essential_snapshot: !!item.essential_snapshot,
+      autopay_snapshot: !!item.autopay_snapshot,
+      note: item.note || null,
+    })),
+    categories: state.settings.categories || [],
+  };
+}
+
+async function loadShareInfo() {
+  if (AJL_WEB_MODE) return null;
+  try {
+    const res = await fetch("/api/shares");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data && data.share ? data.share : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function publishShare(payloadOverride = null) {
+  if (AJL_WEB_MODE || state.readOnly) return;
+  if (!state.shareInfo || !state.shareInfo.token) return;
+  const payload = payloadOverride || buildSharePayload();
+  await fetch(`/api/shares/${state.shareInfo.token}/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ payload, schema_version: payload.schema_version, owner_label: state.profileName || null }),
+  });
+}
+
+let sharePublishTimer = null;
+function scheduleSharePublish() {
+  if (AJL_WEB_MODE || state.readOnly) return;
+  if (!state.shareInfo || state.shareInfo.mode !== "live" || !state.shareInfo.is_active) return;
+  if (sharePublishTimer) clearTimeout(sharePublishTimer);
+  sharePublishTimer = setTimeout(() => {
+    publishShare().catch(() => {});
+  }, 1200);
+}
+
+async function loadSharedView(token) {
+  try {
+    const res = await fetch(`/api/shares/${token}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const message = data?.error || "This link is invalid or has been disabled.";
+      showSystemBanner(message);
+      return;
+    }
+    const data = await res.json();
+    const payload = data.payload || data.data || {};
+    const period = payload.period || "";
+    if (period && period.includes("-")) {
+      const [year, month] = period.split("-").map(Number);
+      if (year && month) setMonth(year, month);
+    }
+    state.instances = Array.isArray(payload.items) ? payload.items : [];
+    state.payments = [];
+    state.settings.categories = Array.isArray(payload.categories) ? payload.categories : [];
+    renderSharedHeader(payload.owner_label || data.ownerLabel);
+    renderView();
+    renderDashboard();
+  } catch (err) {
+    showSystemBanner("Unable to load shared list.");
+  }
+}
+
+function updateShareModal() {
+  if (!els.shareModal) return;
+  const share = state.shareInfo;
+  if (els.shareLink) {
+    els.shareLink.value = share?.url || "";
+  }
+  if (els.shareLive) {
+    els.shareLive.checked = share ? share.mode === "live" : true;
+  }
+  if (els.shareCreate) {
+    els.shareCreate.classList.toggle("hidden", !!share);
+  }
+  if (els.shareRegenerate) {
+    els.shareRegenerate.classList.toggle("hidden", !share);
+  }
+  if (els.shareDisable) {
+    els.shareDisable.classList.toggle("hidden", !share);
+  }
+  if (els.shareCopy) {
+    els.shareCopy.disabled = !share;
+  }
+}
+
+async function openShareModal() {
+  if (!els.shareModal) return;
+  if (state.readOnly) return;
+  const share = await loadShareInfo();
+  state.shareInfo = share ? normalizeShareInfo(share) : null;
+  updateShareModal();
+  els.shareModal.classList.remove("hidden");
+}
+
+function closeShareModal() {
+  if (!els.shareModal) return;
+  els.shareModal.classList.add("hidden");
+}
+
+function normalizeShareInfo(share) {
+  if (!share) return null;
+  const base = window.location.origin;
+  return {
+    token: share.token,
+    mode: share.mode,
+    is_active: !!share.is_active,
+    owner_label: share.owner_label || null,
+    last_published_at: share.last_published_at || null,
+    url: `${base}/s/${share.token}`,
+  };
+}
+
+async function createShareLink() {
+  const mode = els.shareLive && els.shareLive.checked ? "live" : "snapshot";
+  const res = await fetch("/api/shares", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, owner_label: state.profileName || null }),
+  });
+  if (!res.ok) {
+    window.alert("Unable to create share link.");
+    return;
+  }
+  const data = await res.json();
+  state.shareInfo = {
+    token: data.shareToken,
+    mode,
+    is_active: true,
+    owner_label: state.profileName || null,
+    url: data.shareUrl,
+  };
+  await publishShare(buildSharePayload());
+  updateShareModal();
+}
+
+async function regenerateShareLink() {
+  if (!state.shareInfo) return;
+  const confirmed = window.confirm("Regenerate link? The old link will stop working.");
+  if (!confirmed) return;
+  const res = await fetch(`/api/shares/${state.shareInfo.token}/regenerate`, { method: "POST" });
+  if (!res.ok) {
+    window.alert("Unable to regenerate link.");
+    return;
+  }
+  const data = await res.json();
+  state.shareInfo = {
+    ...state.shareInfo,
+    token: data.shareToken,
+    url: data.shareUrl,
+  };
+  updateShareModal();
+}
+
+async function disableShareLink() {
+  if (!state.shareInfo) return;
+  const confirmed = window.confirm("Disable this share link? Viewers will lose access.");
+  if (!confirmed) return;
+  await fetch(`/api/shares/${state.shareInfo.token}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ isActive: false }),
+  });
+  state.shareInfo = null;
+  updateShareModal();
+}
+
+async function updateShareMode() {
+  if (!state.shareInfo) return;
+  const mode = els.shareLive && els.shareLive.checked ? "live" : "snapshot";
+  state.shareInfo.mode = mode;
+  await fetch(`/api/shares/${state.shareInfo.token}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  await publishShare(buildSharePayload());
+  updateShareModal();
+}
+
+async function copyShareLink() {
+  const link = state.shareInfo?.url || "";
+  if (!link) return;
+  try {
+    await navigator.clipboard.writeText(link);
+    showToast("Link copied.");
+  } catch (err) {
+    if (els.shareLink) {
+      els.shareLink.select();
+      document.execCommand("copy");
+      showToast("Link copied.");
+    }
+  }
+}
+
+function setImportMode(mode) {
+  if (!state.pendingImport) return;
+  state.pendingImport.mode = mode;
+  if (els.importModeChips) {
+    els.importModeChips.forEach((chip) => {
+      chip.classList.toggle("active", chip.dataset.mode === mode);
+    });
+  }
+  updateImportConflicts();
+  renderImportPreview();
+}
+
+async function updateImportConflicts() {
+  if (!state.pendingImport) return;
+  if (state.pendingImport.mode !== "merge") {
+    state.pendingImport.conflicts = 0;
+    state.pendingImport.merged = null;
+    return;
+  }
+  try {
+    const res = await fetch("/api/export/backup.json");
+    const current = await readApiData(res);
+    const merged = mergeBackups(current, state.pendingImport.payload);
+    state.pendingImport.conflicts = merged.conflicts || 0;
+    state.pendingImport.merged = merged.merged;
+  } catch (err) {
+    state.pendingImport.conflicts = 0;
+    state.pendingImport.merged = null;
+  }
+}
+
+async function handleImportFile(file) {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    const summary = summarizeBackup(payload);
+    if (!summary) throw new Error("Invalid backup file.");
+    state.pendingImport = {
+      fileName: file.name || "backup.json",
+      payload,
+      summary,
+      mode: "merge",
+      conflicts: 0,
+      merged: null,
+    };
+    if (els.importModeChips) {
+      els.importModeChips.forEach((chip) => {
+        chip.classList.toggle("active", chip.dataset.mode === "merge");
+      });
+    }
+    await updateImportConflicts();
+    renderImportPreview();
+  } catch (err) {
+    window.alert("Invalid JSON backup file.");
+  }
+}
+
+async function applyImport() {
+  if (!state.pendingImport) return;
+  const confirmed =
+    state.pendingImport.mode === "replace"
+      ? window.confirm("Replace your current data with this backup? This cannot be undone.")
+      : true;
+  if (!confirmed) return;
+  try {
+    let payload = state.pendingImport.payload;
+    if (state.pendingImport.mode === "merge") {
+      const res = await fetch("/api/export/backup.json");
+      const current = await readApiData(res);
+      const merged = mergeBackups(current, state.pendingImport.payload);
+      payload = merged.merged || state.pendingImport.payload;
+    }
+    if (!payload) {
+      window.alert("Import failed. Try exporting a new backup.");
+      return;
+    }
+    await fetch("/api/reset-local", { method: "POST" });
+    await fetch("/api/import/backup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    state.pendingImport = null;
+    renderImportPreview();
+    await refreshAll();
+  } catch (err) {
+    window.alert("Unable to import backup.");
+  }
+}
+
 function renderCategories() {
   if (!els.categoriesList) return;
   els.categoriesList.innerHTML = "";
@@ -2887,7 +3481,7 @@ function renderItems(baseList) {
     pill.textContent = formatStatusLabel(item.status_derived);
     right.appendChild(amount);
     right.appendChild(pill);
-    if (item.status_derived !== "paid" && item.status_derived !== "skipped") {
+    if (!state.readOnly && item.status_derived !== "paid" && item.status_derived !== "skipped") {
       const doneBtn = document.createElement("button");
       doneBtn.className = "btn-small btn-primary";
       doneBtn.textContent = "Mark done";
@@ -2933,6 +3527,7 @@ function renderItems(baseList) {
 
 async function renderDetailHistory(instanceId) {
   if (!els.detailHistory) return;
+  if (state.readOnly) return;
   els.detailHistory.innerHTML = "";
   const events = await loadInstanceEvents(instanceId);
   if (!events || events.length === 0) {
@@ -3756,6 +4351,12 @@ function renderView() {
   if (!isToday && els.detailsPane) {
     els.detailsPane.classList.add("hidden");
   }
+  if (isSetup) {
+    renderDefaults();
+    renderCategories();
+    renderBackupStatus();
+    renderImportPreview();
+  }
 }
 
 async function refreshAll() {
@@ -3779,6 +4380,7 @@ async function refreshAll() {
     renderCategories();
     renderDashboard();
     renderTemplates();
+    scheduleSharePublish();
   } catch (err) {
     if (!handleStorageFailure(err)) {
       throw err;
@@ -3845,13 +4447,40 @@ function bindEvents() {
     });
   }
 
-  els.backupOpen.addEventListener("click", () => {
-    els.backupModal.classList.remove("hidden");
-  });
+  if (els.shareOpen) {
+    els.shareOpen.addEventListener("click", () => openShareModal());
+  }
+  if (els.shareClose) {
+    els.shareClose.addEventListener("click", () => closeShareModal());
+  }
+  if (els.shareModal) {
+    els.shareModal.addEventListener("click", (event) => {
+      if (event.target === els.shareModal) closeShareModal();
+    });
+  }
+  if (els.shareCopy) {
+    els.shareCopy.addEventListener("click", () => copyShareLink());
+  }
+  if (els.shareCreate) {
+    els.shareCreate.addEventListener("click", () => createShareLink());
+  }
+  if (els.shareRegenerate) {
+    els.shareRegenerate.addEventListener("click", () => regenerateShareLink());
+  }
+  if (els.shareDisable) {
+    els.shareDisable.addEventListener("click", () => disableShareLink());
+  }
+  if (els.shareLive) {
+    els.shareLive.addEventListener("change", () => updateShareMode());
+  }
 
-  els.backupClose.addEventListener("click", () => {
-    els.backupModal.classList.add("hidden");
-  });
+  if (els.backupOpen) {
+    els.backupOpen.addEventListener("click", () => {
+      state.view = "setup";
+      renderView();
+      els.backupSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
 
   if (els.statusExpand && els.summarySheet) {
     els.statusExpand.addEventListener("click", () => {
@@ -3984,26 +4613,59 @@ function bindEvents() {
     )}.json`;
     link.click();
     URL.revokeObjectURL(url);
+    const now = Date.now();
+    state.lastBackupAt = now;
+    saveLastBackupAt(now);
+    renderBackupStatus();
   });
 
-  els.importBackup.addEventListener("change", async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    try {
-      const payload = JSON.parse(text);
-      await fetch("/api/import/backup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      await refreshAll();
-    } catch (err) {
-      window.alert("Invalid JSON backup file.");
-    } finally {
+  if (els.importPick && els.importBackup) {
+    els.importPick.addEventListener("click", () => {
+      els.importBackup.click();
+    });
+  }
+
+  if (els.importBackup) {
+    els.importBackup.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      await handleImportFile(file);
       event.target.value = "";
-    }
-  });
+    });
+  }
+
+  if (els.backupDrop) {
+    ["dragenter", "dragover"].forEach((evt) => {
+      els.backupDrop.addEventListener(evt, (event) => {
+        event.preventDefault();
+        els.backupDrop.classList.add("drag");
+      });
+    });
+    ["dragleave", "drop"].forEach((evt) => {
+      els.backupDrop.addEventListener(evt, (event) => {
+        event.preventDefault();
+        els.backupDrop.classList.remove("drag");
+      });
+    });
+    els.backupDrop.addEventListener("drop", (event) => {
+      const file = event.dataTransfer?.files?.[0];
+      handleImportFile(file);
+    });
+  }
+
+  if (els.importModeChips) {
+    els.importModeChips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const mode = chip.dataset.mode || "merge";
+        setImportMode(mode);
+      });
+    });
+  }
+
+  if (els.importConfirm) {
+    els.importConfirm.addEventListener("click", () => {
+      applyImport();
+    });
+  }
 
   if (els.saveDefaults) {
     els.saveDefaults.addEventListener("click", async () => {
@@ -4032,8 +4694,8 @@ function bindEvents() {
     });
   }
 
-  if (els.resetLocal) {
-    els.resetLocal.addEventListener("click", async () => {
+  if (els.resetLocalInline) {
+    els.resetLocalInline.addEventListener("click", async () => {
       const confirmed = window.confirm("Reset all local data in this browser? This cannot be undone.");
       if (!confirmed) return;
       await fetch("/api/reset-local", { method: "POST" });
@@ -4041,12 +4703,18 @@ function bindEvents() {
     });
   }
 
-  if (els.resetLocalInline) {
-    els.resetLocalInline.addEventListener("click", async () => {
-      const confirmed = window.confirm("Reset all local data in this browser? This cannot be undone.");
-      if (!confirmed) return;
-      await fetch("/api/reset-local", { method: "POST" });
-      window.location.reload();
+  if (els.clearFilters) {
+    els.clearFilters.addEventListener("click", () => {
+      state.filters = { search: "", status: "all", category: "all", sort: "due_date" };
+      if (els.searchInput) els.searchInput.value = "";
+      if (els.categoryFilter) els.categoryFilter.value = "all";
+      if (els.sortFilter) els.sortFilter.value = "due_date";
+      if (els.statusChips) {
+        els.statusChips.forEach((chip) => {
+          chip.classList.toggle("active", chip.dataset.status === "all");
+        });
+      }
+      renderDashboard();
     });
   }
 
@@ -4504,6 +5172,22 @@ function bindEvents() {
 async function init() {
   const flags = getQueryFlags();
   const crashGuard = checkCrashGuard();
+  const shareToken = getShareTokenFromPath();
+  if (shareToken) {
+    if (AJL_WEB_MODE) {
+      showSystemBanner("Shared links are available in the local app only.");
+      return;
+    }
+    state.shareToken = shareToken;
+    setReadOnlyMode(true);
+    const now = new Date();
+    setMonth(now.getFullYear(), now.getMonth() + 1);
+    state.view = "today";
+    bindEvents();
+    renderView();
+    await loadSharedView(shareToken);
+    return;
+  }
   if (await handleResetFlag()) return;
   const now = new Date();
   setMonth(now.getFullYear(), now.getMonth() + 1);
@@ -4511,7 +5195,12 @@ async function init() {
   state.lastAutoMonthKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
   state.essentialsOnly = els.essentialsToggle.checked;
   state.profileName = loadProfileName();
+  state.lastBackupAt = loadLastBackupAt();
   state.view = "today";
+  if (AJL_WEB_MODE) {
+    if (els.shareOpen) els.shareOpen.classList.add("hidden");
+    if (els.shareModal) els.shareModal.classList.add("hidden");
+  }
   if (flags.safe || crashGuard) {
     enterSafeMode(flags.safe ? "Safe mode requested." : "Repeated crashes detected.");
     state.view = "setup";
@@ -4521,6 +5210,12 @@ async function init() {
   }
   bindEvents();
   renderView();
+  if (!AJL_WEB_MODE) {
+    loadShareInfo().then((share) => {
+      state.shareInfo = share ? normalizeShareInfo(share) : null;
+      scheduleSharePublish();
+    });
+  }
   if (els.fundMonths && els.fundCadence && els.fundCadence.value !== "custom_months") {
     els.fundMonths.disabled = true;
   }

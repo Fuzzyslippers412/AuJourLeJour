@@ -524,6 +524,10 @@
       return ok({ mode: "web", storage: "localStorage", schemaVersion: db.schemaVersion });
     }
 
+    if (path.startsWith("/api/shares")) {
+      return jsonResponse(503, { ok: false, error: { code: "UNAVAILABLE", message: "Sharing is available in the local app only.", details: {} } });
+    }
+
     if (path === "/api/reset" && req.method === "POST") {
       const fresh = defaultDb();
       const saved = safeSaveDb(fresh);
