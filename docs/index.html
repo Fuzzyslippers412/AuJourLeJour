@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Au Jour Le Jour</title>
-    <link rel="stylesheet" href="styles.css" />
-    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="styles.css?v=20260224" />
+    <link rel="manifest" href="manifest.json?v=20260224" />
     <meta name="theme-color" content="#0f172a" />
     <script>
       (function () {
         const params = new URLSearchParams(window.location.search);
-        if (!params.has("reset")) return;
+        if (!params.has("reset") && !params.has("nosw")) return;
         const clear = async () => {
           try {
             if ("serviceWorker" in navigator) {
@@ -366,11 +366,11 @@
       window.AJL_LLM_BASE_URL = "https://agent.aujourlejour.xyz";
     </script>
     <script src="vendor/dexie.min.js"></script>
-    <script src="pwa-adapter.js"></script>
-    <script src="app.js"></script>
+    <script src="pwa-adapter.js?v=20260224"></script>
+    <script src="app.js?v=20260224"></script>
     <script>
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("sw.js").catch(() => {});
+        navigator.serviceWorker.register("sw.js?v=20260224").catch(() => {});
       }
     </script>
   </body>
