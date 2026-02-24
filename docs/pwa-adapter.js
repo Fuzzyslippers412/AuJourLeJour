@@ -24,6 +24,10 @@
     return (crypto && crypto.randomUUID) ? crypto.randomUUID() : `id_${Date.now()}_${Math.random()}`;
   }
 
+  function validId(value) {
+    return typeof value === "string" && value.trim().length > 0;
+  }
+
   function pad2(value) {
     return String(value).padStart(2, "0");
   }
@@ -120,13 +124,14 @@
   }
 
   async function attachPayments(instances) {
-    const ids = instances.map((i) => i.id);
-    if (ids.length === 0) return instances;
-    const payments = await db.payment_events.where("instance_id").anyOf(ids).toArray();
+    const ids = instances.map((i) => i.id).filter(validId);
     const totals = new Map();
-    payments.forEach((p) => {
-      totals.set(p.instance_id, (totals.get(p.instance_id) || 0) + Number(p.amount || 0));
-    });
+    if (ids.length > 0) {
+      const payments = await db.payment_events.where("instance_id").anyOf(ids).toArray();
+      payments.forEach((p) => {
+        totals.set(p.instance_id, (totals.get(p.instance_id) || 0) + Number(p.amount || 0));
+      });
+    }
     return instances.map((inst) => {
       const amountPaid = Number(totals.get(inst.id) || 0);
       const amountDue = Number(inst.amount || 0);
@@ -152,7 +157,7 @@
 
   async function getPaymentsForMonth(year, month) {
     const instances = await db.instances.where("[year+month]").equals([year, month]).toArray();
-    const ids = instances.map((i) => i.id);
+    const ids = instances.map((i) => i.id).filter(validId);
     if (ids.length === 0) return [];
     const rows = await db.payment_events.where("instance_id").anyOf(ids).toArray();
     rows.sort((a, b) => String(b.paid_date).localeCompare(String(a.paid_date)));
@@ -793,7 +798,7 @@
       if (inst.year === year && inst.month >= month) return true;
       return false;
     });
-    const ids = targets.map((inst) => inst.id);
+    const ids = targets.map((inst) => inst.id).filter(validId);
     if (ids.length > 0) {
       await db.payment_events.where("instance_id").anyOf(ids).delete();
       await db.instances.where("id").anyOf(ids).delete();
