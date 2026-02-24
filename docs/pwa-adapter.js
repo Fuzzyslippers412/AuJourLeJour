@@ -8,7 +8,7 @@
   const LLM_BASE_URL = window.AJL_LLM_BASE_URL ? String(window.AJL_LLM_BASE_URL) : "";
   const LLM_ENABLED = Boolean(LLM_BASE_URL);
 
-  const DB_SCHEMA_VERSION = 3;
+  const DB_SCHEMA_VERSION = 4;
   const DB_PREFIX = `ajl_pwa_v${DB_SCHEMA_VERSION}`;
 
   function getDbName() {
