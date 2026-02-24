@@ -75,6 +75,19 @@
     return new Date().toISOString();
   }
 
+  function getAgentSessionId() {
+    const key = "ajl_agent_session";
+    try {
+      const existing = window.localStorage.getItem(key);
+      if (existing) return existing;
+      const fresh = uuid();
+      window.localStorage.setItem(key, fresh);
+      return fresh;
+    } catch (err) {
+      return uuid();
+    }
+  }
+
   function nowIsoLocal() {
     const now = new Date();
     const offset = -now.getTimezoneOffset();
@@ -1225,7 +1238,9 @@
         pathname.startsWith("/internal/behavior/"))
     ) {
       const target = new URL(pathname + urlObj.search, LLM_BASE_URL);
-      return originalFetch(target.toString(), { ...init, credentials: "include" });
+      const headers = new Headers(init.headers || {});
+      headers.set("X-AJL-Session", getAgentSessionId());
+      return originalFetch(target.toString(), { ...init, headers, credentials: "include" });
     }
     if (pathname.startsWith("/api/") || pathname.startsWith("/internal/")) {
       const method = (init.method || request?.method || "GET").toUpperCase();
