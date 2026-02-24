@@ -156,6 +156,44 @@ select:focus {
   padding: 16px;
 }
 
+.today-layout {
+  display: block;
+}
+
+.details-pane {
+  position: sticky;
+  top: 88px;
+  align-self: start;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  min-height: 360px;
+}
+
+.details-pane.hidden {
+  display: none;
+}
+
+.details-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+body.split-view .today-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px;
+}
+
+body.split-view .details-pane {
+  display: block;
+}
+
+body.split-view #details-drawer {
+  display: none !important;
+}
+
 .system-banner {
   background: #fee2e2;
   color: #7f1d1d;
@@ -367,6 +405,55 @@ select:focus {
   gap: 8px;
 }
 
+.items-list {
+  gap: 0;
+}
+
+.items-scroll {
+  position: relative;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.items-spacer {
+  width: 100%;
+}
+
+.items-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.items-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-row {
+  height: 56px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+}
+
+@media (min-width: 1024px) {
+  .skeleton-row {
+    height: 64px;
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 .meta {
   font-size: 12px;
   color: var(--muted);
@@ -390,7 +477,7 @@ select:focus {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: #fff;
-  min-height: 56px;
+  height: 56px;
 }
 
 .item-row {
@@ -546,6 +633,23 @@ select:focus {
   display: flex;
   gap: 6px;
   overflow-x: auto;
+}
+
+.filter-btn {
+  display: none;
+}
+
+.sheet-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 
 .chip {
@@ -1091,7 +1195,24 @@ select:focus {
     flex-direction: column;
     align-items: stretch;
   }
+  .filter-btn {
+    display: inline-flex;
+  }
+  .chip-group {
+    flex-wrap: nowrap;
+  }
+  .chip-group .chip {
+    flex: 0 0 auto;
+  }
   .drawer-panel {
     width: 100%;
+  }
+}
+
+@media (min-width: 1024px) {
+  .queue-row,
+  .item-row,
+  .list-row {
+    height: 64px;
   }
 }

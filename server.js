@@ -119,6 +119,17 @@ function createSchemaV2() {
     CREATE INDEX IF NOT EXISTS idx_payment_instance ON payment_events (instance_id);
     CREATE INDEX IF NOT EXISTS idx_payment_date ON payment_events (paid_date);
 
+    CREATE TABLE IF NOT EXISTS instance_events (
+      id TEXT PRIMARY KEY,
+      instance_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_instance_events_instance ON instance_events (instance_id);
+    CREATE INDEX IF NOT EXISTS idx_instance_events_created ON instance_events (created_at);
+
     CREATE TABLE IF NOT EXISTS month_settings (
       year INTEGER NOT NULL,
       month INTEGER NOT NULL,
@@ -239,6 +250,20 @@ function ensurePaymentsTable() {
   `);
 }
 
+function ensureInstanceEventsTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS instance_events (
+      id TEXT PRIMARY KEY,
+      instance_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_instance_events_instance ON instance_events (instance_id);
+    CREATE INDEX IF NOT EXISTS idx_instance_events_created ON instance_events (created_at);
+  `);
+}
+
 function ensureMonthSettingsTable() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS month_settings (
@@ -353,6 +378,7 @@ function initSchema() {
     createSchemaV2();
     ensureActionsTable();
     ensurePaymentsTable();
+    ensureInstanceEventsTable();
     ensureMonthSettingsTable();
     ensureMetaTable();
     ensureSinkingTables();
@@ -389,6 +415,7 @@ function initSchema() {
 
   ensureActionsTable();
   ensurePaymentsTable();
+  ensureInstanceEventsTable();
   ensureMonthSettingsTable();
   ensureMetaTable();
   ensureSinkingTables();
@@ -405,6 +432,7 @@ function migrateLegacySchema() {
   createSchemaV2();
   ensureActionsTable();
   ensurePaymentsTable();
+  ensureInstanceEventsTable();
   ensureMonthSettingsTable();
   ensureMetaTable();
 
@@ -539,6 +567,14 @@ app.use("/internal", (req, res, next) => {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function logInstanceEvent(instanceId, type, detail = null) {
+  if (!instanceId || !type) return;
+  const payload = detail ? JSON.stringify(detail) : null;
+  db.prepare(
+    "INSERT INTO instance_events (id, instance_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)"
+  ).run(randomUUID(), instanceId, type, payload, nowIso());
 }
 
 function ensureDailyBackup() {
@@ -1184,6 +1220,7 @@ function initSchema() {
     createSchemaV2();
     ensureActionsTable();
     ensurePaymentsTable();
+    ensureInstanceEventsTable();
     ensureMonthSettingsTable();
     ensureMetaTable();
     ensureSinkingTables();
@@ -1220,6 +1257,7 @@ function initSchema() {
 
   ensureActionsTable();
   ensurePaymentsTable();
+  ensureInstanceEventsTable();
   ensureMonthSettingsTable();
   ensureMetaTable();
   ensureSinkingTables();
@@ -1236,6 +1274,7 @@ function migrateLegacySchema() {
   createSchemaV2();
   ensureActionsTable();
   ensurePaymentsTable();
+  ensureInstanceEventsTable();
   ensureMonthSettingsTable();
   ensureMetaTable();
 
@@ -1560,8 +1599,9 @@ function ensureMonth(year, month) {
       if (exists) continue;
       const dueDay = ledger.clampDueDay(year, month, template.due_day);
       const dueDate = ledger.toDateString(year, month, dueDay);
+      const instanceId = randomUUID();
       insert.run(
-        randomUUID(),
+        instanceId,
         template.id,
         year,
         month,
@@ -1577,6 +1617,12 @@ function ensureMonth(year, month) {
         stamp,
         stamp
       );
+      logInstanceEvent(instanceId, "created", {
+        source: "template",
+        name: template.name,
+        due_date: dueDate,
+        amount: Number(template.amount_default || 0),
+      });
     }
   });
 
@@ -1763,6 +1809,50 @@ app.get("/api/instances", (req, res) => {
   res.json(rows);
 });
 
+app.get("/api/instances/:id/events", (req, res) => {
+  const id = String(req.params.id || "");
+  if (!id) return res.status(400).json({ error: "Invalid id" });
+  const rows = db
+    .prepare(
+      `SELECT id, instance_id, type, detail, created_at
+       FROM instance_events
+       WHERE instance_id = ?
+       ORDER BY datetime(created_at) DESC`
+    )
+    .all(id);
+  const events = rows.map((row) => ({
+    id: row.id,
+    instance_id: row.instance_id,
+    type: row.type,
+    detail: safeJsonParse(row.detail),
+    created_at: row.created_at,
+  }));
+  res.json(events);
+});
+
+app.get("/api/instance-events", (req, res) => {
+  const parsed = parseYearMonth(req);
+  if (!parsed) return res.status(400).json({ error: "Invalid year/month" });
+  const rows = db
+    .prepare(
+      `SELECT e.id, e.instance_id, e.type, e.detail, e.created_at, i.name_snapshot
+       FROM instance_events e
+       JOIN instances i ON i.id = e.instance_id
+       WHERE i.year = ? AND i.month = ?
+       ORDER BY datetime(e.created_at) DESC`
+    )
+    .all(parsed.year, parsed.month);
+  const events = rows.map((row) => ({
+    id: row.id,
+    instance_id: row.instance_id,
+    name: row.name_snapshot,
+    type: row.type,
+    detail: safeJsonParse(row.detail),
+    created_at: row.created_at,
+  }));
+  res.json(events);
+});
+
 app.patch("/api/instances/:id", (req, res) => {
   const id = String(req.params.id || "");
   if (!id) return res.status(400).json({ error: "Invalid id" });
@@ -1770,11 +1860,19 @@ app.patch("/api/instances/:id", (req, res) => {
   const fields = [];
   const values = [];
   const body = req.body || {};
+  const before = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
+  if (!before) return res.status(404).json({ error: "Instance not found" });
+  const changes = {};
+  let statusChange = null;
+  let noteChange = null;
 
   if (body.amount !== undefined) {
     const amount = Number(body.amount);
     if (!Number.isFinite(amount) || amount < 0) {
       return res.status(400).json({ error: "Amount must be >= 0" });
+    }
+    if (Number(before.amount || 0) !== amount) {
+      changes.amount = { from: Number(before.amount || 0), to: amount };
     }
     fields.push("amount = ?");
     values.push(amount);
@@ -1782,23 +1880,35 @@ app.patch("/api/instances/:id", (req, res) => {
   if (body.name_snapshot !== undefined || body.name !== undefined) {
     const nameValue = String(body.name_snapshot ?? body.name ?? "").trim();
     if (!nameValue) return res.status(400).json({ error: "Name is required" });
+    if (String(before.name_snapshot || "") !== nameValue) {
+      changes.name = { from: String(before.name_snapshot || ""), to: nameValue };
+    }
     fields.push("name_snapshot = ?");
     values.push(nameValue);
   }
   if (body.category_snapshot !== undefined || body.category !== undefined) {
     const categoryValue = String(body.category_snapshot ?? body.category ?? "").trim();
+    if (String(before.category_snapshot || "") !== categoryValue) {
+      changes.category = { from: before.category_snapshot || "", to: categoryValue || "" };
+    }
     fields.push("category_snapshot = ?");
     values.push(categoryValue || null);
   }
   if (body.due_date !== undefined) {
     const error = validateDateString(body.due_date, "due_date");
     if (error) return res.status(400).json({ error });
+    if (String(before.due_date || "") !== body.due_date) {
+      changes.due_date = { from: before.due_date || "", to: body.due_date };
+    }
     fields.push("due_date = ?");
     values.push(body.due_date);
   }
   if (body.status !== undefined) {
     if (!["pending", "paid", "skipped"].includes(body.status)) {
       return res.status(400).json({ error: "Invalid status" });
+    }
+    if (String(before.status || "") !== body.status) {
+      statusChange = { from: before.status || "", to: body.status };
     }
     fields.push("status = ?");
     values.push(body.status);
@@ -1810,6 +1920,9 @@ app.patch("/api/instances/:id", (req, res) => {
     values.push(body.paid_date);
   }
   if (body.note !== undefined) {
+    if (String(before.note || "") !== String(body.note || "")) {
+      noteChange = { from: before.note || "", to: body.note || "" };
+    }
     fields.push("note = ?");
     values.push(body.note || null);
   }
@@ -1827,6 +1940,24 @@ app.patch("/api/instances/:id", (req, res) => {
   );
   const row = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
   if (!row) return res.status(404).json({ error: "Instance not found" });
+
+  if (statusChange) {
+    const type =
+      statusChange.to === "skipped"
+        ? "skipped"
+        : statusChange.from === "skipped"
+        ? "unskipped"
+        : "status_changed";
+    logInstanceEvent(id, type, statusChange);
+  }
+  if (noteChange) {
+    logInstanceEvent(id, "note_updated", noteChange);
+  }
+  const changeKeys = Object.keys(changes);
+  if (changeKeys.length > 0) {
+    logInstanceEvent(id, "edited", { changes });
+  }
+
   res.json(attachPayments([row])[0]);
 });
 
@@ -1838,14 +1969,21 @@ app.post("/api/instances/:id/mark-paid", (req, res) => {
   const amountPaid = getAmountPaid(id);
   const amountDue = Number(instance.amount || 0);
   const remaining = Math.max(0, amountDue - amountPaid);
+  let paymentId = null;
   if (remaining > 0) {
+    paymentId = randomUUID();
     db.prepare(
       "INSERT INTO payment_events (id, instance_id, amount, paid_date, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(randomUUID(), id, remaining, todayDate(), nowIso());
+    ).run(paymentId, id, remaining, todayDate(), nowIso());
   }
   db.prepare(
     "UPDATE instances SET status = 'paid', paid_date = ?, updated_at = ? WHERE id = ?"
   ).run(todayDate(), nowIso(), id);
+  logInstanceEvent(id, "marked_done", {
+    paid_date: todayDate(),
+    amount: Number(instance.amount || 0),
+    payment_id: paymentId,
+  });
   const row = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
   res.json(attachPayments([row])[0]);
 });
@@ -1857,6 +1995,7 @@ app.post("/api/instances/:id/undo-paid", (req, res) => {
   db.prepare(
     "UPDATE instances SET status = 'pending', paid_date = NULL, updated_at = ? WHERE id = ?"
   ).run(nowIso(), id);
+  logInstanceEvent(id, "status_changed", { from: "paid", to: "pending" });
   const row = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
   if (!row) return res.status(404).json({ error: "Instance not found" });
   res.json(attachPayments([row])[0]);
@@ -1880,6 +2019,7 @@ app.post("/api/instances/:id/payments", (req, res) => {
   db.prepare(
     "INSERT INTO payment_events (id, instance_id, amount, paid_date, created_at) VALUES (?, ?, ?, ?, ?)"
   ).run(paymentId, id, amount, paidDate, nowIso());
+  logInstanceEvent(id, "log_update", { amount, date: paidDate, payment_id: paymentId });
 
   const updated = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
   res.json({
@@ -1907,6 +2047,11 @@ app.delete("/api/payments/:id", (req, res) => {
   const payment = db.prepare("SELECT * FROM payment_events WHERE id = ?").get(id);
   if (!payment) return res.status(404).json({ error: "Payment not found" });
   db.prepare("DELETE FROM payment_events WHERE id = ?").run(id);
+  logInstanceEvent(payment.instance_id, "update_removed", {
+    amount: Number(payment.amount || 0),
+    date: payment.paid_date,
+    payment_id: payment.id,
+  });
   const instance = db
     .prepare("SELECT * FROM instances WHERE id = ?")
     .get(payment.instance_id);
@@ -1979,6 +2124,7 @@ app.post("/api/reset-local", (req, res) => {
     db.prepare("DELETE FROM templates").run();
     db.prepare("DELETE FROM instances").run();
     db.prepare("DELETE FROM payment_events").run();
+    db.prepare("DELETE FROM instance_events").run();
     db.prepare("DELETE FROM month_settings").run();
     db.prepare("DELETE FROM sinking_funds").run();
     db.prepare("DELETE FROM sinking_events").run();
@@ -2710,14 +2856,17 @@ app.post("/api/v1/actions", (req, res) => {
         const amountPaid = getAmountPaid(id);
         const amountDue = Number(instance.amount || 0);
         const remaining = Math.max(0, amountDue - amountPaid);
+        let paymentId = null;
         if (remaining > 0) {
+          paymentId = randomUUID();
           db.prepare(
             "INSERT INTO payment_events (id, instance_id, amount, paid_date, created_at) VALUES (?, ?, ?, ?, ?)"
-          ).run(randomUUID(), id, remaining, paidDate, nowIso());
+          ).run(paymentId, id, remaining, paidDate, nowIso());
         }
         db.prepare(
           "UPDATE instances SET status = 'paid', paid_date = ?, updated_at = ? WHERE id = ?"
         ).run(paidDate, nowIso(), id);
+        logInstanceEvent(id, "marked_done", { paid_date: paidDate, amount: amountDue, payment_id: paymentId });
         const row = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
         result = { ok: true, instance: attachPayments([row])[0] };
         break;
@@ -2725,23 +2874,27 @@ app.post("/api/v1/actions", (req, res) => {
       case "MARK_PENDING": {
         const id = String(action.instance_id || "");
         if (!id) throw new Error("instance_id is required");
+        const before = db.prepare("SELECT status FROM instances WHERE id = ?").get(id);
         db.prepare("DELETE FROM payment_events WHERE instance_id = ?").run(id);
         db.prepare(
           "UPDATE instances SET status = 'pending', paid_date = NULL, updated_at = ? WHERE id = ?"
         ).run(nowIso(), id);
         const row = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
         if (!row) throw new Error("Instance not found");
+        logInstanceEvent(id, "status_changed", { from: before?.status || "pending", to: "pending" });
         result = { ok: true, instance: attachPayments([row])[0] };
         break;
       }
       case "SKIP_INSTANCE": {
         const id = String(action.instance_id || "");
         if (!id) throw new Error("instance_id is required");
+        const before = db.prepare("SELECT status FROM instances WHERE id = ?").get(id);
         db.prepare(
           "UPDATE instances SET status = 'skipped', paid_date = NULL, updated_at = ? WHERE id = ?"
         ).run(nowIso(), id);
         const row = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
         if (!row) throw new Error("Instance not found");
+        logInstanceEvent(id, "skipped", { from: before?.status || "pending", to: "skipped" });
         result = { ok: true, instance: attachPayments([row])[0] };
         break;
       }
@@ -2761,6 +2914,7 @@ app.post("/api/v1/actions", (req, res) => {
         db.prepare(
           "INSERT INTO payment_events (id, instance_id, amount, paid_date, created_at) VALUES (?, ?, ?, ?, ?)"
         ).run(paymentId, id, amount, paidDate, nowIso());
+        logInstanceEvent(id, "log_update", { amount, date: paidDate, payment_id: paymentId });
         const row = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
         result = {
           ok: true,
@@ -2777,6 +2931,11 @@ app.post("/api/v1/actions", (req, res) => {
           .get(paymentId);
         if (!payment) throw new Error("Payment not found");
         db.prepare("DELETE FROM payment_events WHERE id = ?").run(paymentId);
+        logInstanceEvent(payment.instance_id, "update_removed", {
+          amount: Number(payment.amount || 0),
+          date: payment.paid_date,
+          payment_id: payment.id,
+        });
         const row = db
           .prepare("SELECT * FROM instances WHERE id = ?")
           .get(payment.instance_id);
@@ -2808,32 +2967,51 @@ app.post("/api/v1/actions", (req, res) => {
       case "UPDATE_INSTANCE_FIELDS": {
         const id = String(action.instance_id || "");
         if (!id) throw new Error("instance_id is required");
+        const before = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
+        if (!before) throw new Error("Instance not found");
         const fields = [];
         const values = [];
+        const changes = {};
+        let noteChange = null;
         if (action.amount !== undefined) {
           const amount = Number(action.amount);
           if (!Number.isFinite(amount) || amount < 0) throw new Error("Amount must be >= 0");
+          if (Number(before.amount || 0) !== amount) {
+            changes.amount = { from: Number(before.amount || 0), to: amount };
+          }
           fields.push("amount = ?");
           values.push(amount);
         }
         if (action.name_snapshot !== undefined || action.name !== undefined) {
           const nameValue = String(action.name_snapshot ?? action.name ?? "").trim();
           if (!nameValue) throw new Error("Name is required");
+          if (String(before.name_snapshot || "") !== nameValue) {
+            changes.name = { from: String(before.name_snapshot || ""), to: nameValue };
+          }
           fields.push("name_snapshot = ?");
           values.push(nameValue);
         }
         if (action.category_snapshot !== undefined || action.category !== undefined) {
           const categoryValue = String(action.category_snapshot ?? action.category ?? "").trim();
+          if (String(before.category_snapshot || "") !== categoryValue) {
+            changes.category = { from: before.category_snapshot || "", to: categoryValue || "" };
+          }
           fields.push("category_snapshot = ?");
           values.push(categoryValue || null);
         }
         if (action.due_date !== undefined) {
           const error = validateDateString(action.due_date, "due_date");
           if (error) throw new Error(error);
+          if (String(before.due_date || "") !== action.due_date) {
+            changes.due_date = { from: before.due_date || "", to: action.due_date };
+          }
           fields.push("due_date = ?");
           values.push(action.due_date);
         }
         if (action.note !== undefined) {
+          if (String(before.note || "") !== String(action.note || "")) {
+            noteChange = { from: before.note || "", to: action.note || "" };
+          }
           fields.push("note = ?");
           values.push(action.note || null);
         }
@@ -2846,6 +3024,13 @@ app.post("/api/v1/actions", (req, res) => {
         );
         const row = db.prepare("SELECT * FROM instances WHERE id = ?").get(id);
         if (!row) throw new Error("Instance not found");
+        if (noteChange) {
+          logInstanceEvent(id, "note_updated", noteChange);
+        }
+        const changeKeys = Object.keys(changes);
+        if (changeKeys.length > 0) {
+          logInstanceEvent(id, "edited", { changes });
+        }
         result = { ok: true, instance: normalizeInstance(row) };
         break;
       }
@@ -3204,6 +3389,84 @@ app.get("/internal/behavior/features", (req, res) => {
     generated_at: nowIsoLocal(),
     features,
   });
+});
+
+app.get("/reset", (req, res) => {
+  res.send(`<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Reset Au Jour Le Jour</title>
+      <style>
+        body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; background: #f6f7f9; color: #0f172a; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+        .card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 6px 18px rgba(15,23,42,0.08); max-width: 420px; text-align: center; }
+        button { margin-top: 16px; padding: 10px 16px; border-radius: 8px; border: none; background: #0f172a; color: white; cursor: pointer; }
+        .meta { color: #475569; font-size: 13px; margin-top: 8px; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Reset local data</h1>
+        <p>This clears local browser storage for the tracker UI.</p>
+        <button id="reset-btn">Reset now</button>
+        <div id="status" class="meta"></div>
+      </div>
+      <script>
+        async function reset() {
+          const status = document.getElementById('status');
+          status.textContent = 'Clearing local data...';
+          try { localStorage.clear(); } catch (e) {}
+          try {
+            if (window.indexedDB && indexedDB.databases) {
+              const dbs = await indexedDB.databases();
+              await Promise.all((dbs || []).map((db) => new Promise((resolve) => {
+                if (!db || !db.name) return resolve();
+                const req = indexedDB.deleteDatabase(db.name);
+                req.onsuccess = () => resolve();
+                req.onerror = () => resolve();
+                req.onblocked = () => resolve();
+              })));
+            } else if (window.indexedDB) {
+              indexedDB.deleteDatabase('ajl_pwa');
+              indexedDB.deleteDatabase('ajl_web');
+            }
+          } catch (e) {}
+          try {
+            if ('caches' in window) {
+              const keys = await caches.keys();
+              await Promise.all(keys.map((k) => caches.delete(k)));
+            }
+          } catch (e) {}
+          try {
+            if ('serviceWorker' in navigator) {
+              const regs = await navigator.serviceWorker.getRegistrations();
+              await Promise.all(regs.map((r) => r.unregister()));
+            }
+          } catch (e) {}
+          status.textContent = 'Done. Redirecting...';
+          setTimeout(() => location.replace('/'), 300);
+        }
+        document.getElementById('reset-btn').addEventListener('click', reset);
+      </script>
+    </body>
+  </html>`);
+});
+
+app.get("/safe", (req, res) => {
+  res.send(`<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Safe Mode</title>
+    </head>
+    <body>
+      <script>
+        location.replace('/?safe=1');
+      </script>
+    </body>
+  </html>`);
 });
 
 app.get("/api/health", (req, res) => {

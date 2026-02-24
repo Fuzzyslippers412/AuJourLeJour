@@ -35,6 +35,10 @@ const state = {
   },
   reviewRange: "month",
   selectedInstanceId: null,
+  splitView: false,
+  loading: false,
+  instanceEvents: {},
+  activityEvents: [],
 };
 
 const weeksPerMonth = 4.33;
@@ -42,6 +46,7 @@ const daysPerMonthAvg = 30.4;
 let flashTimer = null;
 let autoMonthTimer = null;
 let refreshTimer = null;
+let splitViewTimer = null;
 let storageFailureHandled = false;
 const MAX_LLM_INSTANCES = 60;
 const MAX_LLM_TEMPLATES = 60;
@@ -263,6 +268,13 @@ const els = {
   itemsList: document.getElementById("items-list"),
   searchInput: document.getElementById("search-input"),
   statusChips: Array.from(document.querySelectorAll("#status-chips .chip")),
+  filterOpen: document.getElementById("filter-open"),
+  filterSheet: document.getElementById("filter-sheet"),
+  filterClose: document.getElementById("filter-close"),
+  filterStatusChips: Array.from(document.querySelectorAll("#filter-status .chip")),
+  filterCategory: document.getElementById("filter-category"),
+  filterSort: document.getElementById("filter-sort"),
+  filterApply: document.getElementById("filter-apply"),
   categoryFilter: document.getElementById("category-filter"),
   sortFilter: document.getElementById("sort-filter"),
   zeroState: document.getElementById("zero-state"),
@@ -308,6 +320,8 @@ const els = {
   fundActive: document.getElementById("fund-active"),
   fundsList: document.getElementById("funds-list"),
   detailsDrawer: document.getElementById("details-drawer"),
+  detailsPane: document.getElementById("details-pane"),
+  detailsPaneEmpty: document.getElementById("details-pane-empty"),
   detailName: document.getElementById("detail-name"),
   detailMeta: document.getElementById("detail-meta"),
   detailMarkDone: document.getElementById("detail-mark-done"),
@@ -455,6 +469,29 @@ function formatShortDate(dateString) {
   });
 }
 
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "";
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatChangeValue(field, value) {
+  if (value == null) return "—";
+  if (field === "amount") return formatMoney(value);
+  if (field === "due_date") return formatShortDate(value);
+  return String(value);
+}
+
+function getRowHeight() {
+  return window.innerWidth >= 1024 ? 64 : 56;
+}
+
 function isCurrentMonth(year, month) {
   const now = new Date();
   return now.getFullYear() === year && now.getMonth() + 1 === month;
@@ -597,6 +634,21 @@ async function loadPayments() {
   );
   const data = await readApiData(res);
   state.payments = Array.isArray(data) ? data : [];
+}
+
+async function loadInstanceEvents(instanceId) {
+  if (!instanceId) return [];
+  const res = await fetch(`/api/instances/${instanceId}/events`);
+  const data = await readApiData(res);
+  const events = Array.isArray(data) ? data : [];
+  state.instanceEvents[instanceId] = events;
+  return events;
+}
+
+async function loadActivityEvents() {
+  const res = await fetch(`/api/instance-events?year=${state.selectedYear}&month=${state.selectedMonth}`);
+  const data = await readApiData(res);
+  state.activityEvents = Array.isArray(data) ? data : [];
 }
 
 async function loadFunds() {
@@ -863,6 +915,7 @@ async function addPayment(instanceId, amount) {
   if (data.instance) updateInstanceInState(data.instance);
   flashRow(instanceId);
   await loadPayments();
+  await loadActivityEvents();
   renderDashboard();
 }
 
@@ -878,6 +931,7 @@ async function markPaid(instanceId, options = {}) {
   }
   if (result.instance) updateInstanceInState(result.instance);
   await loadPayments();
+  await loadActivityEvents();
   renderDashboard();
   if (!options.silent) {
     showToast("Marked done.", "Undo", () => markPending(instanceId));
@@ -895,6 +949,7 @@ async function markPending(instanceId) {
   }
   if (result.instance) updateInstanceInState(result.instance);
   await loadPayments();
+  await loadActivityEvents();
   renderDashboard();
 }
 
@@ -918,6 +973,7 @@ async function undoPayment(paymentId) {
   const data = await res.json();
   if (data.instance) updateInstanceInState(data.instance);
   await loadPayments();
+  await loadActivityEvents();
   renderDashboard();
 }
 
@@ -934,6 +990,7 @@ async function patchInstance(id, body) {
   }
   const updated = await res.json();
   updateInstanceInState(updated);
+  await loadActivityEvents();
   renderDashboard();
 }
 
@@ -1205,6 +1262,7 @@ function renderActionQueue(baseList) {
     const kebab = document.createElement("button");
     kebab.className = "ghost-btn small";
     kebab.textContent = "…";
+    kebab.setAttribute("aria-label", "Open details");
     kebab.addEventListener("click", (event) => {
       event.stopPropagation();
       openInstanceDetail(item.id);
@@ -1435,7 +1493,8 @@ function renderPiggy() {
 function renderActivity() {
   if (!els.reviewActivityList) return;
   els.reviewActivityList.innerHTML = "";
-  if (state.payments.length === 0) {
+  const events = state.activityEvents || [];
+  if (events.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
     empty.textContent = "No activity yet.";
@@ -1443,59 +1502,63 @@ function renderActivity() {
     return;
   }
 
-  const instanceMap = new Map(
-    state.instances.map((inst) => [inst.id, inst.name_snapshot])
-  );
-  const instanceStatus = new Map(
-    deriveInstances().map((inst) => [inst.id, inst.status_derived])
-  );
-  const lastPaymentMap = new Map();
-  state.payments.forEach((payment) => {
-    const current = lastPaymentMap.get(payment.instance_id);
-    if (!current || payment.paid_date > current.paid_date) {
-      lastPaymentMap.set(payment.instance_id, payment);
-    }
-  });
-
-  const filtered = state.payments.filter((payment) => {
+  const filtered = events.filter((event) => {
     if (state.reviewRange === "today") {
-      return payment.paid_date === getTodayDateString();
+      return String(event.created_at || "").startsWith(getTodayDateString());
     }
     if (state.reviewRange === "week") {
-      const diff = diffDays(payment.paid_date, getTodayDateString());
-      return diff >= -6;
+      const date = String(event.created_at || "").slice(0, 10);
+      const diff = diffDays(date, getTodayDateString());
+      return diff <= 7;
     }
     return true;
-  }).sort((a, b) => b.paid_date.localeCompare(a.paid_date));
+  });
 
-  filtered.slice(0, 30).forEach((payment) => {
+  if (filtered.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "No activity yet.";
+    els.reviewActivityList.appendChild(empty);
+    return;
+  }
+
+  const describeEvent = (event) => {
+    const time = formatDateTime(event.created_at);
+    if (event.type === "created") return { title: `Created · ${event.name || "Item"}`, meta: time };
+    if (event.type === "marked_done") return { title: `Marked done · ${event.name || "Item"}`, meta: time };
+    if (event.type === "log_update") return { title: `Logged update · ${event.name || "Item"}`, meta: time };
+    if (event.type === "update_removed") return { title: `Update removed · ${event.name || "Item"}`, meta: time };
+    if (event.type === "skipped") return { title: `Marked skipped · ${event.name || "Item"}`, meta: time };
+    if (event.type === "unskipped") return { title: `Unskipped · ${event.name || "Item"}`, meta: time };
+    if (event.type === "status_changed") return { title: `Status changed · ${event.name || "Item"}`, meta: time };
+    if (event.type === "note_updated") return { title: `Note updated · ${event.name || "Item"}`, meta: time };
+    if (event.type === "edited") return { title: `Edited · ${event.name || "Item"}`, meta: time };
+    return { title: `Updated · ${event.name || "Item"}`, meta: time };
+  };
+
+  filtered.slice(0, 50).forEach((event) => {
     const row = document.createElement("div");
     row.className = "list-row";
-
     const left = document.createElement("div");
     left.className = "list-main";
-    const name = instanceMap.get(payment.instance_id) || "Update";
     const title = document.createElement("div");
     title.className = "item-title";
-    const isDone =
-      instanceStatus.get(payment.instance_id) === "paid" &&
-      lastPaymentMap.get(payment.instance_id)?.id === payment.id;
-    title.textContent = `${name} · ${isDone ? "Marked done" : "Logged update"}`;
     const meta = document.createElement("div");
     meta.className = "item-sub";
-    meta.textContent = `${formatMoney(payment.amount)} · ${formatShortDate(payment.paid_date)}`;
+    const desc = describeEvent(event);
+    title.textContent = desc.title;
+    meta.textContent = desc.meta;
     left.appendChild(title);
     left.appendChild(meta);
-
-    const actions = document.createElement("div");
-    const undo = document.createElement("button");
-    undo.className = "ghost-btn";
-    undo.textContent = "Undo";
-    undo.addEventListener("click", () => undoPayment(payment.id));
-    actions.appendChild(undo);
-
     row.appendChild(left);
-    row.appendChild(actions);
+    const paymentId = event.detail?.payment_id;
+    if (paymentId) {
+      const undo = document.createElement("button");
+      undo.className = "ghost-btn";
+      undo.textContent = "Undo";
+      undo.addEventListener("click", () => undoPayment(paymentId));
+      row.appendChild(undo);
+    }
     els.reviewActivityList.appendChild(row);
   });
 }
@@ -1818,7 +1881,7 @@ async function applyProposal(proposal) {
   }
 
   if (intent === "SET_CASH_START") {
-    return { ok: false, message: "Cash tracking is not available in tracker mode." };
+    return { ok: false, message: "Tracking is not available in tracker mode." };
   }
 
   if (intent === "CREATE_TEMPLATE") {
@@ -2322,7 +2385,7 @@ function summarizeProposal(proposal) {
   if (intent === "DELETE_FUND") return `Delete reserved bucket: ${target}`;
   if (intent === "ADD_SINKING_EVENT") return `Add reserved bucket event: ${target}`;
   if (intent === "MARK_FUND_PAID") return `Mark reserved bucket done: ${target}`;
-  if (intent === "SET_CASH_START") return "Cash tracking removed";
+  if (intent === "SET_CASH_START") return "Tracking removed";
   if (intent === "EXPORT_MONTH") return "Export current month CSV";
   if (intent === "EXPORT_BACKUP") return "Export full backup JSON";
   if (intent === "GENERATE_MONTH") return "Generate month";
@@ -2606,6 +2669,14 @@ function renderCategoryFilter(list) {
   allOption.textContent = "All categories";
   els.categoryFilter.appendChild(allOption);
 
+  if (els.filterCategory) {
+    els.filterCategory.innerHTML = "";
+    const sheetAll = document.createElement("option");
+    sheetAll.value = "all";
+    sheetAll.textContent = "All categories";
+    els.filterCategory.appendChild(sheetAll);
+  }
+
   Array.from(categories)
     .sort((a, b) => a.localeCompare(b))
     .forEach((cat) => {
@@ -2614,11 +2685,39 @@ function renderCategoryFilter(list) {
       option.textContent = cat;
       if (cat === current) option.selected = true;
       els.categoryFilter.appendChild(option);
+
+      if (els.filterCategory) {
+        const sheetOpt = document.createElement("option");
+        sheetOpt.value = cat;
+        sheetOpt.textContent = cat;
+        els.filterCategory.appendChild(sheetOpt);
+      }
     });
 
   if (!categories.has(current)) {
     state.filters.category = "all";
   }
+}
+
+function syncFilterSheet() {
+  if (els.filterSort) els.filterSort.value = state.filters.sort;
+  if (els.filterCategory) els.filterCategory.value = state.filters.category;
+  if (els.filterStatusChips && els.filterStatusChips.length > 0) {
+    els.filterStatusChips.forEach((chip) => {
+      chip.classList.toggle("active", chip.dataset.status === state.filters.status);
+    });
+  }
+}
+
+function openFilterSheet() {
+  if (!els.filterSheet) return;
+  syncFilterSheet();
+  els.filterSheet.classList.remove("hidden");
+}
+
+function closeFilterSheet() {
+  if (!els.filterSheet) return;
+  els.filterSheet.classList.add("hidden");
 }
 
 function renderDefaults() {
@@ -2726,6 +2825,20 @@ function renderItems(baseList) {
   });
 
   els.itemsList.innerHTML = "";
+
+  if (state.loading && list.length === 0) {
+    const skeletonWrap = document.createElement("div");
+    skeletonWrap.className = "items-skeleton";
+    const rows = window.innerWidth >= 1024 ? 8 : 6;
+    for (let i = 0; i < rows; i += 1) {
+      const sk = document.createElement("div");
+      sk.className = "skeleton-row";
+      skeletonWrap.appendChild(sk);
+    }
+    els.itemsList.appendChild(skeletonWrap);
+    return;
+  }
+
   if (list.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
@@ -2739,8 +2852,9 @@ function renderItems(baseList) {
 
   const today = getTodayDateString();
   const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+  const rowHeight = getRowHeight();
 
-  list.forEach((item) => {
+  const buildRow = (item) => {
     const row = document.createElement("div");
     row.className = `item-row status-${item.status_derived}`;
     row.dataset.id = item.id;
@@ -2787,48 +2901,153 @@ function renderItems(baseList) {
     row.appendChild(main);
     row.appendChild(right);
     row.addEventListener("click", () => openInstanceDetail(item.id));
-    els.itemsList.appendChild(row);
-  });
+    return row;
+  };
+
+  const scroll = document.createElement("div");
+  scroll.className = "items-scroll";
+  const spacer = document.createElement("div");
+  spacer.className = "items-spacer";
+  spacer.style.height = `${list.length * rowHeight}px`;
+  const inner = document.createElement("div");
+  inner.className = "items-inner";
+  scroll.appendChild(spacer);
+  scroll.appendChild(inner);
+  els.itemsList.appendChild(scroll);
+
+  const renderWindow = () => {
+    const scrollTop = scroll.scrollTop;
+    const height = scroll.clientHeight || 400;
+    const start = Math.max(0, Math.floor(scrollTop / rowHeight) - 5);
+    const end = Math.min(list.length, Math.ceil((scrollTop + height) / rowHeight) + 5);
+    inner.style.transform = `translateY(${start * rowHeight}px)`;
+    inner.innerHTML = "";
+    for (let i = start; i < end; i += 1) {
+      inner.appendChild(buildRow(list[i]));
+    }
+  };
+
+  scroll.addEventListener("scroll", renderWindow);
+  renderWindow();
 }
 
-function renderDetailHistory(instanceId) {
+async function renderDetailHistory(instanceId) {
   if (!els.detailHistory) return;
   els.detailHistory.innerHTML = "";
-  const events = state.payments.filter((payment) => payment.instance_id === instanceId);
-  if (events.length === 0) {
+  const events = await loadInstanceEvents(instanceId);
+  if (!events || events.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
     empty.textContent = "No updates yet.";
     els.detailHistory.appendChild(empty);
     return;
   }
-  events
-    .slice()
-    .sort((a, b) => b.paid_date.localeCompare(a.paid_date))
-    .forEach((event) => {
-      const row = document.createElement("div");
-      row.className = "list-row";
-      const left = document.createElement("div");
-      left.className = "list-main";
-      const title = document.createElement("div");
-      title.className = "item-title";
-      title.textContent = `Logged update ${formatMoney(event.amount)}`;
-      const meta = document.createElement("div");
-      meta.className = "item-sub";
-      meta.textContent = formatShortDate(event.paid_date);
-      left.appendChild(title);
-      left.appendChild(meta);
-      const undo = document.createElement("button");
-      undo.className = "ghost-btn";
-      undo.textContent = "Undo";
-      undo.addEventListener("click", async () => {
-        await undoPayment(event.id);
-        openInstanceDetail(instanceId);
+
+  const describeEvent = (event) => {
+    const detail = event.detail || {};
+    const time = formatDateTime(event.created_at);
+    if (event.type === "created") return { title: "Created", meta: time };
+    if (event.type === "marked_done") {
+      const amount = detail.amount ? formatMoney(detail.amount) : "";
+      return { title: "Marked done", meta: `${amount}`.trim() ? `${amount} · ${time}` : time };
+    }
+    if (event.type === "log_update") {
+      const amount = detail.amount ? formatMoney(detail.amount) : "";
+      return { title: `Logged update ${amount}`.trim(), meta: time };
+    }
+    if (event.type === "update_removed") {
+      const amount = detail.amount ? formatMoney(detail.amount) : "";
+      return { title: `Update removed ${amount}`.trim(), meta: time };
+    }
+    if (event.type === "skipped") {
+      return { title: "Marked skipped", meta: time };
+    }
+    if (event.type === "unskipped") {
+      return { title: "Unskipped", meta: time };
+    }
+    if (event.type === "status_changed") {
+      const meta = detail.from && detail.to ? `${detail.from} → ${detail.to} · ${time}` : time;
+      return { title: "Status changed", meta };
+    }
+    if (event.type === "note_updated") {
+      return { title: "Note updated", meta: time };
+    }
+    if (event.type === "edited") {
+      const changes = detail.changes || {};
+      const parts = Object.entries(changes).map(([key, value]) => {
+        const fromVal = formatChangeValue(key, value.from);
+        const toVal = formatChangeValue(key, value.to);
+        return `${key.replace("_", " ")}: ${fromVal} → ${toVal}`;
       });
-      row.appendChild(left);
-      row.appendChild(undo);
-      els.detailHistory.appendChild(row);
-    });
+      const meta = parts.length > 0 ? `${parts.join(" · ")} · ${time}` : time;
+      return { title: "Edited bill", meta };
+    }
+    return { title: "Updated", meta: time };
+  };
+
+  events.forEach((event) => {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    const left = document.createElement("div");
+    left.className = "list-main";
+    const title = document.createElement("div");
+    title.className = "item-title";
+    const meta = document.createElement("div");
+    meta.className = "item-sub";
+    const desc = describeEvent(event);
+    title.textContent = desc.title;
+    meta.textContent = desc.meta;
+    left.appendChild(title);
+    left.appendChild(meta);
+    row.appendChild(left);
+    els.detailHistory.appendChild(row);
+  });
+}
+
+function isSplitView() {
+  return window.matchMedia("(min-width: 1024px) and (orientation: landscape)").matches;
+}
+
+function getDetailPanel() {
+  return document.querySelector("#details-drawer .drawer-panel, #details-pane .drawer-panel");
+}
+
+function renderDetailsEmpty() {
+  if (els.detailsPaneEmpty) {
+    els.detailsPaneEmpty.classList.remove("hidden");
+  }
+  const panel = getDetailPanel();
+  if (panel) panel.classList.add("hidden");
+}
+
+function mountDetailPanelToPane() {
+  if (!els.detailsPane) return;
+  const panel = getDetailPanel();
+  if (!panel) return;
+  els.detailsPane.appendChild(panel);
+  els.detailsPane.classList.remove("hidden");
+  if (els.detailsDrawer) els.detailsDrawer.classList.add("hidden");
+}
+
+function mountDetailPanelToDrawer() {
+  if (!els.detailsDrawer) return;
+  const panel = getDetailPanel();
+  if (!panel) return;
+  els.detailsDrawer.appendChild(panel);
+}
+
+function updateSplitView(force = false) {
+  const shouldSplit = state.view === "today" && isSplitView();
+  if (!force && shouldSplit === state.splitView) return;
+  state.splitView = shouldSplit;
+  document.body.classList.toggle("split-view", shouldSplit);
+  if (shouldSplit) {
+    mountDetailPanelToPane();
+    if (!state.selectedInstanceId) renderDetailsEmpty();
+  } else {
+    mountDetailPanelToDrawer();
+    if (els.detailsPane) els.detailsPane.classList.add("hidden");
+  }
 }
 
 function openInstanceDetail(instanceId) {
@@ -2861,12 +3080,23 @@ function openInstanceDetail(instanceId) {
   if (els.detailLogStatus) els.detailLogStatus.textContent = "";
   if (els.detailSaveStatus) els.detailSaveStatus.textContent = "";
   renderDetailHistory(instanceId);
-  els.detailsDrawer.classList.remove("hidden");
+  if (state.splitView) {
+    if (els.detailsPaneEmpty) els.detailsPaneEmpty.classList.add("hidden");
+    const panel = getDetailPanel();
+    if (panel) panel.classList.remove("hidden");
+    mountDetailPanelToPane();
+  } else {
+    els.detailsDrawer.classList.remove("hidden");
+  }
 }
 
 function closeInstanceDetail() {
-  if (!els.detailsDrawer) return;
-  els.detailsDrawer.classList.add("hidden");
+  if (state.splitView) {
+    state.selectedInstanceId = null;
+    renderDetailsEmpty();
+    return;
+  }
+  if (els.detailsDrawer) els.detailsDrawer.classList.add("hidden");
   state.selectedInstanceId = null;
 }
 
@@ -3518,9 +3748,19 @@ function renderView() {
   if (els.navToday) els.navToday.classList.toggle("active", isToday);
   if (els.navReview) els.navReview.classList.toggle("active", isReview);
   if (els.navSetup) els.navSetup.classList.toggle("active", isSetup);
+
+  updateSplitView(true);
+  if (!isToday && els.detailsDrawer) {
+    els.detailsDrawer.classList.add("hidden");
+  }
+  if (!isToday && els.detailsPane) {
+    els.detailsPane.classList.add("hidden");
+  }
 }
 
 async function refreshAll() {
+  state.loading = true;
+  renderDashboard();
   try {
     syncToCurrentMonth();
     await ensureMonth();
@@ -3529,6 +3769,7 @@ async function refreshAll() {
       loadTemplates(),
       loadInstances(),
       loadPayments(),
+      loadActivityEvents(),
       loadFunds(),
       loadQwenAuthStatus(),
       loadCommandLog(),
@@ -3542,6 +3783,8 @@ async function refreshAll() {
     if (!handleStorageFailure(err)) {
       throw err;
     }
+  } finally {
+    state.loading = false;
   }
 }
 
@@ -3834,6 +4077,42 @@ function bindEvents() {
     });
   }
 
+  if (els.filterOpen) {
+    els.filterOpen.addEventListener("click", () => openFilterSheet());
+  }
+  if (els.filterClose) {
+    els.filterClose.addEventListener("click", () => closeFilterSheet());
+  }
+  if (els.filterSheet) {
+    els.filterSheet.addEventListener("click", (event) => {
+      if (event.target === els.filterSheet) closeFilterSheet();
+    });
+  }
+  if (els.filterStatusChips) {
+    els.filterStatusChips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const status = chip.dataset.status || "all";
+        state.filters.status = status;
+        if (els.statusChips) {
+          els.statusChips.forEach((btn) => btn.classList.remove("active"));
+          const match = els.statusChips.find((btn) => btn.dataset.status === status);
+          if (match) match.classList.add("active");
+        }
+        syncFilterSheet();
+      });
+    });
+  }
+  if (els.filterApply) {
+    els.filterApply.addEventListener("click", () => {
+      if (els.filterCategory) state.filters.category = els.filterCategory.value;
+      if (els.filterSort) state.filters.sort = els.filterSort.value;
+      if (els.categoryFilter) els.categoryFilter.value = state.filters.category;
+      if (els.sortFilter) els.sortFilter.value = state.filters.sort;
+      closeFilterSheet();
+      renderDashboard();
+    });
+  }
+
   if (els.reviewFilters) {
     els.reviewFilters.forEach((chip) => {
       chip.addEventListener("click", () => {
@@ -3858,6 +4137,14 @@ function bindEvents() {
 
   if (els.detailsDrawer) {
     els.detailsDrawer.addEventListener("click", (event) => {
+      const target = event.target;
+      if (target && target.dataset && target.dataset.close === "details") {
+        closeInstanceDetail();
+      }
+    });
+  }
+  if (els.detailsPane) {
+    els.detailsPane.addEventListener("click", (event) => {
       const target = event.target;
       if (target && target.dataset && target.dataset.close === "details") {
         closeInstanceDetail();
@@ -4237,6 +4524,12 @@ async function init() {
   if (els.fundMonths && els.fundCadence && els.fundCadence.value !== "custom_months") {
     els.fundMonths.disabled = true;
   }
+  updateSplitView(true);
+  window.addEventListener("resize", () => {
+    if (splitViewTimer) clearTimeout(splitViewTimer);
+    splitViewTimer = setTimeout(() => updateSplitView(), 150);
+  });
+  window.addEventListener("orientationchange", () => updateSplitView(true));
   if (!state.safeMode) {
     refreshAll();
     refreshTimer = setInterval(() => {

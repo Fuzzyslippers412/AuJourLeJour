@@ -46,109 +46,162 @@
           </div>
         </div>
 
-        <div id="status-bar" class="status-bar">
-          <div class="status-counts">
-            <div class="status-count"><span id="count-remaining">0</span> Remaining</div>
-            <div class="status-count overdue"><span id="count-overdue">0</span> Overdue</div>
-            <div class="status-count soon"><span id="count-soon">0</span> Due soon</div>
+        <div class="today-layout">
+          <div class="today-main">
+            <div id="status-bar" class="status-bar">
+              <div class="status-counts">
+                <div class="status-count"><span id="count-remaining">0</span> Remaining</div>
+                <div class="status-count overdue"><span id="count-overdue">0</span> Overdue</div>
+                <div class="status-count soon"><span id="count-soon">0</span> Due soon</div>
+              </div>
+              <div id="status-period" class="status-period"></div>
+              <button id="status-expand" class="ghost-btn">Summary</button>
+            </div>
+
+            <div id="summary-sheet" class="sheet hidden">
+              <div class="sheet-card">
+                <div class="sheet-header">
+                  <div>
+                    <div class="sheet-title">Monthly summary</div>
+                    <div class="sheet-sub">Reference totals only.</div>
+                  </div>
+                  <button id="summary-close" class="icon-btn" aria-label="Close">&times;</button>
+                </div>
+                <div class="summary-counts">
+                  <div>Remaining: <span id="summary-count-remaining">0</span></div>
+                  <div>Overdue: <span id="summary-count-overdue">0</span></div>
+                  <div>Due soon: <span id="summary-count-soon">0</span></div>
+                  <div>Done: <span id="summary-count-done">0</span></div>
+                </div>
+                <div class="summary-grid">
+                  <div class="summary-item">
+                    <div class="summary-label">Required</div>
+                    <div id="required-amount" class="summary-value">$0.00</div>
+                  </div>
+                  <div class="summary-item">
+                    <div class="summary-label">Done</div>
+                    <div id="paid-amount" class="summary-value">$0.00</div>
+                  </div>
+                  <div class="summary-item">
+                    <div class="summary-label">Remaining</div>
+                    <div id="remaining-amount" class="summary-value">$0.00</div>
+                  </div>
+                  <div class="summary-item">
+                    <div class="summary-label">Plan pace (day)</div>
+                    <div id="need-day" class="summary-value">$0.00</div>
+                    <div id="need-day-plan" class="summary-caption">Planning avg: $0.00/day</div>
+                  </div>
+                  <div class="summary-item">
+                    <div class="summary-label">Plan pace (week)</div>
+                    <div id="need-week" class="summary-value">$0.00</div>
+                    <div id="need-week-plan" class="summary-caption">Planning avg: $0.00/week</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <section class="card action-queue" id="action-queue">
+              <div class="queue-header">
+                <div>
+                  <div class="queue-title">Action Queue</div>
+                  <div id="queue-subtitle" class="queue-sub">Overdue: 0 items</div>
+                </div>
+                <button id="mark-all-overdue" class="btn-small btn-primary">Mark all overdue done</button>
+              </div>
+
+              <div class="queue-section">
+                <div class="queue-section-title">Overdue</div>
+                <div id="queue-overdue" class="queue-list"></div>
+              </div>
+              <div class="queue-section">
+                <div class="queue-section-title">Due next 7 days</div>
+                <div id="queue-soon" class="queue-list"></div>
+              </div>
+              <div class="queue-section">
+                <div class="queue-section-title">
+                  <span>Later</span>
+                  <button id="toggle-later" class="ghost-btn small">Hide</button>
+                </div>
+                <div id="queue-later" class="queue-list"></div>
+              </div>
+            </section>
+
+            <section id="recent-strip" class="recent-strip hidden"></section>
+
+            <section id="items-card" class="card all-items">
+              <div class="card-title">Bills list</div>
+              <div class="filter-bar">
+                <input id="search-input" class="search-input" type="search" placeholder="Search bills..." />
+              <div class="chip-group" id="status-chips">
+                <button class="chip active" data-status="all">All</button>
+                <button class="chip" data-status="pending">Pending</button>
+                <button class="chip" data-status="partial">Partial</button>
+                <button class="chip" data-status="paid">Done</button>
+                <button class="chip" data-status="skipped">Skipped</button>
+              </div>
+              <button id="filter-open" class="ghost-btn small filter-btn">Filters</button>
+              <select id="category-filter" class="select">
+                <option value="all">All categories</option>
+              </select>
+              <select id="sort-filter" class="select">
+                <option value="due_date">Due date</option>
+                  <option value="amount">Amount</option>
+                  <option value="name">Name</option>
+                  <option value="status">Status</option>
+                </select>
+              </div>
+              <div id="items-list" class="items-list"></div>
+            </section>
           </div>
-          <div id="status-period" class="status-period"></div>
-          <button id="status-expand" class="ghost-btn">Summary</button>
+
+          <aside id="details-pane" class="details-pane hidden">
+            <div id="details-pane-empty" class="details-empty">
+              Select a bill to see details.
+            </div>
+          </aside>
         </div>
 
-        <div id="summary-sheet" class="sheet hidden">
+        <div id="filter-sheet" class="sheet hidden">
           <div class="sheet-card">
             <div class="sheet-header">
               <div>
-                <div class="sheet-title">Monthly summary</div>
-                <div class="sheet-sub">Reference totals only.</div>
+                <div class="sheet-title">Filters</div>
+                <div class="sheet-sub">Adjust list filtering.</div>
               </div>
-              <button id="summary-close" class="icon-btn" aria-label="Close">&times;</button>
+              <button id="filter-close" class="icon-btn" aria-label="Close">&times;</button>
             </div>
-            <div class="summary-counts">
-              <div>Remaining: <span id="summary-count-remaining">0</span></div>
-              <div>Overdue: <span id="summary-count-overdue">0</span></div>
-              <div>Due soon: <span id="summary-count-soon">0</span></div>
-              <div>Done: <span id="summary-count-done">0</span></div>
+            <div class="sheet-section">
+              <div class="section-title">Status</div>
+              <div id="filter-status" class="chip-group">
+                <button class="chip" data-status="all">All</button>
+                <button class="chip" data-status="pending">Pending</button>
+                <button class="chip" data-status="partial">Partial</button>
+                <button class="chip" data-status="paid">Done</button>
+                <button class="chip" data-status="skipped">Skipped</button>
+              </div>
             </div>
-            <div class="summary-grid">
-              <div class="summary-item">
-                <div class="summary-label">Required</div>
-                <div id="required-amount" class="summary-value">$0.00</div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">Done</div>
-                <div id="paid-amount" class="summary-value">$0.00</div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">Remaining</div>
-                <div id="remaining-amount" class="summary-value">$0.00</div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">Plan pace (day)</div>
-                <div id="need-day" class="summary-value">$0.00</div>
-                <div id="need-day-plan" class="summary-caption">Planning avg: $0.00/day</div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">Plan pace (week)</div>
-                <div id="need-week" class="summary-value">$0.00</div>
-                <div id="need-week-plan" class="summary-caption">Planning avg: $0.00/week</div>
-              </div>
+            <div class="sheet-section">
+              <label>
+                Category
+                <select id="filter-category" class="select"></select>
+              </label>
+            </div>
+            <div class="sheet-section">
+              <label>
+                Sort
+                <select id="filter-sort" class="select">
+                  <option value="due_date">Due date</option>
+                  <option value="amount">Amount</option>
+                  <option value="name">Name</option>
+                  <option value="status">Status</option>
+                </select>
+              </label>
+            </div>
+            <div class="sheet-actions">
+              <button id="filter-apply" class="btn-small btn-primary">Apply</button>
             </div>
           </div>
         </div>
-
-        <section class="card action-queue" id="action-queue">
-          <div class="queue-header">
-            <div>
-              <div class="queue-title">Action Queue</div>
-              <div id="queue-subtitle" class="queue-sub">Overdue: 0 items</div>
-            </div>
-            <button id="mark-all-overdue" class="btn-small btn-primary">Mark all overdue done</button>
-          </div>
-
-          <div class="queue-section">
-            <div class="queue-section-title">Overdue</div>
-            <div id="queue-overdue" class="queue-list"></div>
-          </div>
-          <div class="queue-section">
-            <div class="queue-section-title">Due next 7 days</div>
-            <div id="queue-soon" class="queue-list"></div>
-          </div>
-          <div class="queue-section">
-            <div class="queue-section-title">
-              <span>Later</span>
-              <button id="toggle-later" class="ghost-btn small">Hide</button>
-            </div>
-            <div id="queue-later" class="queue-list"></div>
-          </div>
-        </section>
-
-        <section id="recent-strip" class="recent-strip hidden"></section>
-
-        <section id="items-card" class="card all-items">
-          <div class="card-title">Bills list</div>
-          <div class="filter-bar">
-            <input id="search-input" class="search-input" type="search" placeholder="Search bills..." />
-            <div class="chip-group" id="status-chips">
-              <button class="chip active" data-status="all">All</button>
-              <button class="chip" data-status="pending">Pending</button>
-              <button class="chip" data-status="partial">Partial</button>
-              <button class="chip" data-status="paid">Done</button>
-              <button class="chip" data-status="skipped">Skipped</button>
-            </div>
-            <select id="category-filter" class="select">
-              <option value="all">All categories</option>
-            </select>
-            <select id="sort-filter" class="select">
-              <option value="due_date">Due date</option>
-              <option value="amount">Amount</option>
-              <option value="name">Name</option>
-              <option value="status">Status</option>
-            </select>
-          </div>
-          <div id="items-list" class="items-list"></div>
-        </section>
       </section>
 
       <section id="review-view" class="view hidden">

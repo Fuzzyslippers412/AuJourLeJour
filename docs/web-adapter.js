@@ -20,6 +20,7 @@
         templates: [],
         instances: [],
         payment_events: [],
+        instance_events: [],
         month_settings: [],
         sinking_funds: [],
         sinking_events: [],
@@ -271,6 +272,21 @@
     return getData(db).payment_events || [];
   }
 
+  function getInstanceEvents(db) {
+    return getData(db).instance_events || [];
+  }
+
+  function logInstanceEvent(db, instanceId, type, detail) {
+    if (!instanceId || !type) return;
+    getInstanceEvents(db).push({
+      id: uuid(),
+      instance_id: instanceId,
+      type,
+      detail: detail || null,
+      created_at: new Date().toISOString(),
+    });
+  }
+
   function getSinkingFunds(db) {
     return getData(db).sinking_funds || [];
   }
@@ -310,8 +326,9 @@
       if (exists) return;
       const dueDay = clampDueDay(year, month, template.due_day);
       const dueDate = toDateString(year, month, dueDay);
+      const instanceId = uuid();
       instances.push({
-        id: uuid(),
+        id: instanceId,
         template_id: template.id,
         year,
         month,
@@ -326,6 +343,12 @@
         note: template.default_note || null,
         created_at: stamp,
         updated_at: stamp,
+      });
+      logInstanceEvent(db, instanceId, "created", {
+        source: "template",
+        name: template.name,
+        due_date: dueDate,
+        amount: Number(template.amount_default || 0),
       });
     });
   }
@@ -649,6 +672,32 @@
       return ok(rows);
     }
 
+    if (path.startsWith("/api/instances/") && path.endsWith("/events") && req.method === "GET") {
+      const id = path.split("/")[3];
+      if (!id) return bad("INVALID_INPUT", "Invalid id");
+      const events = getInstanceEvents(db)
+        .filter((evt) => evt.instance_id === id)
+        .slice()
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      return ok(events);
+    }
+
+    if (path === "/api/instance-events" && req.method === "GET") {
+      const parsed = parseYearMonth(params);
+      if (!parsed) return bad("INVALID_INPUT", "Invalid year/month");
+      const instances = getInstancesForMonth(db, parsed.year, parsed.month);
+      const nameMap = new Map(instances.map((inst) => [inst.id, inst.name_snapshot]));
+      const events = getInstanceEvents(db)
+        .filter((evt) => nameMap.has(evt.instance_id))
+        .slice()
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+        .map((evt) => ({
+          ...evt,
+          name: nameMap.get(evt.instance_id) || "Item",
+        }));
+      return ok(events);
+    }
+
     if (path.startsWith("/api/instances/") && path.endsWith("/payments") && req.method === "POST") {
       const id = path.split("/")[3];
       const bodyRes = await parseJsonBody(req);
@@ -665,6 +714,11 @@
         created_at: new Date().toISOString(),
       };
       getPayments(db).push(payment);
+      logInstanceEvent(db, id, "log_update", {
+        amount,
+        date: payment.paid_date,
+        payment_id: payment.id,
+      });
       const saved = safeSaveDb(db);
       if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
       const updated = attachPayments(db, [instance])[0];
@@ -680,6 +734,7 @@
         instance.paid_date = null;
         instance.updated_at = new Date().toISOString();
       }
+      logInstanceEvent(db, id, "status_changed", { from: "paid", to: "pending" });
       const saved = safeSaveDb(db);
       if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
       return ok(instance ? attachPayments(db, [instance])[0] : null);
@@ -689,21 +744,34 @@
       const id = path.split("/")[3];
       const instance = getInstances(db).find((inst) => inst.id === id);
       if (!instance) return bad("NOT_FOUND", "Instance not found", {}, 404);
+      const before = { ...instance };
       const bodyRes = await parseJsonBody(req);
       if (!bodyRes.ok) return jsonResponse(400, { ok: false, error: bodyRes.error });
       const body = bodyRes.body || {};
+      const changes = {};
+      let statusChange = null;
+      let noteChange = null;
       if (body.amount !== undefined) {
         const amt = Number(body.amount);
         if (!Number.isFinite(amt) || amt < 0) return bad("INVALID_INPUT", "Amount must be >= 0");
+        if (Number(before.amount || 0) !== amt) {
+          changes.amount = { from: Number(before.amount || 0), to: amt };
+        }
         instance.amount = amt;
       }
       if (body.due_date !== undefined) {
         const err = validateDateString(body.due_date);
         if (err) return bad("INVALID_INPUT", err);
+        if (String(before.due_date || "") !== body.due_date) {
+          changes.due_date = { from: before.due_date || "", to: body.due_date };
+        }
         instance.due_date = body.due_date;
       }
       if (body.status !== undefined) {
         if (!["pending", "paid", "skipped"].includes(body.status)) return bad("INVALID_INPUT", "Invalid status");
+        if (String(before.status || "") !== body.status) {
+          statusChange = { from: before.status || "", to: body.status };
+        }
         instance.status = body.status;
       }
       if (body.paid_date !== undefined) {
@@ -715,6 +783,31 @@
       if (body.name_snapshot !== undefined) instance.name_snapshot = String(body.name_snapshot || "");
       if (body.category_snapshot !== undefined) instance.category_snapshot = body.category_snapshot || null;
       instance.updated_at = new Date().toISOString();
+      if (body.note !== undefined && String(before.note || "") !== String(body.note || "")) {
+        noteChange = { from: before.note || "", to: body.note || "" };
+      }
+      if (body.name_snapshot !== undefined && String(before.name_snapshot || "") !== String(body.name_snapshot || "")) {
+        changes.name = { from: before.name_snapshot || "", to: body.name_snapshot || "" };
+      }
+      if (body.category_snapshot !== undefined && String(before.category_snapshot || "") !== String(body.category_snapshot || "")) {
+        changes.category = { from: before.category_snapshot || "", to: body.category_snapshot || "" };
+      }
+      if (statusChange) {
+        const type =
+          statusChange.to === "skipped"
+            ? "skipped"
+            : statusChange.from === "skipped"
+            ? "unskipped"
+            : "status_changed";
+        logInstanceEvent(db, id, type, statusChange);
+      }
+      if (noteChange) {
+        logInstanceEvent(db, id, "note_updated", noteChange);
+      }
+      const changeKeys = Object.keys(changes);
+      if (changeKeys.length > 0) {
+        logInstanceEvent(db, id, "edited", { changes });
+      }
       const saved = safeSaveDb(db);
       if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
       return ok(attachPayments(db, [instance])[0]);
@@ -732,6 +825,11 @@
       const payment = getPayments(db).find((p) => p.id === id);
       if (!payment) return bad("NOT_FOUND", "Update not found", {}, 404);
       getData(db).payment_events = getPayments(db).filter((p) => p.id !== id);
+      logInstanceEvent(db, payment.instance_id, "update_removed", {
+        amount: Number(payment.amount || 0),
+        date: payment.paid_date,
+        payment_id: payment.id,
+      });
       const instance = getInstances(db).find((inst) => inst.id === payment.instance_id);
       const saved = safeSaveDb(db);
       if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
@@ -765,6 +863,7 @@
         templates: data.templates,
         instances: data.instances,
         payment_events: data.payment_events,
+        instance_events: data.instance_events,
         month_settings: data.month_settings,
         sinking_funds: data.sinking_funds,
         sinking_events: data.sinking_events,
@@ -782,6 +881,7 @@
       data.templates = Array.isArray(payload.templates) ? payload.templates : [];
       data.instances = Array.isArray(payload.instances) ? payload.instances : [];
       data.payment_events = Array.isArray(payload.payment_events) ? payload.payment_events : [];
+      data.instance_events = Array.isArray(payload.instance_events) ? payload.instance_events : [];
       data.month_settings = Array.isArray(payload.month_settings) ? payload.month_settings : [];
       data.sinking_funds = Array.isArray(payload.sinking_funds) ? payload.sinking_funds : [];
       data.sinking_events = Array.isArray(payload.sinking_events) ? payload.sinking_events : [];
@@ -886,9 +986,11 @@
         const amountPaid = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
         const amountDue = Number(instance.amount || 0);
         const remaining = Math.max(0, amountDue - amountPaid);
+        let paymentId = null;
         if (remaining > 0) {
+          paymentId = uuid();
           getPayments(db).push({
-            id: uuid(),
+            id: paymentId,
             instance_id: id,
             amount: remaining,
             paid_date: action.paid_date || todayDate(),
@@ -898,6 +1000,7 @@
         instance.status = "paid";
         instance.paid_date = action.paid_date || todayDate();
         instance.updated_at = new Date().toISOString();
+        logInstanceEvent(db, id, "marked_done", { paid_date: instance.paid_date, amount: amountDue, payment_id: paymentId });
         payload = { ok: true, instance: attachPayments(db, [instance])[0] };
       } else if (type === "MARK_PENDING") {
         const id = String(action.instance_id || "");
@@ -909,6 +1012,7 @@
           instance.paid_date = null;
           instance.updated_at = new Date().toISOString();
         }
+        logInstanceEvent(db, id, "status_changed", { from: "paid", to: "pending" });
         payload = { ok: true, instance: instance ? attachPayments(db, [instance])[0] : null };
       } else if (type === "SKIP_INSTANCE") {
         const id = String(action.instance_id || "");
@@ -918,20 +1022,30 @@
         instance.status = "skipped";
         instance.paid_date = null;
         instance.updated_at = new Date().toISOString();
+        logInstanceEvent(db, id, "skipped", { from: "pending", to: "skipped" });
         payload = { ok: true, instance: attachPayments(db, [instance])[0] };
       } else if (type === "UPDATE_INSTANCE_FIELDS") {
         const id = String(action.instance_id || "");
         if (!id) return bad("INVALID_INPUT", "instance_id is required");
         const instance = getInstances(db).find((inst) => inst.id === id);
         if (!instance) return bad("NOT_FOUND", "Instance not found", {}, 404);
+        const before = { ...instance };
+        const changes = {};
+        let noteChange = null;
         if (action.amount !== undefined) {
           const amt = Number(action.amount);
           if (!Number.isFinite(amt) || amt < 0) return bad("INVALID_INPUT", "Amount must be >= 0");
+          if (Number(before.amount || 0) !== amt) {
+            changes.amount = { from: Number(before.amount || 0), to: amt };
+          }
           instance.amount = amt;
         }
         if (action.due_date !== undefined) {
           const err = validateDateString(action.due_date);
           if (err) return bad("INVALID_INPUT", err);
+          if (String(before.due_date || "") !== action.due_date) {
+            changes.due_date = { from: before.due_date || "", to: action.due_date };
+          }
           instance.due_date = action.due_date;
         }
         if (action.status !== undefined) {
@@ -943,10 +1057,32 @@
           if (err) return bad("INVALID_INPUT", err);
           instance.paid_date = action.paid_date;
         }
-        if (action.note !== undefined) instance.note = action.note || null;
-        if (action.name_snapshot !== undefined) instance.name_snapshot = String(action.name_snapshot || "");
-        if (action.category_snapshot !== undefined) instance.category_snapshot = action.category_snapshot || null;
+        if (action.note !== undefined) {
+          if (String(before.note || "") !== String(action.note || "")) {
+            noteChange = { from: before.note || "", to: action.note || "" };
+          }
+          instance.note = action.note || null;
+        }
+        if (action.name_snapshot !== undefined) {
+          if (String(before.name_snapshot || "") !== String(action.name_snapshot || "")) {
+            changes.name = { from: before.name_snapshot || "", to: action.name_snapshot || "" };
+          }
+          instance.name_snapshot = String(action.name_snapshot || "");
+        }
+        if (action.category_snapshot !== undefined) {
+          if (String(before.category_snapshot || "") !== String(action.category_snapshot || "")) {
+            changes.category = { from: before.category_snapshot || "", to: action.category_snapshot || "" };
+          }
+          instance.category_snapshot = action.category_snapshot || null;
+        }
         instance.updated_at = new Date().toISOString();
+        if (noteChange) {
+          logInstanceEvent(db, id, "note_updated", noteChange);
+        }
+        const changeKeys = Object.keys(changes);
+        if (changeKeys.length > 0) {
+          logInstanceEvent(db, id, "edited", { changes });
+        }
         payload = { ok: true, instance: attachPayments(db, [instance])[0] };
       } else if (type === "CREATE_TEMPLATE") {
         const name = String(action.name || "").trim();
