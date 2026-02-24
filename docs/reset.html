@@ -66,12 +66,35 @@
             const keys = await caches.keys();
             await Promise.all(keys.map((key) => caches.delete(key)));
           }
-          await new Promise((resolve) => {
+          try {
+            const dbs = await indexedDB.databases?.();
+            if (Array.isArray(dbs)) {
+              await Promise.all(
+                dbs
+                  .map((entry) => entry && entry.name)
+                  .filter((name) => typeof name === "string" && name.startsWith("ajl_pwa"))
+                  .map(
+                    (name) =>
+                      new Promise((resolve) => {
+                        const req = indexedDB.deleteDatabase(name);
+                        req.onsuccess = () => resolve();
+                        req.onerror = () => resolve();
+                        req.onblocked = () => resolve();
+                      })
+                  )
+              );
+            } else {
+              const req = indexedDB.deleteDatabase("ajl_pwa");
+              req.onsuccess = () => null;
+              req.onerror = () => null;
+              req.onblocked = () => null;
+            }
+          } catch (err) {
             const req = indexedDB.deleteDatabase("ajl_pwa");
-            req.onsuccess = () => resolve();
-            req.onerror = () => resolve();
-            req.onblocked = () => resolve();
-          });
+            req.onsuccess = () => null;
+            req.onerror = () => null;
+            req.onblocked = () => null;
+          }
           try {
             window.localStorage.removeItem("ajl_pwa_db_name");
           } catch (err) {

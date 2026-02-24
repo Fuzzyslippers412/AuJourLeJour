@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Au Jour Le Jour</title>
-    <link rel="stylesheet" href="styles.css?v=20260224" />
-    <link rel="manifest" href="manifest.json?v=20260224" />
+    <link rel="stylesheet" href="styles.css?v=20260224-4" />
+    <link rel="manifest" href="manifest.json?v=20260224-4" />
     <meta name="theme-color" content="#0f172a" />
     <script>
       (function () {
@@ -21,12 +21,35 @@
               const keys = await caches.keys();
               await Promise.all(keys.map((key) => caches.delete(key)));
             }
-            await new Promise((resolve) => {
+            try {
+              const dbs = await indexedDB.databases?.();
+              if (Array.isArray(dbs)) {
+                await Promise.all(
+                  dbs
+                    .map((entry) => entry && entry.name)
+                    .filter((name) => typeof name === "string" && name.startsWith("ajl_pwa"))
+                    .map(
+                      (name) =>
+                        new Promise((resolve) => {
+                          const req = indexedDB.deleteDatabase(name);
+                          req.onsuccess = () => resolve();
+                          req.onerror = () => resolve();
+                          req.onblocked = () => resolve();
+                        })
+                    )
+                );
+              } else {
+                const req = indexedDB.deleteDatabase("ajl_pwa");
+                req.onsuccess = () => null;
+                req.onerror = () => null;
+                req.onblocked = () => null;
+              }
+            } catch (err) {
               const req = indexedDB.deleteDatabase("ajl_pwa");
-              req.onsuccess = () => resolve();
-              req.onerror = () => resolve();
-              req.onblocked = () => resolve();
-            });
+              req.onsuccess = () => null;
+              req.onerror = () => null;
+              req.onblocked = () => null;
+            }
             try {
               window.localStorage.removeItem("ajl_pwa_db_name");
             } catch (err) {
@@ -365,12 +388,12 @@
     <script>
       window.AJL_LLM_BASE_URL = "https://agent.aujourlejour.xyz";
     </script>
-    <script src="vendor/dexie.min.js"></script>
-    <script src="pwa-adapter.js?v=20260224"></script>
-    <script src="app.js?v=20260224"></script>
+    <script src="vendor/dexie.min.js?v=20260224-4"></script>
+    <script src="pwa-adapter.js?v=20260224-4"></script>
+    <script src="app.js?v=20260224-4"></script>
     <script>
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("sw.js?v=20260224").catch(() => {});
+        navigator.serviceWorker.register("sw.js?v=20260224-4").catch(() => {});
       }
     </script>
   </body>

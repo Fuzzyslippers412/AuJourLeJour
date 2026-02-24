@@ -34,11 +34,14 @@ const daysPerMonthAvg = 30.4;
 let cashSaveTimer = null;
 let flashTimer = null;
 let autoMonthTimer = null;
+let refreshTimer = null;
+let storageFailureHandled = false;
 const MAX_LLM_INSTANCES = 60;
 const MAX_LLM_TEMPLATES = 60;
 const MAX_LLM_DUE = 8;
 const PROFILE_NAME_KEY = "ajl_profile_name";
 const PWA_DB_NAME = "ajl_pwa";
+const PWA_DB_PREFIX = "ajl_pwa";
 
 function looksLikeStorageError(err) {
   const message = String(err?.message || err || "");
@@ -60,21 +63,53 @@ async function resetPwaStorage() {
       const regs = await navigator.serviceWorker.getRegistrations();
       await Promise.all(regs.map((reg) => reg.unregister()));
     }
-    const result = await new Promise((resolve) => {
-      const req = indexedDB.deleteDatabase(PWA_DB_NAME);
-      req.onsuccess = () => resolve("success");
-      req.onerror = () => resolve("error");
-      req.onblocked = () => resolve("blocked");
-    });
+    const deleteAll = async () => {
+      try {
+        const dbs = await indexedDB.databases?.();
+        if (Array.isArray(dbs)) {
+          await Promise.all(
+            dbs
+              .map((entry) => entry && entry.name)
+              .filter((name) => typeof name === "string" && name.startsWith(PWA_DB_PREFIX))
+              .map(
+                (name) =>
+                  new Promise((resolve) => {
+                    const req = indexedDB.deleteDatabase(name);
+                    req.onsuccess = () => resolve("success");
+                    req.onerror = () => resolve("error");
+                    req.onblocked = () => resolve("blocked");
+                  })
+              )
+          );
+          return "success";
+        }
+      } catch (err) {
+        // ignore
+      }
+      return await new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(PWA_DB_NAME);
+        req.onsuccess = () => resolve("success");
+        req.onerror = () => resolve("error");
+        req.onblocked = () => resolve("blocked");
+      });
+    };
+    const result = await deleteAll();
     if (result === "blocked") {
       window.alert("Reset blocked by another open tab. Close all Au Jour Le Jour tabs/windows and try again.");
       pwaResetInProgress = false;
       return;
     }
+    try {
+      window.localStorage.removeItem("ajl_pwa_db_name");
+    } catch (err) {
+      // ignore
+    }
   } catch (err) {
     // ignore
   }
-  setTimeout(() => window.location.reload(), 300);
+  setTimeout(() => {
+    window.location.href = "/reset.html?force=1";
+  }, 150);
 }
 
 function setupStorageRecovery() {
@@ -91,6 +126,21 @@ function setupStorageRecovery() {
     const proceed = window.confirm("Local data appears corrupted. Reset local storage for this app?");
     if (proceed) resetPwaStorage();
   });
+}
+
+function handleStorageFailure(err) {
+  if (!looksLikeStorageError(err)) return false;
+  if (storageFailureHandled) return true;
+  storageFailureHandled = true;
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  setTimeout(() => {
+    const proceed = window.confirm("Local data appears corrupted. Reset local storage for this app?");
+    if (proceed) resetPwaStorage();
+  }, 0);
+  return true;
 }
 
 const els = {
@@ -3332,20 +3382,26 @@ function renderView() {
 }
 
 async function refreshAll() {
-  syncToCurrentMonth();
-  await ensureMonth();
-  await Promise.all([
-    loadTemplates(),
-    loadInstances(),
-    loadPayments(),
-    loadMonthSettings(),
-    loadFunds(),
-    loadQwenAuthStatus(),
-    loadCommandLog(),
-    loadChatHistory(),
-  ]);
-  renderDashboard();
-  renderTemplates();
+  try {
+    syncToCurrentMonth();
+    await ensureMonth();
+    await Promise.all([
+      loadTemplates(),
+      loadInstances(),
+      loadPayments(),
+      loadMonthSettings(),
+      loadFunds(),
+      loadQwenAuthStatus(),
+      loadCommandLog(),
+      loadChatHistory(),
+    ]);
+    renderDashboard();
+    renderTemplates();
+  } catch (err) {
+    if (!handleStorageFailure(err)) {
+      throw err;
+    }
+  }
 }
 
 function bindEvents() {
@@ -3829,7 +3885,7 @@ function init() {
     els.fundMonths.disabled = true;
   }
   refreshAll();
-  setInterval(() => {
+  refreshTimer = setInterval(() => {
     if (!document.hidden) refreshAll();
   }, 60000);
   window.addEventListener("focus", () => refreshAll());

@@ -8,24 +8,79 @@
   const LLM_BASE_URL = window.AJL_LLM_BASE_URL ? String(window.AJL_LLM_BASE_URL) : "";
   const LLM_ENABLED = Boolean(LLM_BASE_URL);
 
+  const DB_SCHEMA_VERSION = 3;
+  const DB_PREFIX = `ajl_pwa_v${DB_SCHEMA_VERSION}`;
+
   function getDbName() {
     try {
       const existing = window.localStorage.getItem("ajl_pwa_db_name");
-      if (existing) return existing;
+      if (existing && existing.startsWith(DB_PREFIX)) return existing;
     } catch (err) {
       // ignore
     }
-    return "ajl_pwa";
-  }
-
-  function rotateDbName() {
-    const name = `ajl_pwa_${Date.now()}`;
+    const name = `${DB_PREFIX}_${Date.now()}`;
     try {
       window.localStorage.setItem("ajl_pwa_db_name", name);
     } catch (err) {
       // ignore
     }
     return name;
+  }
+
+  function rotateDbName() {
+    const name = `${DB_PREFIX}_${Date.now()}`;
+    try {
+      window.localStorage.setItem("ajl_pwa_db_name", name);
+    } catch (err) {
+      // ignore
+    }
+    return name;
+  }
+
+  async function deleteAllPwaDatabases() {
+    try {
+      if (indexedDB.databases) {
+        const dbs = await indexedDB.databases();
+        if (Array.isArray(dbs)) {
+          await Promise.all(
+            dbs
+              .map((entry) => entry && entry.name)
+              .filter((name) => typeof name === "string" && name.startsWith("ajl_pwa"))
+              .map(
+                (name) =>
+                  new Promise((resolve) => {
+                    const req = indexedDB.deleteDatabase(name);
+                    req.onsuccess = () => resolve();
+                    req.onerror = () => resolve();
+                    req.onblocked = () => resolve();
+                  })
+              )
+          );
+          return;
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase("ajl_pwa");
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+      req.onblocked = () => resolve();
+    });
+    try {
+      const stored = window.localStorage.getItem("ajl_pwa_db_name");
+      if (stored) {
+        await new Promise((resolve) => {
+          const req = indexedDB.deleteDatabase(stored);
+          req.onsuccess = () => resolve();
+          req.onerror = () => resolve();
+          req.onblocked = () => resolve();
+        });
+      }
+    } catch (err) {
+      // ignore
+    }
   }
 
   const db = new Dexie(getDbName());
@@ -52,8 +107,24 @@
     return Number.isInteger(year) && Number.isInteger(month) && month >= 1 && month <= 12;
   }
 
+  async function safeOpenDb() {
+    try {
+      await db.open();
+    } catch (err) {
+      if (isStorageError(err) || err?.name === "SchemaError" || err?.name === "InvalidStateError") {
+        await hardResetDatabase();
+        await rotateDatabase();
+        setTimeout(() => window.location.reload(), 50);
+        return false;
+      }
+      throw err;
+    }
+    return true;
+  }
+
   async function purgeInvalidRows() {
-    await db.open();
+    const opened = await safeOpenDb();
+    if (!opened) return;
     const badInstances = await db.instances
       .filter((row) => !validId(row.id) || !validYearMonth(Number(row.year), Number(row.month)))
       .toArray();
@@ -71,10 +142,32 @@
     if (badPayments.length > 0) {
       await db.payment_events.bulkDelete(badPayments.map((row) => row.id).filter(validId));
     }
+
+    const badTemplates = await db.templates
+      .filter((row) => !validId(row.id))
+      .toArray();
+    if (badTemplates.length > 0) {
+      await db.templates.bulkDelete(badTemplates.map((row) => row.id).filter(validId));
+    }
+
+    const badFunds = await db.sinking_funds
+      .filter((row) => !validId(row.id))
+      .toArray();
+    if (badFunds.length > 0) {
+      await db.sinking_funds.bulkDelete(badFunds.map((row) => row.id).filter(validId));
+    }
+
+    const badFundEvents = await db.sinking_events
+      .filter((row) => !validId(row.id) || !validId(row.fund_id))
+      .toArray();
+    if (badFundEvents.length > 0) {
+      await db.sinking_events.bulkDelete(badFundEvents.map((row) => row.id).filter(validId));
+    }
   }
 
   async function resetLocalData() {
-    await db.open();
+    const opened = await safeOpenDb();
+    if (!opened) return;
     await Promise.all([
       db.templates.clear(),
       db.instances.clear(),
@@ -178,6 +271,7 @@
     } catch (err) {
       // ignore
     }
+    await deleteAllPwaDatabases();
   }
 
   async function rotateDatabase() {
@@ -191,7 +285,8 @@
 
   async function ensureMonth(year, month) {
     if (!validYearMonth(year, month)) return;
-    await db.open();
+    const opened = await safeOpenDb();
+    if (!opened) return;
     const templates = await db.templates.where("active").equals(true).toArray();
     const stamp = nowIso();
     for (const template of templates) {
@@ -911,7 +1006,8 @@
   }
 
   async function handleApi(path, method, params, body) {
-    await db.open();
+    const opened = await safeOpenDb();
+    if (!opened) return jsonResponse({ error: "Local storage error" }, 500);
 
     if (path === "/api/health") {
       return jsonResponse({ ok: true });
