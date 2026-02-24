@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Au Jour Le Jour</title>
-    <link rel="stylesheet" href="styles.css?v=20260224-7" />
-    <link rel="manifest" href="manifest.json?v=20260224-7" />
+    <link rel="stylesheet" href="styles.css?v=20260224-8" />
+    <link rel="manifest" href="manifest.json?v=20260224-8" />
     <meta name="theme-color" content="#0f172a" />
     <script>
       (function () {
@@ -85,15 +85,6 @@
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
         </label>
-        <div id="local-status" class="local-status" tabindex="0" role="button" aria-label="Storage info">
-          <span class="local-dot"></span>
-          <span class="local-text">Local-only · Autosaves</span>
-          <span class="local-device">This browser</span>
-          <div class="local-tooltip">
-            <div class="local-tooltip-title">Private to this browser</div>
-            <div class="local-tooltip-body">No account, no sync. Export JSON to move to another device.</div>
-          </div>
-        </div>
         <button id="nav-dashboard" class="tab-btn active">This Month</button>
         <button id="nav-templates" class="tab-btn">Templates</button>
         <button id="open-backup" class="primary-btn">Backup/Export</button>
@@ -190,13 +181,6 @@
                 <div class="assistant-box">
                   <div class="assistant-title">Mamdou</div>
                   <div class="assistant-sub">Ask, add bills, or run commands in one box.</div>
-                  <div id="assistant-connection" class="assistant-connection">
-                    <div class="assistant-connection-text">
-                      <div id="assistant-connection-title" class="assistant-connection-title">Connect Mamdou</div>
-                      <div id="assistant-connection-body" class="assistant-connection-body">Use Mamdou login to enable insights.</div>
-                    </div>
-                    <div id="assistant-connection-action" class="assistant-connection-action"></div>
-                  </div>
                   <div class="assistant-personal">
                     <div id="assistant-greeting" class="assistant-greeting">Hi there.</div>
                     <label class="assistant-name-label" for="assistant-name-input">Call me</label>
@@ -377,9 +361,7 @@
             Import backup (JSON)
             <input id="import-backup" type="file" accept="application/json" />
           </label>
-          <button id="reset-local" class="ghost-btn danger">Reset local data</button>
         </div>
-        <div class="modal-footer-hint">Saved in this browser. To move devices: Export JSON → Import on the new device.</div>
       </div>
     </div>
 
@@ -388,8 +370,16 @@
     <script>
       window.AJL_LLM_BASE_URL = "https://agent.aujourlejour.xyz";
     </script>
-    <script src="vendor/dexie.min.js?v=20260224-7"></script>
-    <script src="pwa-adapter.js?v=20260224-7"></script>
-    <script src="app.js?v=20260224-7"></script>
+    <script>
+      window.AJL_LLM_BASE_URL = "https://agent.aujourlejour.xyz";
+    </script>
+    <script src="vendor/dexie.min.js?v=20260224-8"></script>
+    <script src="pwa-adapter.js?v=20260224-8"></script>
+    <script src="app.js?v=20260224-8"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("sw.js").catch(() => {});
+      }
+    </script>
   </body>
 </html>
