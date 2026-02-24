@@ -28,6 +28,10 @@
     return typeof value === "string" && value.trim().length > 0;
   }
 
+  function validYearMonth(year, month) {
+    return Number.isInteger(year) && Number.isInteger(month) && month >= 1 && month <= 12;
+  }
+
   function pad2(value) {
     return String(value).padStart(2, "0");
   }
@@ -91,10 +95,12 @@
   }
 
   async function ensureMonth(year, month) {
+    if (!validYearMonth(year, month)) return;
     await db.open();
     const templates = await db.templates.where("active").equals(true).toArray();
     const stamp = nowIso();
     for (const template of templates) {
+      if (!validId(template.id)) continue;
       const existing = await db.instances
         .where("[template_id+year+month]")
         .equals([template.id, year, month])
@@ -144,6 +150,7 @@
   }
 
   async function getInstances(year, month) {
+    if (!validYearMonth(year, month)) return [];
     const rows = await db.instances
       .where("[year+month]")
       .equals([year, month])
@@ -156,6 +163,7 @@
   }
 
   async function getPaymentsForMonth(year, month) {
+    if (!validYearMonth(year, month)) return [];
     const instances = await db.instances.where("[year+month]").equals([year, month]).toArray();
     const ids = instances.map((i) => i.id).filter(validId);
     if (ids.length === 0) return [];
@@ -768,7 +776,7 @@
   }
 
   async function applyTemplateToMonth(template, year, month) {
-    if (!template || !year || !month) return;
+    if (!template || !validId(template.id) || !validYearMonth(year, month)) return;
     if (template.active) {
       await ensureMonth(year, month);
     }
@@ -791,6 +799,7 @@
   }
 
   async function deleteTemplateFromMonth(templateId, year, month) {
+    if (!validId(templateId)) return;
     const instances = await db.instances.where("template_id").equals(templateId).toArray();
     const targets = instances.filter((inst) => {
       if (!Number.isInteger(year) || !Number.isInteger(month)) return true;
