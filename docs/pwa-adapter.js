@@ -142,6 +142,24 @@
     });
   }
 
+  function isStorageError(err) {
+    const message = String(err?.message || err || "");
+    return message.includes("IDBKeyRange") || message.includes("DataError") || message.includes("IndexedDB");
+  }
+
+  async function hardResetDatabase() {
+    try {
+      await db.close();
+    } catch (err) {
+      // ignore
+    }
+    try {
+      await db.delete();
+    } catch (err) {
+      // ignore
+    }
+  }
+
   async function ensureMonth(year, month) {
     if (!validYearMonth(year, month)) return;
     await db.open();
@@ -1253,7 +1271,15 @@
         }
       }
       const params = new URL(url, window.location.origin).searchParams;
-      return handleApi(pathname, method, params, body);
+      try {
+        return await handleApi(pathname, method, params, body);
+      } catch (err) {
+        if (isStorageError(err)) {
+          await hardResetDatabase();
+          setTimeout(() => window.location.reload(), 50);
+        }
+        return jsonResponse({ error: "Local storage error", detail: String(err?.message || err) }, 500);
+      }
     }
     return originalFetch(input, init);
   };
