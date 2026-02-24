@@ -39,21 +39,18 @@ const MAX_LLM_TEMPLATES = 60;
 const MAX_LLM_DUE = 8;
 const PROFILE_NAME_KEY = "ajl_profile_name";
 const PWA_DB_NAME = "ajl_pwa";
-const PWA_RESET_FLAG = "ajl_pwa_reset_in_progress";
 
 function looksLikeStorageError(err) {
   const message = String(err?.message || err || "");
   return message.includes("IDBKeyRange") || message.includes("DataError") || message.includes("IndexedDB");
 }
 
+let pwaResetInProgress = false;
+
 async function resetPwaStorage() {
   if (!window.AJL_PWA) return;
-  try {
-    if (window.localStorage.getItem(PWA_RESET_FLAG)) return;
-    window.localStorage.setItem(PWA_RESET_FLAG, "1");
-  } catch (err) {
-    // ignore
-  }
+  if (pwaResetInProgress) return;
+  pwaResetInProgress = true;
   try {
     if ("caches" in window) {
       const keys = await caches.keys();
@@ -63,7 +60,17 @@ async function resetPwaStorage() {
       const regs = await navigator.serviceWorker.getRegistrations();
       await Promise.all(regs.map((reg) => reg.unregister()));
     }
-    indexedDB.deleteDatabase(PWA_DB_NAME);
+    const result = await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase(PWA_DB_NAME);
+      req.onsuccess = () => resolve("success");
+      req.onerror = () => resolve("error");
+      req.onblocked = () => resolve("blocked");
+    });
+    if (result === "blocked") {
+      window.alert("Reset blocked by another open tab. Close all Au Jour Le Jour tabs/windows and try again.");
+      pwaResetInProgress = false;
+      return;
+    }
   } catch (err) {
     // ignore
   }
@@ -74,11 +81,13 @@ function setupStorageRecovery() {
   window.addEventListener("unhandledrejection", (event) => {
     if (!looksLikeStorageError(event.reason)) return;
     event.preventDefault();
+    if (pwaResetInProgress) return;
     const proceed = window.confirm("Local data appears corrupted. Reset local storage for this app?");
     if (proceed) resetPwaStorage();
   });
   window.addEventListener("error", (event) => {
     if (!looksLikeStorageError(event.error)) return;
+    if (pwaResetInProgress) return;
     const proceed = window.confirm("Local data appears corrupted. Reset local storage for this app?");
     if (proceed) resetPwaStorage();
   });
