@@ -85,6 +85,7 @@
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
         </label>
+          <button id="reset-local" class="ghost-btn danger">Reset local data</button>
         <button id="nav-dashboard" class="tab-btn active">This Month</button>
         <button id="nav-templates" class="tab-btn">Templates</button>
         <button id="open-backup" class="primary-btn">Backup/Export</button>
@@ -374,10 +375,6 @@
     <script src="vendor/dexie.min.js?v=20260224-8"></script>
     <script src="pwa-adapter.js?v=20260224-8"></script>
     <script src="app.js?v=20260224-8"></script>
-    <script>
-      if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("sw.js").catch(() => {});
-      }
-    </script>
+    <!-- Service worker disabled for web build to avoid stale cache loops. -->
   </body>
 </html>
