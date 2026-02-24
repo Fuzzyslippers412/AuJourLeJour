@@ -27,6 +27,11 @@
               req.onerror = () => resolve();
               req.onblocked = () => resolve();
             });
+            try {
+              window.localStorage.removeItem("ajl_pwa_db_name");
+            } catch (err) {
+              // ignore
+            }
           } finally {
             const cleanUrl = window.location.origin + window.location.pathname;
             window.location.replace(cleanUrl);

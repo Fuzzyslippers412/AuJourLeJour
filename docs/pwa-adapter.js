@@ -8,7 +8,27 @@
   const LLM_BASE_URL = window.AJL_LLM_BASE_URL ? String(window.AJL_LLM_BASE_URL) : "";
   const LLM_ENABLED = Boolean(LLM_BASE_URL);
 
-  const db = new Dexie("ajl_pwa");
+  function getDbName() {
+    try {
+      const existing = window.localStorage.getItem("ajl_pwa_db_name");
+      if (existing) return existing;
+    } catch (err) {
+      // ignore
+    }
+    return "ajl_pwa";
+  }
+
+  function rotateDbName() {
+    const name = `ajl_pwa_${Date.now()}`;
+    try {
+      window.localStorage.setItem("ajl_pwa_db_name", name);
+    } catch (err) {
+      // ignore
+    }
+    return name;
+  }
+
+  const db = new Dexie(getDbName());
   db.version(1).stores({
     templates: "id, active, name",
     instances: "id, [year+month], [template_id+year+month], template_id, due_date, status",
@@ -158,6 +178,15 @@
     } catch (err) {
       // ignore
     }
+  }
+
+  async function rotateDatabase() {
+    try {
+      await db.close();
+    } catch (err) {
+      // ignore
+    }
+    rotateDbName();
   }
 
   async function ensureMonth(year, month) {
@@ -1249,6 +1278,7 @@
       } catch (err) {
         if (isStorageError(err)) {
           await hardResetDatabase();
+          await rotateDatabase();
           setTimeout(() => window.location.reload(), 50);
           return jsonResponse({ error: "Local storage error" }, 500);
         }
@@ -1284,6 +1314,7 @@
       } catch (err) {
         if (isStorageError(err)) {
           await hardResetDatabase();
+          await rotateDatabase();
           setTimeout(() => window.location.reload(), 50);
         }
         return jsonResponse({ error: "Local storage error", detail: String(err?.message || err) }, 500);

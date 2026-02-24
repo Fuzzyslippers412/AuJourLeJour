@@ -1,4 +1,4 @@
-const CACHE = "ajl-pwa-v12";
+const CACHE = "ajl-pwa-v13";
 const CORE_ASSETS = [
   "./",
   "./index.html",

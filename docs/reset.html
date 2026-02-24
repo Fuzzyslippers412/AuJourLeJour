@@ -72,6 +72,11 @@
             req.onerror = () => resolve();
             req.onblocked = () => resolve();
           });
+          try {
+            window.localStorage.removeItem("ajl_pwa_db_name");
+          } catch (err) {
+            // ignore
+          }
           update("Reset complete. Reloading…");
           setTimeout(() => {
             window.location.href = "/?reset=1";
