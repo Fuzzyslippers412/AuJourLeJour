@@ -645,6 +645,16 @@ select:focus {
   gap: 8px;
 }
 
+.ghost-btn.danger {
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #b91c1c;
+}
+
+.ghost-btn.danger:hover {
+  border-color: rgba(239, 68, 68, 0.7);
+  background: rgba(239, 68, 68, 0.08);
+}
+
 .assistant-capabilities {
   border: 1px solid var(--border);
   border-radius: 12px;

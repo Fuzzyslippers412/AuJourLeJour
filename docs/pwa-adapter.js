@@ -32,6 +32,41 @@
     return Number.isInteger(year) && Number.isInteger(month) && month >= 1 && month <= 12;
   }
 
+  async function purgeInvalidRows() {
+    await db.open();
+    const badInstances = await db.instances
+      .filter((row) => !validId(row.id) || !validYearMonth(Number(row.year), Number(row.month)))
+      .toArray();
+    if (badInstances.length > 0) {
+      const badIds = badInstances.map((row) => row.id).filter(validId);
+      if (badIds.length > 0) {
+        await db.payment_events.where("instance_id").anyOf(badIds).delete();
+      }
+      await db.instances.bulkDelete(badInstances.map((row) => row.id).filter(validId));
+    }
+
+    const badPayments = await db.payment_events
+      .filter((row) => !validId(row.id) || !validId(row.instance_id))
+      .toArray();
+    if (badPayments.length > 0) {
+      await db.payment_events.bulkDelete(badPayments.map((row) => row.id).filter(validId));
+    }
+  }
+
+  async function resetLocalData() {
+    await db.open();
+    await Promise.all([
+      db.templates.clear(),
+      db.instances.clear(),
+      db.payment_events.clear(),
+      db.month_settings.clear(),
+      db.sinking_funds.clear(),
+      db.sinking_events.clear(),
+      db.agent_command_log.clear(),
+      db.assistant_chat.clear(),
+    ]);
+  }
+
   function pad2(value) {
     return String(value).padStart(2, "0");
   }
@@ -822,6 +857,11 @@
       return jsonResponse({ ok: true });
     }
 
+    if (path === "/api/reset-local" && method === "POST") {
+      await resetLocalData();
+      return jsonResponse({ ok: true });
+    }
+
     if (path === "/api/ensure-month" && method === "GET") {
       const parsed = parseYearMonth(params);
       if (!parsed) return jsonResponse({ error: "Invalid year/month" }, 400);
@@ -1171,6 +1211,10 @@
     const request = typeof input === "string" ? null : input;
     const url = typeof input === "string" ? input : input.url;
     if (!url) return originalFetch(input, init);
+    if (!window.__AJL_PWA_PURGE__) {
+      window.__AJL_PWA_PURGE__ = true;
+      purgeInvalidRows().catch(() => {});
+    }
     const urlObj = new URL(url, window.location.origin);
     const pathname = urlObj.pathname;
 

@@ -52,6 +52,7 @@ const els = {
   exportMonth: document.getElementById("export-month"),
   exportBackup: document.getElementById("export-backup"),
   importBackup: document.getElementById("import-backup"),
+  resetLocal: document.getElementById("reset-local"),
   dashboardView: document.getElementById("dashboard-view"),
   templatesView: document.getElementById("templates-view"),
   requiredAmount: document.getElementById("required-amount"),
@@ -3416,6 +3417,15 @@ function bindEvents() {
       event.target.value = "";
     }
   });
+
+  if (els.resetLocal) {
+    els.resetLocal.addEventListener("click", async () => {
+      const confirmed = window.confirm("Reset all local data in this browser? This cannot be undone.");
+      if (!confirmed) return;
+      await fetch("/api/reset-local", { method: "POST" });
+      window.location.reload();
+    });
+  }
 
   els.searchInput.addEventListener("input", () => {
     state.filters.search = els.searchInput.value.trim();
