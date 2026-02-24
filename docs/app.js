@@ -39,6 +39,7 @@ let storageFailureHandled = false;
 const MAX_LLM_INSTANCES = 60;
 const MAX_LLM_TEMPLATES = 60;
 const MAX_LLM_DUE = 8;
+const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
 const PROFILE_NAME_KEY = "ajl_profile_name";
 const PWA_DB_NAME = "ajl_pwa";
 const PWA_DB_PREFIX = "ajl_pwa";
@@ -510,6 +511,10 @@ function scheduleCashSave() {
 }
 
 async function loadQwenAuthStatus() {
+  if (AJL_WEB_MODE) {
+    state.qwenAuth = { connected: false, status: "disabled", session_id: null, verification_uri_complete: null, interval_seconds: null };
+    return;
+  }
   try {
     const res = await fetch("/api/llm/qwen/oauth/status");
     if (!res.ok) return;
@@ -664,6 +669,11 @@ async function logAgentCommand(entry) {
 }
 
 async function loadCommandLog() {
+  if (AJL_WEB_MODE) {
+    state.commandLog = [];
+    renderCommandLog();
+    return;
+  }
   if (!els.llmCommandLog) return;
   try {
     const res = await fetch("/internal/agent/log?limit=12");
@@ -677,6 +687,11 @@ async function loadCommandLog() {
 }
 
 async function loadChatHistory() {
+  if (AJL_WEB_MODE) {
+    state.llmHistory = [];
+    renderLlmHistory();
+    return;
+  }
   try {
     const res = await fetch("/api/chat?limit=50");
     if (!res.ok) return;
@@ -1429,6 +1444,11 @@ function fallbackNudges(events) {
 }
 
 async function fetchNudges(events) {
+  if (AJL_WEB_MODE) {
+    state.nudges = [];
+    renderNudges();
+    return;
+  }
   if (!els.nudgesList) return;
   if (state.qwenAuth && state.qwenAuth.connected === false) {
     state.nudges = [];
@@ -1958,6 +1978,11 @@ async function applyIntakeTemplates(templates) {
 
 async function sendLlmAgent() {
   if (!els.llmAgentInput || !els.llmAgentOutput) return;
+  if (AJL_WEB_MODE) {
+    els.llmAgentOutput.textContent = "Mamdou is available in the local app only.";
+    pushLlmMessage("assistant", "Mamdou is available in the local app only.");
+    return;
+  }
   if (state.qwenAuth && state.qwenAuth.status === "disabled") {
     els.llmAgentOutput.textContent = "Mamdou is available in the local app only.";
     return;
@@ -2171,6 +2196,12 @@ function summarizeProposal(proposal) {
 
 function renderAssistantConnection() {
   if (!els.assistantConnection || !els.assistantConnectionTitle || !els.assistantConnectionBody || !els.assistantConnectionAction) {
+    return;
+  }
+  if (AJL_WEB_MODE) {
+    els.assistantConnectionTitle.textContent = "Mamdou unavailable";
+    els.assistantConnectionBody.textContent = "Mamdou is available in the local app only.";
+    els.assistantConnectionAction.innerHTML = "";
     return;
   }
   const actionWrap = els.assistantConnectionAction;
