@@ -23,19 +23,11 @@
         const status = document.getElementById('status');
         status.textContent = 'Clearing local data...';
         try {
-          if ('caches' in window) {
-            const keys = await caches.keys();
-            await Promise.all(keys.map((k) => caches.delete(k)));
-          }
+          localStorage.removeItem('AJL_WEB_DB_V1');
+          localStorage.removeItem('AJL_WEB_META_V1');
         } catch (err) {
           // ignore
         }
-        await new Promise((resolve) => {
-          const req = indexedDB.deleteDatabase('ajl_web');
-          req.onsuccess = () => resolve();
-          req.onerror = () => resolve();
-          req.onblocked = () => resolve();
-        });
         status.textContent = 'Done. You can refresh the app.';
       }
       document.getElementById('reset-btn').addEventListener('click', reset);

@@ -4,6 +4,10 @@ const state = {
   payments: [],
   funds: [],
   selectedTemplates: new Set(),
+  settings: {
+    defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
+    categories: [],
+  },
   nudges: [],
   lastNudgeKey: null,
   llmStatus: { status: "unknown", auth_url: null, error: null },
@@ -19,6 +23,9 @@ const state = {
   selectedMonth: null,
   essentialsOnly: true,
   view: "today",
+  safeMode: false,
+  safeReason: "",
+  queueLaterCollapsed: true,
   templateRows: new Map(),
   filters: {
     search: "",
@@ -41,12 +48,32 @@ const MAX_LLM_TEMPLATES = 60;
 const MAX_LLM_DUE = 8;
 const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
 const PROFILE_NAME_KEY = "ajl_profile_name";
-const PWA_DB_NAME = "ajl_web";
-const PWA_DB_PREFIX = "ajl_web";
+const PWA_DB_NAME = "ajl_pwa";
+const PWA_DB_PREFIX = "ajl_pwa";
 
 function looksLikeStorageError(err) {
   const message = String(err?.message || err || "");
   return message.includes("IDBKeyRange") || message.includes("DataError") || message.includes("IndexedDB");
+}
+
+function unwrapApiData(payload) {
+  if (payload && typeof payload === "object" && payload.ok === true && "data" in payload) {
+    return payload.data;
+  }
+  return payload;
+}
+
+async function readApiData(res) {
+  const payload = await res.json().catch(() => null);
+  return unwrapApiData(payload);
+}
+
+function getErrorMessage(data, fallback) {
+  if (!data) return fallback;
+  if (typeof data.error === "string") return data.error;
+  if (data.error && typeof data.error.message === "string") return data.error.message;
+  if (typeof data.message === "string") return data.message;
+  return fallback;
 }
 
 let pwaResetInProgress = false;
@@ -131,6 +158,10 @@ function setupStorageRecovery() {
 
 function handleStorageFailure(err) {
   if (!looksLikeStorageError(err)) return false;
+  if (AJL_WEB_MODE) {
+    showSystemBanner("Web storage error. Use Setup → Reset local data.");
+    return true;
+  }
   if (storageFailureHandled) return true;
   storageFailureHandled = true;
   if (refreshTimer) {
@@ -144,10 +175,50 @@ function handleStorageFailure(err) {
   return true;
 }
 
+function showSystemBanner(message) {
+  if (!els.systemBanner) return;
+  els.systemBanner.textContent = message;
+  els.systemBanner.classList.remove("hidden");
+}
+
+function hideSystemBanner() {
+  if (!els.systemBanner) return;
+  els.systemBanner.classList.add("hidden");
+}
+
+let toastTimer = null;
+
+function showToast(message, actionLabel, onAction) {
+  if (!els.toast || !els.toastMessage || !els.toastAction) return;
+  els.toastMessage.textContent = message;
+  if (actionLabel && onAction) {
+    els.toastAction.textContent = actionLabel;
+    els.toastAction.classList.remove("hidden");
+    els.toastAction.onclick = () => {
+      onAction();
+      hideToast();
+    };
+  } else {
+    els.toastAction.classList.add("hidden");
+    els.toastAction.onclick = null;
+  }
+  els.toast.classList.remove("hidden");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => hideToast(), 5000);
+}
+
+function hideToast() {
+  if (!els.toast) return;
+  els.toast.classList.add("hidden");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = null;
+}
+
 const els = {
   monthPicker: document.getElementById("month-picker"),
   prevMonth: document.getElementById("prev-month"),
   nextMonth: document.getElementById("next-month"),
+  systemBanner: document.getElementById("system-banner"),
   essentialsToggle: document.getElementById("essentials-toggle"),
   navToday: document.getElementById("nav-today"),
   navReview: document.getElementById("nav-review"),
@@ -159,6 +230,7 @@ const els = {
   exportBackup: document.getElementById("export-backup"),
   importBackup: document.getElementById("import-backup"),
   resetLocal: document.getElementById("reset-local"),
+  resetLocalInline: document.getElementById("reset-local-inline"),
   todayView: document.getElementById("today-view"),
   reviewView: document.getElementById("review-view"),
   setupView: document.getElementById("setup-view"),
@@ -171,16 +243,23 @@ const els = {
   needWeekPlan: document.getElementById("need-week-plan"),
   statusExpand: document.getElementById("status-expand"),
   statusBar: document.getElementById("status-bar"),
+  statusPeriod: document.getElementById("status-period"),
   countRemaining: document.getElementById("count-remaining"),
   countOverdue: document.getElementById("count-overdue"),
   countSoon: document.getElementById("count-soon"),
   summarySheet: document.getElementById("summary-sheet"),
   summaryClose: document.getElementById("summary-close"),
+  summaryCountRemaining: document.getElementById("summary-count-remaining"),
+  summaryCountOverdue: document.getElementById("summary-count-overdue"),
+  summaryCountSoon: document.getElementById("summary-count-soon"),
+  summaryCountDone: document.getElementById("summary-count-done"),
   queueOverdue: document.getElementById("queue-overdue"),
   queueSoon: document.getElementById("queue-soon"),
   queueLater: document.getElementById("queue-later"),
+  toggleLater: document.getElementById("toggle-later"),
   queueSubtitle: document.getElementById("queue-subtitle"),
   markAllOverdue: document.getElementById("mark-all-overdue"),
+  recentStrip: document.getElementById("recent-strip"),
   itemsList: document.getElementById("items-list"),
   searchInput: document.getElementById("search-input"),
   statusChips: Array.from(document.querySelectorAll("#status-chips .chip")),
@@ -192,6 +271,14 @@ const els = {
   reviewSummary: document.getElementById("review-summary"),
   reviewList: document.getElementById("review-list"),
   reviewFilters: Array.from(document.querySelectorAll("[data-review-range]")),
+  defaultsPeriod: document.getElementById("defaults-period"),
+  defaultsSort: document.getElementById("defaults-sort"),
+  defaultsDueSoon: document.getElementById("defaults-due-soon"),
+  saveDefaults: document.getElementById("save-defaults"),
+  categoryInput: document.getElementById("category-input"),
+  categoryAdd: document.getElementById("category-add"),
+  categoriesList: document.getElementById("categories-list"),
+  startSafeMode: document.getElementById("start-safe-mode"),
   templateForm: document.getElementById("template-form"),
   templateError: document.getElementById("template-error"),
   templateName: document.getElementById("template-name"),
@@ -199,7 +286,6 @@ const els = {
   templateAmount: document.getElementById("template-amount"),
   templateDueDay: document.getElementById("template-due-day"),
   templateEssential: document.getElementById("template-essential"),
-  templateAutopay: document.getElementById("template-autopay"),
   templateActive: document.getElementById("template-active"),
   templateNote: document.getElementById("template-note"),
   templateMatchKey: document.getElementById("template-match-key"),
@@ -237,6 +323,9 @@ const els = {
   detailSave: document.getElementById("detail-save"),
   detailSaveStatus: document.getElementById("detail-save-status"),
   detailHistory: document.getElementById("detail-history"),
+  toast: document.getElementById("toast"),
+  toastMessage: document.getElementById("toast-message"),
+  toastAction: document.getElementById("toast-action"),
   assistantFab: document.getElementById("assistant-fab"),
   assistantDrawer: document.getElementById("assistant-drawer"),
   assistantConnection: document.getElementById("assistant-connection"),
@@ -391,6 +480,39 @@ function parseMonthInput(value) {
   return { year, month };
 }
 
+function getQueryFlags() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    reset: params.get("reset") === "1",
+    safe: params.get("safe") === "1",
+  };
+}
+
+function updateQuery(params) {
+  const url = new URL(window.location.href);
+  url.search = params.toString();
+  window.history.replaceState({}, "", url.toString());
+}
+
+function checkCrashGuard() {
+  try {
+    const key = "ajl_boot_guard";
+    const now = Date.now();
+    const raw = sessionStorage.getItem(key);
+    if (!raw) {
+      sessionStorage.setItem(key, JSON.stringify({ count: 1, ts: now }));
+      return false;
+    }
+    const parsed = JSON.parse(raw);
+    const delta = now - (parsed.ts || 0);
+    const count = delta < 10000 ? (parsed.count || 0) + 1 : 1;
+    sessionStorage.setItem(key, JSON.stringify({ count, ts: now }));
+    return count >= 3;
+  } catch (err) {
+    return false;
+  }
+}
+
 function setMonth(year, month) {
   state.selectedYear = year;
   state.selectedMonth = month;
@@ -406,6 +528,27 @@ function setMonthWithLock(year, month, lock = true) {
   if (!state.monthLocked) {
     state.lastAutoMonthKey = `${year}-${pad2(month)}`;
   }
+}
+
+function enterSafeMode(reason) {
+  state.safeMode = true;
+  state.safeReason = reason || "Safe mode enabled.";
+  showSystemBanner(`Safe mode: ${state.safeReason} Use Setup → Reset local data or refresh without ?safe=1.`);
+}
+
+async function handleResetFlag() {
+  const flags = getQueryFlags();
+  if (!flags.reset) return false;
+  try {
+    await fetch("/api/reset-local", { method: "POST" });
+  } catch (err) {
+    // ignore
+  }
+  const params = new URLSearchParams(window.location.search);
+  params.delete("reset");
+  updateQuery(params);
+  window.location.reload();
+  return true;
 }
 
 function syncToCurrentMonth() {
@@ -436,28 +579,51 @@ async function ensureMonth() {
 
 async function loadTemplates() {
   const res = await fetch("/api/templates");
-  state.templates = await res.json();
+  const data = await readApiData(res);
+  state.templates = Array.isArray(data) ? data : [];
 }
 
 async function loadInstances() {
   const res = await fetch(
     `/api/instances?year=${state.selectedYear}&month=${state.selectedMonth}`
   );
-  state.instances = await res.json();
+  const data = await readApiData(res);
+  state.instances = Array.isArray(data) ? data : [];
 }
 
 async function loadPayments() {
   const res = await fetch(
     `/api/payments?year=${state.selectedYear}&month=${state.selectedMonth}`
   );
-  state.payments = await res.json();
+  const data = await readApiData(res);
+  state.payments = Array.isArray(data) ? data : [];
 }
 
 async function loadFunds() {
   const res = await fetch(
     `/api/sinking-funds?year=${state.selectedYear}&month=${state.selectedMonth}&include_inactive=1`
   );
-  state.funds = await res.json();
+  const data = await readApiData(res);
+  state.funds = Array.isArray(data) ? data : [];
+}
+
+async function loadSettings() {
+  const res = await fetch("/api/settings");
+  const data = await readApiData(res);
+  if (data && typeof data === "object") {
+    const defaults = data.defaults || state.settings.defaults;
+    const categories = Array.isArray(data.categories) ? data.categories : [];
+    state.settings = {
+      defaults: {
+        sort: defaults.sort || "due_date",
+        dueSoonDays: Number(defaults.dueSoonDays || 7),
+        defaultPeriod: defaults.defaultPeriod || "month",
+      },
+      categories,
+    };
+    state.filters.sort = state.settings.defaults.sort || state.filters.sort;
+    if (els.sortFilter) els.sortFilter.value = state.filters.sort;
+  }
 }
 
 async function loadQwenAuthStatus() {
@@ -603,7 +769,7 @@ async function postAction(payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action_id: crypto.randomUUID(), ...payload }),
   });
-  return res.json();
+  return readApiData(res);
 }
 
 async function logAgentCommand(entry) {
@@ -700,14 +866,31 @@ async function addPayment(instanceId, amount) {
   renderDashboard();
 }
 
-async function markPaid(instanceId) {
+async function markPaid(instanceId, options = {}) {
   const result = await postAction({
     type: "MARK_PAID",
     instance_id: instanceId,
     paid_date: getTodayDateString(),
   });
   if (!result || result.ok === false) {
-    window.alert(result?.error || "Unable to mark done.");
+    window.alert(getErrorMessage(result, "Unable to mark done."));
+    return;
+  }
+  if (result.instance) updateInstanceInState(result.instance);
+  await loadPayments();
+  renderDashboard();
+  if (!options.silent) {
+    showToast("Marked done.", "Undo", () => markPending(instanceId));
+  }
+}
+
+async function markPending(instanceId) {
+  const result = await postAction({
+    type: "MARK_PENDING",
+    instance_id: instanceId,
+  });
+  if (!result || result.ok === false) {
+    window.alert(getErrorMessage(result, "Unable to undo."));
     return;
   }
   if (result.instance) updateInstanceInState(result.instance);
@@ -917,6 +1100,16 @@ function renderSummary(list) {
   const needWeeklyExact = needDailyExact * 7;
   const needDailyPlan = totals.required / daysPerMonthAvg;
   const needWeeklyPlan = totals.required / weeksPerMonth;
+  const today = getTodayDateString();
+  const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+  const remainingItems = list.filter((item) => item.status_derived !== "skipped" && item.amount_remaining > 0);
+  const overdue = remainingItems.filter((item) => currentMonth && item.due_date < today);
+  const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
+  const soonCutoff = new Date();
+  soonCutoff.setDate(soonCutoff.getDate() + Math.max(1, dueSoonDays));
+  const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
+  const dueSoon = remainingItems.filter((item) => currentMonth && item.due_date >= today && item.due_date <= soonCutoffString);
+  const doneCount = list.filter((item) => item.status_derived === "paid" || item.amount_remaining <= 0).length;
 
   els.requiredAmount.textContent = formatMoney(totals.required);
   els.paidAmount.textContent = formatMoney(totals.paid);
@@ -925,6 +1118,11 @@ function renderSummary(list) {
   els.needWeek.textContent = formatMoney(needWeeklyExact);
   els.needDayPlan.textContent = `Planning avg: ${formatMoney(needDailyPlan)}/day`;
   els.needWeekPlan.textContent = `Planning avg: ${formatMoney(needWeeklyPlan)}/week`;
+
+  if (els.summaryCountRemaining) els.summaryCountRemaining.textContent = remainingItems.length;
+  if (els.summaryCountOverdue) els.summaryCountOverdue.textContent = overdue.length;
+  if (els.summaryCountSoon) els.summaryCountSoon.textContent = dueSoon.length;
+  if (els.summaryCountDone) els.summaryCountDone.textContent = doneCount;
 
   return { ...totals, daysInMonth };
 }
@@ -945,13 +1143,19 @@ function renderStatusBar(baseList) {
   const remaining = baseList.filter((item) => item.status_derived !== "skipped" && item.amount_remaining > 0);
   const overdue = remaining.filter((item) => currentMonth && item.due_date < today);
   const soonCutoff = new Date();
-  soonCutoff.setDate(soonCutoff.getDate() + 7);
+  const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
+  soonCutoff.setDate(soonCutoff.getDate() + Math.max(1, dueSoonDays));
   const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
   const dueSoon = remaining.filter((item) => currentMonth && item.due_date >= today && item.due_date <= soonCutoffString);
 
   els.countRemaining.textContent = remaining.length;
   els.countOverdue.textContent = overdue.length;
   els.countSoon.textContent = dueSoon.length;
+
+  if (els.statusPeriod) {
+    const label = `${new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric" }).format(new Date(state.selectedYear, state.selectedMonth - 1, 1))}`;
+    els.statusPeriod.textContent = `Period: ${label}`;
+  }
 }
 
 function renderActionQueue(baseList) {
@@ -962,8 +1166,9 @@ function renderActionQueue(baseList) {
 
   const today = getTodayDateString();
   const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+  const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
   const soonCutoff = new Date();
-  soonCutoff.setDate(soonCutoff.getDate() + 7);
+  soonCutoff.setDate(soonCutoff.getDate() + Math.max(1, dueSoonDays));
   const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
 
   const remaining = baseList.filter((item) => item.status_derived !== "skipped" && item.amount_remaining > 0);
@@ -988,7 +1193,7 @@ function renderActionQueue(baseList) {
     title.textContent = item.name_snapshot;
     const meta = document.createElement("div");
     meta.className = "item-sub";
-    meta.textContent = `Due ${formatShortDate(item.due_date)}${item.autopay_snapshot ? " · Autopay" : ""}`;
+    meta.textContent = `Due ${formatShortDate(item.due_date)}`;
     main.appendChild(title);
     main.appendChild(meta);
 
@@ -997,6 +1202,13 @@ function renderActionQueue(baseList) {
     const amount = document.createElement("div");
     amount.className = "item-amount";
     amount.textContent = formatMoney(item.amount_remaining);
+    const kebab = document.createElement("button");
+    kebab.className = "ghost-btn small";
+    kebab.textContent = "…";
+    kebab.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openInstanceDetail(item.id);
+    });
     const action = document.createElement("button");
     action.className = "btn-small btn-primary";
     action.textContent = "Mark done";
@@ -1005,6 +1217,7 @@ function renderActionQueue(baseList) {
       markPaid(item.id);
     });
     right.appendChild(amount);
+    right.appendChild(kebab);
     right.appendChild(action);
 
     row.appendChild(main);
@@ -1028,6 +1241,32 @@ function renderActionQueue(baseList) {
 
   if (later.length === 0) renderEmpty(els.queueLater);
   else later.forEach((item) => els.queueLater.appendChild(renderQueueRow(item)));
+
+  if (els.toggleLater) {
+    const hasLater = later.length > 0;
+    els.toggleLater.classList.toggle("hidden", !hasLater);
+    els.queueLater.classList.toggle("hidden", state.queueLaterCollapsed);
+    els.toggleLater.textContent = state.queueLaterCollapsed ? "Show" : "Hide";
+  }
+}
+
+function renderRecentStrip() {
+  if (!els.recentStrip) return;
+  const items = (state.payments || [])
+    .slice()
+    .sort((a, b) => String(b.paid_date).localeCompare(String(a.paid_date)))
+    .slice(0, 3);
+  if (items.length === 0) {
+    els.recentStrip.classList.add("hidden");
+    return;
+  }
+  const instanceMap = new Map(state.instances.map((inst) => [inst.id, inst.name_snapshot]));
+  const entries = items.map((event) => {
+    const name = instanceMap.get(event.instance_id) || "Item";
+    return `${name} · ${formatShortDate(event.paid_date)}`;
+  });
+  els.recentStrip.textContent = `Recent: ${entries.join(" · ")}`;
+  els.recentStrip.classList.remove("hidden");
 }
 
 function formatMonthYear(dateString) {
@@ -1207,6 +1446,16 @@ function renderActivity() {
   const instanceMap = new Map(
     state.instances.map((inst) => [inst.id, inst.name_snapshot])
   );
+  const instanceStatus = new Map(
+    deriveInstances().map((inst) => [inst.id, inst.status_derived])
+  );
+  const lastPaymentMap = new Map();
+  state.payments.forEach((payment) => {
+    const current = lastPaymentMap.get(payment.instance_id);
+    if (!current || payment.paid_date > current.paid_date) {
+      lastPaymentMap.set(payment.instance_id, payment);
+    }
+  });
 
   const filtered = state.payments.filter((payment) => {
     if (state.reviewRange === "today") {
@@ -1228,7 +1477,10 @@ function renderActivity() {
     const name = instanceMap.get(payment.instance_id) || "Update";
     const title = document.createElement("div");
     title.className = "item-title";
-    title.textContent = `${name} · Logged update`;
+    const isDone =
+      instanceStatus.get(payment.instance_id) === "paid" &&
+      lastPaymentMap.get(payment.instance_id)?.id === payment.id;
+    title.textContent = `${name} · ${isDone ? "Marked done" : "Logged update"}`;
     const meta = document.createElement("div");
     meta.className = "item-sub";
     meta.textContent = `${formatMoney(payment.amount)} · ${formatShortDate(payment.paid_date)}`;
@@ -2343,6 +2595,9 @@ function renderCategoryFilter(list) {
   list.forEach((item) => {
     if (item.category_snapshot) categories.add(item.category_snapshot);
   });
+  (state.settings.categories || []).forEach((cat) => {
+    if (cat) categories.add(cat);
+  });
 
   const current = state.filters.category;
   els.categoryFilter.innerHTML = "";
@@ -2364,6 +2619,80 @@ function renderCategoryFilter(list) {
   if (!categories.has(current)) {
     state.filters.category = "all";
   }
+}
+
+function renderDefaults() {
+  if (!els.defaultsSort || !els.defaultsDueSoon || !els.defaultsPeriod) return;
+  els.defaultsSort.value = state.settings.defaults.sort || "due_date";
+  els.defaultsDueSoon.value = state.settings.defaults.dueSoonDays || 7;
+  els.defaultsPeriod.value = state.settings.defaults.defaultPeriod || "month";
+}
+
+function renderCategories() {
+  if (!els.categoriesList) return;
+  els.categoriesList.innerHTML = "";
+  const categories = Array.from(new Set((state.settings.categories || []).filter(Boolean)));
+  if (categories.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "No categories yet.";
+    els.categoriesList.appendChild(empty);
+    return;
+  }
+  categories.sort((a, b) => a.localeCompare(b)).forEach((cat) => {
+    const pill = document.createElement("div");
+    pill.className = "category-pill";
+    const label = document.createElement("span");
+    label.textContent = cat;
+    const remove = document.createElement("button");
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove ${cat}`);
+    remove.addEventListener("click", () => {
+      removeCategory(cat);
+    });
+    pill.appendChild(label);
+    pill.appendChild(remove);
+    els.categoriesList.appendChild(pill);
+  });
+}
+
+async function saveSettings(updates) {
+  const payload = {
+    defaults: state.settings.defaults,
+    categories: state.settings.categories,
+    ...updates,
+  };
+  const res = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await readApiData(res);
+  if (data && typeof data === "object") {
+    state.settings.defaults = data.defaults || state.settings.defaults;
+    state.settings.categories = Array.isArray(data.categories) ? data.categories : state.settings.categories;
+  }
+}
+
+async function addCategory() {
+  if (!els.categoryInput) return;
+  const value = String(els.categoryInput.value || "").trim();
+  if (!value) return;
+  const next = new Set(state.settings.categories || []);
+  next.add(value);
+  state.settings.categories = Array.from(next);
+  await saveSettings({ categories: state.settings.categories });
+  els.categoryInput.value = "";
+  renderCategories();
+  renderCategoryFilter(state.instances || []);
+}
+
+async function removeCategory(category) {
+  const next = (state.settings.categories || []).filter((cat) => cat !== category);
+  state.settings.categories = next;
+  await saveSettings({ categories: next });
+  renderCategories();
+  renderCategoryFilter(state.instances || []);
 }
 
 function renderItems(baseList) {
@@ -2790,16 +3119,6 @@ function renderTemplates() {
     dueInput.max = "31";
     dueInput.value = template.due_day;
 
-    const autopayToggle = document.createElement("label");
-    autopayToggle.className = "toggle small";
-    const autopayInput = document.createElement("input");
-    autopayInput.type = "checkbox";
-    autopayInput.checked = template.autopay;
-    const autopayLabel = document.createElement("span");
-    autopayLabel.textContent = "Autopay";
-    autopayToggle.appendChild(autopayInput);
-    autopayToggle.appendChild(autopayLabel);
-
     const noteInput = document.createElement("input");
     noteInput.type = "text";
     noteInput.value = template.default_note || "";
@@ -2843,7 +3162,6 @@ function renderTemplates() {
       category: template.category || "",
       amount_default: Number(template.amount_default || 0).toFixed(2),
       due_day: String(template.due_day),
-      autopay: template.autopay,
       default_note: template.default_note || "",
       match_payee_key: template.match_payee_key || "",
       match_amount_tolerance: Number(template.match_amount_tolerance || 0).toFixed(2),
@@ -2857,7 +3175,6 @@ function renderTemplates() {
         categoryInput.value !== initial.category ||
         amountInput.value !== initial.amount_default ||
         dueInput.value !== initial.due_day ||
-        autopayInput.checked !== initial.autopay ||
         noteInput.value !== initial.default_note ||
         matchKeyInput.value !== initial.match_payee_key ||
         matchToleranceInput.value !== initial.match_amount_tolerance;
@@ -2872,7 +3189,6 @@ function renderTemplates() {
       categoryInput,
       amountInput,
       dueInput,
-      autopayInput,
       noteInput,
       matchKeyInput,
       matchToleranceInput,
@@ -2889,7 +3205,6 @@ function renderTemplates() {
         category: categoryInput.value.trim(),
         amount_default: Number(amountInput.value),
         due_day: Number(dueInput.value),
-        autopay: autopayInput.checked,
         essential: essentialInput.checked,
         active: activeInput.checked,
         default_note: noteInput.value.trim(),
@@ -2910,7 +3225,7 @@ function renderTemplates() {
         let message = "Unable to save template.";
         try {
           const data = await res.json();
-          if (data?.error) message = data.error;
+          message = getErrorMessage(data, message);
         } catch (err) {
           // ignore
         }
@@ -2945,7 +3260,6 @@ function renderTemplates() {
     row.appendChild(categoryInput);
     row.appendChild(amountInput);
     row.appendChild(dueInput);
-    row.appendChild(autopayToggle);
     row.appendChild(noteInput);
     row.appendChild(matchKeyInput);
     row.appendChild(matchToleranceInput);
@@ -2962,7 +3276,6 @@ function renderTemplates() {
         categoryInput,
         amountInput,
         dueInput,
-        autopayInput,
         noteInput,
         matchKeyInput,
         matchToleranceInput,
@@ -2982,7 +3295,6 @@ function buildTemplatePayload(entry) {
     category: inputs.categoryInput.value.trim(),
     amount_default: Number(inputs.amountInput.value),
     due_day: Number(inputs.dueInput.value),
-    autopay: inputs.autopayInput.checked,
     essential: inputs.essentialInput.checked,
     active: inputs.activeInput.checked,
     default_note: inputs.noteInput.value.trim(),
@@ -3017,7 +3329,7 @@ async function saveDirtyTemplates() {
       let message = "Unable to save template.";
       try {
         const data = await res.json();
-        if (data?.error) message = data.error;
+        message = getErrorMessage(data, message);
       } catch (err) {
         // ignore
       }
@@ -3187,6 +3499,7 @@ function renderDashboard() {
   renderZeroState();
   renderStatusBar(base);
   renderActionQueue(base);
+  renderRecentStrip();
   renderCategoryFilter(base);
   renderItems(base);
   renderActivity();
@@ -3212,6 +3525,7 @@ async function refreshAll() {
     syncToCurrentMonth();
     await ensureMonth();
     await Promise.all([
+      loadSettings(),
       loadTemplates(),
       loadInstances(),
       loadPayments(),
@@ -3220,6 +3534,8 @@ async function refreshAll() {
       loadCommandLog(),
       loadChatHistory(),
     ]);
+    renderDefaults();
+    renderCategories();
     renderDashboard();
     renderTemplates();
   } catch (err) {
@@ -3329,11 +3645,33 @@ function bindEvents() {
         window.alert("No overdue items.");
         return;
       }
-      const confirmed = window.confirm(`Mark ${overdue.length} overdue item(s) done?`);
+      const preview = overdue.slice(0, 5).map((item) => item.name_snapshot).join(", ");
+      const suffix = overdue.length > 5 ? "…" : "";
+      const confirmed = window.confirm(`Mark ${overdue.length} overdue item(s) done?\n${preview}${suffix}`);
       if (!confirmed) return;
+      const ids = overdue.map((item) => item.id);
       for (const item of overdue) {
-        await markPaid(item.id);
+        await markPaid(item.id, { silent: true });
       }
+      showToast(`Marked ${overdue.length} overdue item(s) done.`, "Undo", async () => {
+        for (const id of ids) {
+          await markPending(id);
+        }
+      });
+    });
+  }
+
+  if (els.toggleLater) {
+    els.toggleLater.addEventListener("click", () => {
+      state.queueLaterCollapsed = !state.queueLaterCollapsed;
+      renderActionQueue(getBaseInstances(deriveInstances()));
+    });
+  }
+
+  if (els.recentStrip) {
+    els.recentStrip.addEventListener("click", () => {
+      state.view = "review";
+      renderView();
     });
   }
 
@@ -3369,12 +3707,29 @@ function bindEvents() {
 
   els.exportMonth.addEventListener("click", () => {
     const url = `/api/export/month.csv?year=${state.selectedYear}&month=${state.selectedMonth}`;
+    if (AJL_WEB_MODE) {
+      fetch(url)
+        .then((res) => res.text())
+        .then((csv) => {
+          const blob = new Blob([csv], { type: "text/csv" });
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = blobUrl;
+          link.download = `au_jour_le_jour_${state.selectedYear}-${pad2(state.selectedMonth)}.csv`;
+          link.click();
+          URL.revokeObjectURL(blobUrl);
+        })
+        .catch(() => {
+          window.alert("Unable to export CSV.");
+        });
+      return;
+    }
     window.open(url, "_blank");
   });
 
   els.exportBackup.addEventListener("click", async () => {
     const res = await fetch("/api/export/backup.json");
-    const data = await res.json();
+    const data = await readApiData(res);
     const blob = new Blob([JSON.stringify(data, null, 2)], {
       type: "application/json",
     });
@@ -3407,12 +3762,56 @@ function bindEvents() {
     }
   });
 
+  if (els.saveDefaults) {
+    els.saveDefaults.addEventListener("click", async () => {
+      const dueSoonValue = Number(els.defaultsDueSoon?.value || 7);
+      state.settings.defaults = {
+        sort: els.defaultsSort?.value || "due_date",
+        dueSoonDays: Number.isFinite(dueSoonValue) ? Math.max(1, dueSoonValue) : 7,
+        defaultPeriod: els.defaultsPeriod?.value || "month",
+      };
+      await saveSettings({ defaults: state.settings.defaults });
+      renderDefaults();
+      renderDashboard();
+    });
+  }
+
+  if (els.categoryAdd) {
+    els.categoryAdd.addEventListener("click", () => addCategory());
+  }
+
+  if (els.categoryInput) {
+    els.categoryInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addCategory();
+      }
+    });
+  }
+
   if (els.resetLocal) {
     els.resetLocal.addEventListener("click", async () => {
       const confirmed = window.confirm("Reset all local data in this browser? This cannot be undone.");
       if (!confirmed) return;
       await fetch("/api/reset-local", { method: "POST" });
       window.location.reload();
+    });
+  }
+
+  if (els.resetLocalInline) {
+    els.resetLocalInline.addEventListener("click", async () => {
+      const confirmed = window.confirm("Reset all local data in this browser? This cannot be undone.");
+      if (!confirmed) return;
+      await fetch("/api/reset-local", { method: "POST" });
+      window.location.reload();
+    });
+  }
+
+  if (els.startSafeMode) {
+    els.startSafeMode.addEventListener("click", () => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("safe", "1");
+      window.location.href = url.toString();
     });
   }
 
@@ -3554,7 +3953,6 @@ function bindEvents() {
       category: els.templateCategory.value.trim(),
       amount_default: Number(els.templateAmount.value),
       due_day: Number(els.templateDueDay.value),
-      autopay: els.templateAutopay.checked,
       essential: els.templateEssential.checked,
       active: els.templateActive.checked,
       default_note: els.templateNote.value.trim(),
@@ -3580,7 +3978,7 @@ function bindEvents() {
       let message = "Unable to add bill.";
       try {
         const data = await res.json();
-        if (data?.error) message = data.error;
+        message = getErrorMessage(data, message);
       } catch (err) {
         // ignore
       }
@@ -3592,7 +3990,7 @@ function bindEvents() {
   if (els.applyTemplates) {
     els.applyTemplates.addEventListener("click", async () => {
     const confirmed = window.confirm(
-      "Apply template values to this month? This will overwrite names, amounts, due dates, autopay, and essential flags for the selected month."
+      "Apply template values to this month? This will overwrite names, amounts, due dates, and essential flags for the selected month."
     );
     if (!confirmed) return;
     try {
@@ -3790,7 +4188,7 @@ function bindEvents() {
       });
       if (!res.ok) {
         if (els.fundError) {
-          els.fundError.textContent = res.error || "Unable to add fund.";
+          els.fundError.textContent = getErrorMessage(res, "Unable to add fund.");
           els.fundError.classList.remove("hidden");
         }
         return;
@@ -3816,7 +4214,10 @@ function bindEvents() {
   }
 }
 
-function init() {
+async function init() {
+  const flags = getQueryFlags();
+  const crashGuard = checkCrashGuard();
+  if (await handleResetFlag()) return;
   const now = new Date();
   setMonth(now.getFullYear(), now.getMonth() + 1);
   state.monthLocked = false;
@@ -3824,17 +4225,25 @@ function init() {
   state.essentialsOnly = els.essentialsToggle.checked;
   state.profileName = loadProfileName();
   state.view = "today";
-  setupStorageRecovery();
+  if (flags.safe || crashGuard) {
+    enterSafeMode(flags.safe ? "Safe mode requested." : "Repeated crashes detected.");
+    state.view = "setup";
+  }
+  if (!AJL_WEB_MODE) {
+    setupStorageRecovery();
+  }
   bindEvents();
   renderView();
   if (els.fundMonths && els.fundCadence && els.fundCadence.value !== "custom_months") {
     els.fundMonths.disabled = true;
   }
-  refreshAll();
-  refreshTimer = setInterval(() => {
-    if (!document.hidden) refreshAll();
-  }, 60000);
-  window.addEventListener("focus", () => refreshAll());
+  if (!state.safeMode) {
+    refreshAll();
+    refreshTimer = setInterval(() => {
+      if (!document.hidden) refreshAll();
+    }, 60000);
+    window.addEventListener("focus", () => refreshAll());
+  }
 
   if (els.assistantPanel && !els.assistantPanel.classList.contains("collapsed")) {
     setTimeout(() => focusAgentInput(), 200);

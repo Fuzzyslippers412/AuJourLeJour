@@ -4,8 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Au Jour Le Jour</title>
-    <link rel="stylesheet" href="/styles.css" />
-    <link rel="manifest" href="/manifest.json" />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header class="topbar">
@@ -37,6 +36,7 @@
     </header>
 
     <main class="container">
+      <div id="system-banner" class="system-banner hidden"></div>
       <section id="today-view" class="view">
         <div id="zero-state" class="zero-state hidden">
           <div class="zero-card">
@@ -52,6 +52,7 @@
             <div class="status-count overdue"><span id="count-overdue">0</span> Overdue</div>
             <div class="status-count soon"><span id="count-soon">0</span> Due soon</div>
           </div>
+          <div id="status-period" class="status-period"></div>
           <button id="status-expand" class="ghost-btn">Summary</button>
         </div>
 
@@ -63,6 +64,12 @@
                 <div class="sheet-sub">Reference totals only.</div>
               </div>
               <button id="summary-close" class="icon-btn" aria-label="Close">&times;</button>
+            </div>
+            <div class="summary-counts">
+              <div>Remaining: <span id="summary-count-remaining">0</span></div>
+              <div>Overdue: <span id="summary-count-overdue">0</span></div>
+              <div>Due soon: <span id="summary-count-soon">0</span></div>
+              <div>Done: <span id="summary-count-done">0</span></div>
             </div>
             <div class="summary-grid">
               <div class="summary-item">
@@ -109,10 +116,15 @@
             <div id="queue-soon" class="queue-list"></div>
           </div>
           <div class="queue-section">
-            <div class="queue-section-title">Later</div>
+            <div class="queue-section-title">
+              <span>Later</span>
+              <button id="toggle-later" class="ghost-btn small">Hide</button>
+            </div>
             <div id="queue-later" class="queue-list"></div>
           </div>
         </section>
+
+        <section id="recent-strip" class="recent-strip hidden"></section>
 
         <section id="items-card" class="card all-items">
           <div class="card-title">Bills list</div>
@@ -148,7 +160,7 @@
           <button class="chip active" data-review-range="month">Month</button>
         </div>
         <div id="review-activity" class="card">
-          <div class="card-title">Activity log</div>
+          <div class="card-title">Activity Log</div>
           <div id="review-activity-list" class="list"></div>
         </div>
         <div id="review-card" class="card">
@@ -161,6 +173,44 @@
       <section id="setup-view" class="view hidden">
         <div class="page-title">Setup</div>
         <div class="page-sub">Templates, categories, backups, and reserved buckets.</div>
+        <div class="disclaimer">This app tracks bills. You pay outside the app.</div>
+
+        <section class="setup-block">
+          <div class="block-title">Defaults</div>
+          <div class="block-sub">Period view, sort order, and due-soon window.</div>
+          <div class="defaults-grid">
+            <label>
+              Default period
+              <select id="defaults-period" class="select">
+                <option value="month">Month</option>
+              </select>
+            </label>
+            <label>
+              Default sort
+              <select id="defaults-sort" class="select">
+                <option value="due_date">Due date</option>
+                <option value="amount">Amount</option>
+                <option value="name">Name</option>
+                <option value="status">Status</option>
+              </select>
+            </label>
+            <label>
+              Due soon window (days)
+              <input id="defaults-due-soon" type="number" min="1" max="31" />
+            </label>
+            <button id="save-defaults" class="ghost-btn">Save defaults</button>
+          </div>
+        </section>
+
+        <section class="setup-block">
+          <div class="block-title">Categories</div>
+          <div class="block-sub">Manage categories used for filtering.</div>
+          <div class="categories-row">
+            <input id="category-input" type="text" placeholder="Add category" />
+            <button id="category-add" class="ghost-btn">Add</button>
+          </div>
+          <div id="categories-list" class="categories-list"></div>
+        </section>
 
         <section class="setup-block">
           <div class="block-header">
@@ -178,10 +228,6 @@
             <label class="toggle small">
               <input id="template-essential" type="checkbox" checked />
               <span>Essential</span>
-            </label>
-            <label class="toggle small">
-              <input id="template-autopay" type="checkbox" />
-              <span>Autopay</span>
             </label>
             <label class="toggle small">
               <input id="template-active" type="checkbox" checked />
@@ -239,6 +285,15 @@
           <div id="fund-error" class="form-error hidden"></div>
           <div id="funds-list" class="templates-list"></div>
         </section>
+
+        <section class="setup-block">
+          <div class="block-title">Data safety</div>
+          <div class="block-sub">Reset local data or start in safe mode if something breaks.</div>
+          <div class="safety-actions">
+            <button id="reset-local-inline" class="ghost-btn danger">Reset local data</button>
+            <button id="start-safe-mode" class="ghost-btn">Start in safe mode</button>
+          </div>
+        </section>
       </section>
     </main>
 
@@ -282,7 +337,7 @@
           <div class="drawer-section">
             <div class="section-title">Log update</div>
             <div class="log-update-row">
-              <input id="detail-log-amount" type="number" min="0" step="0.01" placeholder="Amount" />
+              <input id="detail-log-amount" type="number" min="0" step="0.01" placeholder="Amount completed" />
               <button id="detail-log-submit" class="btn-small btn-primary">Log update</button>
             </div>
             <div id="detail-log-status" class="meta"></div>
@@ -322,12 +377,12 @@
       </div>
     </div>
 
-    <script>
-      window.AJL_WEB_MODE = true;
-      window.AJL_PWA = true;
-    </script>
-    <script src="/vendor/dexie.min.js"></script>
-    <script src="/pwa-adapter.js"></script>
-    <script src="/app.js"></script>
+    <div id="toast" class="toast hidden">
+      <div id="toast-message" class="toast-message"></div>
+      <button id="toast-action" class="toast-action hidden">Undo</button>
+    </div>
+
+    <script src="./web-adapter.js"></script>
+    <script src="./app.js"></script>
   </body>
 </html>

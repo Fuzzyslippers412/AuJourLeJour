@@ -5,34 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Au Jour Le Jour</title>
     <link rel="stylesheet" href="/styles.css" />
-    <script>
-      (function () {
-        const params = new URLSearchParams(window.location.search);
-        if (!params.has("reset")) return;
-        const clear = async () => {
-          try {
-            if ("serviceWorker" in navigator) {
-              const regs = await navigator.serviceWorker.getRegistrations();
-              await Promise.all(regs.map((reg) => reg.unregister()));
-            }
-            if ("caches" in window) {
-              const keys = await caches.keys();
-              await Promise.all(keys.map((key) => caches.delete(key)));
-            }
-            await new Promise((resolve) => {
-              const req = indexedDB.deleteDatabase("ajl_pwa");
-              req.onsuccess = () => resolve();
-              req.onerror = () => resolve();
-              req.onblocked = () => resolve();
-            });
-          } finally {
-            const cleanUrl = window.location.origin + window.location.pathname;
-            window.location.replace(cleanUrl);
-          }
-        };
-        clear();
-      })();
-    </script>
   </head>
   <body>
     <header class="topbar">
@@ -40,7 +12,7 @@
         <div class="brand-mark">AJL</div>
         <div>
           <div class="brand-title">Au Jour Le Jour</div>
-          <div class="brand-sub">Essentials ledger</div>
+          <div class="brand-sub">Essentials tracker</div>
         </div>
       </div>
 
@@ -55,201 +27,142 @@
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
         </label>
-        <div id="local-status" class="local-status" tabindex="0" role="button" aria-label="Storage info">
-          <span class="local-dot"></span>
-          <span class="local-text">Local-only · Autosaves</span>
-          <span class="local-device">This browser</span>
-          <div class="local-tooltip">
-            <div class="local-tooltip-title">Private to this browser</div>
-            <div class="local-tooltip-body">No account, no sync. Export JSON to move to another device.</div>
-          </div>
-        </div>
-        <button id="nav-dashboard" class="tab-btn active">This Month</button>
-        <button id="nav-templates" class="tab-btn">Templates</button>
-        <button id="open-backup" class="primary-btn">Backup/Export</button>
+        <nav class="mode-tabs">
+          <button id="nav-today" class="tab-btn active">Today</button>
+          <button id="nav-review" class="tab-btn">Review</button>
+          <button id="nav-setup" class="tab-btn">Setup</button>
+        </nav>
       </div>
     </header>
 
     <main class="container">
-      <section id="dashboard-view" class="view">
+      <div id="system-banner" class="system-banner hidden"></div>
+      <section id="today-view" class="view">
         <div id="zero-state" class="zero-state hidden">
           <div class="zero-card">
             <div class="zero-title">No bills yet.</div>
             <div class="zero-sub">Add essentials to generate your monthly list.</div>
-            <button id="zero-templates-btn" class="primary-btn">Go to Templates</button>
-            <button id="zero-intake-btn" class="ghost-btn">Add bills by describing them</button>
+            <button id="zero-templates-btn" class="primary-btn">Go to Setup</button>
           </div>
         </div>
 
-        <div class="card hero">
-          <div class="hero-left">
-            <div class="hero-primary">
-              <div class="hero-metric">
-                <div class="hero-label">Required</div>
-                <div id="required-amount" class="hero-value">$0.00</div>
-              </div>
-              <div class="hero-metric">
-                <div class="hero-label">Paid</div>
-                <div id="paid-amount" class="hero-value">$0.00</div>
-              </div>
-              <div class="hero-metric">
-                <div class="hero-label">Remaining</div>
-                <div id="remaining-amount" class="hero-value">$0.00</div>
-              </div>
-            </div>
-            <div class="hero-subline">
-              <span>Future reserved: <span id="future-reserved">$0.00</span></span>
-              <button id="piggy-cta" class="link-btn">Add piggy bank</button>
-            </div>
+        <div id="status-bar" class="status-bar">
+          <div class="status-counts">
+            <div class="status-count"><span id="count-remaining">0</span> Remaining</div>
+            <div class="status-count overdue"><span id="count-overdue">0</span> Overdue</div>
+            <div class="status-count soon"><span id="count-soon">0</span> Due soon</div>
           </div>
-          <div class="hero-right">
-            <div class="hero-side">
-              <div class="hero-mini">
-                <div class="hero-label">Need / Day</div>
-                <div id="need-day" class="hero-mini-value">$0.00</div>
-                <div id="need-day-plan" class="hero-caption">Planning avg: $0.00/day</div>
-              </div>
-              <div class="hero-mini">
-                <div class="hero-label">Need / Week</div>
-                <div id="need-week" class="hero-mini-value">$0.00</div>
-                <div id="need-week-plan" class="hero-caption">Planning avg: $0.00/week</div>
-              </div>
-            </div>
-            <div class="cash-block">
-              <label for="cash-start">Cash on hand</label>
-              <div class="cash-row">
-                <div class="cash-input">
-                  <span class="cash-prefix">$</span>
-                  <input id="cash-start" type="number" min="0" step="0.01" placeholder="0.00" />
-                </div>
-                <button id="cash-save" class="btn-small btn-primary" disabled>Save</button>
-              </div>
-              <div class="cash-caption">Updates as you log payments.</div>
-              <div id="cash-empty" class="cash-empty">Set cash to track runway.</div>
-              <div class="cash-remaining"><span id="cash-remaining">$0.00</span></div>
-              <div id="cash-save-status" class="meta"></div>
-            </div>
-            <div id="hero-status" class="status-box">
-              <div id="status-main" class="status-main">Remaining this month: $0</div>
-              <div id="status-sub" class="status-sub">You're not free yet.</div>
-            </div>
-          </div>
+          <div id="status-period" class="status-period"></div>
+          <button id="status-expand" class="ghost-btn">Summary</button>
         </div>
 
-        <div id="urgency-row" class="row">
-          <div class="col col-8">
-            <div id="overdue-card" class="card compact-card">
-              <div class="card-title">Overdue</div>
-              <div id="overdue-list" class="list"></div>
+        <div id="summary-sheet" class="sheet hidden">
+          <div class="sheet-card">
+            <div class="sheet-header">
+              <div>
+                <div class="sheet-title">Monthly summary</div>
+                <div class="sheet-sub">Reference totals only.</div>
+              </div>
+              <button id="summary-close" class="icon-btn" aria-label="Close">&times;</button>
             </div>
-            <div id="due-soon-card" class="card compact-card">
-              <div class="card-title">Due soon</div>
-              <div id="due-soon-list" class="list"></div>
+            <div class="summary-counts">
+              <div>Remaining: <span id="summary-count-remaining">0</span></div>
+              <div>Overdue: <span id="summary-count-overdue">0</span></div>
+              <div>Due soon: <span id="summary-count-soon">0</span></div>
+              <div>Done: <span id="summary-count-done">0</span></div>
             </div>
-          </div>
-          <div class="col col-4">
-            <div class="card compact-card">
-              <div class="card-title">Recent activity</div>
-              <div id="activity-list" class="list"></div>
-            </div>
-            <div id="assistant-card" class="card compact-card assistant-card">
-              <div class="card-title">Mamdou</div>
-              <div id="nudges-list" class="list"></div>
-              <button id="assistant-toggle" class="assistant-pill">Hide Mamdou</button>
-              <div id="assistant-panel" class="assistant-panel">
-                <div class="assistant-box">
-                  <div class="assistant-title">Mamdou</div>
-                  <div class="assistant-sub">Ask, add bills, or run commands in one box.</div>
-                  <div id="assistant-connection" class="assistant-connection">
-                    <div class="assistant-connection-text">
-                      <div id="assistant-connection-title" class="assistant-connection-title">Connect Mamdou</div>
-                      <div id="assistant-connection-body" class="assistant-connection-body">Use Mamdou login to enable insights.</div>
-                    </div>
-                    <div id="assistant-connection-action" class="assistant-connection-action"></div>
-                  </div>
-                  <div class="assistant-personal">
-                    <div id="assistant-greeting" class="assistant-greeting">Hi there.</div>
-                    <label class="assistant-name-label" for="assistant-name-input">Call me</label>
-                    <div class="assistant-name-row">
-                      <input id="assistant-name-input" class="assistant-name-input" type="text" placeholder="Name (optional)" />
-                      <button id="assistant-name-save" class="btn-link">Save</button>
-                    </div>
-                    <div class="assistant-name-hint">Stored locally on this device.</div>
-                  </div>
-                  <div class="assistant-capabilities">
-                    <div class="cap-title">What Mamdou Can Do</div>
-                    <div class="cap-sub">All actions require confirmation.</div>
-                    <div class="cap-tags">
-                      <span class="cap-chip">Pay / undo payments</span>
-                      <span class="cap-chip">Update bills</span>
-                      <span class="cap-chip">Create / update templates</span>
-                      <span class="cap-chip">Apply templates</span>
-                      <span class="cap-chip">Piggy banks</span>
-                      <span class="cap-chip">Cash on hand</span>
-                      <span class="cap-chip">Exports</span>
-                      <span class="cap-chip">Switch month</span>
-                      <span class="cap-chip">Toggle essentials</span>
-                    </div>
-                  </div>
-                  <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Rent $1200 on the 1st, Electric $140 on the 10th” or “mark rent paid”"></textarea>
-                  <div class="assistant-actions">
-                    <button id="llm-agent-send" class="btn-small btn-primary">Send</button>
-                  </div>
-                  <div id="llm-agent-output" class="assistant-status meta"></div>
-                  <div id="llm-agent-actions" class="assistant-actions-row hidden">
-                    <button id="llm-agent-confirm" class="btn-pill primary">Confirm</button>
-                    <button id="llm-agent-cancel" class="btn-pill">Cancel</button>
-                  </div>
-                  <div id="llm-agent-history" class="assistant-thread"></div>
-                  <div class="assistant-log">
-                    <div class="assistant-log-heading">Command log</div>
-                    <div id="llm-command-log" class="assistant-log-list"></div>
-                  </div>
-                  <button id="llm-chat-clear" class="assistant-clear">Clear chat</button>
-                </div>
+            <div class="summary-grid">
+              <div class="summary-item">
+                <div class="summary-label">Required</div>
+                <div id="required-amount" class="summary-value">$0.00</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Done</div>
+                <div id="paid-amount" class="summary-value">$0.00</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Remaining</div>
+                <div id="remaining-amount" class="summary-value">$0.00</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Plan pace (day)</div>
+                <div id="need-day" class="summary-value">$0.00</div>
+                <div id="need-day-plan" class="summary-caption">Planning avg: $0.00/day</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Plan pace (week)</div>
+                <div id="need-week" class="summary-value">$0.00</div>
+                <div id="need-week-plan" class="summary-caption">Planning avg: $0.00/week</div>
               </div>
             </div>
           </div>
         </div>
 
-        <div id="piggy-card" class="card">
-          <div class="card-title-row">
-            <div class="card-title">Piggy Banks</div>
-            <button id="open-piggy-manage" class="ghost-btn">Manage</button>
+        <section class="card action-queue" id="action-queue">
+          <div class="queue-header">
+            <div>
+              <div class="queue-title">Action Queue</div>
+              <div id="queue-subtitle" class="queue-sub">Overdue: 0 items</div>
+            </div>
+            <button id="mark-all-overdue" class="btn-small btn-primary">Mark all overdue done</button>
           </div>
-          <div id="piggy-list" class="piggy-list"></div>
-        </div>
 
-        <div id="items-card" class="card all-items">
-          <div class="card-title">All items</div>
-          <div class="filters">
+          <div class="queue-section">
+            <div class="queue-section-title">Overdue</div>
+            <div id="queue-overdue" class="queue-list"></div>
+          </div>
+          <div class="queue-section">
+            <div class="queue-section-title">Due next 7 days</div>
+            <div id="queue-soon" class="queue-list"></div>
+          </div>
+          <div class="queue-section">
+            <div class="queue-section-title">
+              <span>Later</span>
+              <button id="toggle-later" class="ghost-btn small">Hide</button>
+            </div>
+            <div id="queue-later" class="queue-list"></div>
+          </div>
+        </section>
+
+        <section id="recent-strip" class="recent-strip hidden"></section>
+
+        <section id="items-card" class="card all-items">
+          <div class="card-title">Bills list</div>
+          <div class="filter-bar">
             <input id="search-input" class="search-input" type="search" placeholder="Search bills..." />
-            <div class="filter-group">
-              <span>Status</span>
-              <label class="chip"><input type="checkbox" data-status="pending" checked />Pending</label>
-              <label class="chip"><input type="checkbox" data-status="partial" checked />Partial</label>
-              <label class="chip"><input type="checkbox" data-status="paid" checked />Paid</label>
-              <label class="chip"><input type="checkbox" data-status="skipped" checked />Skipped</label>
+            <div class="chip-group" id="status-chips">
+              <button class="chip active" data-status="all">All</button>
+              <button class="chip" data-status="pending">Pending</button>
+              <button class="chip" data-status="partial">Partial</button>
+              <button class="chip" data-status="paid">Done</button>
+              <button class="chip" data-status="skipped">Skipped</button>
             </div>
-            <div class="filter-group">
-              <span>Category</span>
-              <select id="category-filter" class="select">
-                <option value="all">All</option>
-              </select>
-            </div>
-            <div class="filter-group">
-              <span>Sort</span>
-              <select id="sort-filter" class="select">
-                <option value="due_date">Due date</option>
-                <option value="amount">Amount</option>
-                <option value="name">Name</option>
-              </select>
-            </div>
+            <select id="category-filter" class="select">
+              <option value="all">All categories</option>
+            </select>
+            <select id="sort-filter" class="select">
+              <option value="due_date">Due date</option>
+              <option value="amount">Amount</option>
+              <option value="name">Name</option>
+              <option value="status">Status</option>
+            </select>
           </div>
-
           <div id="items-list" class="items-list"></div>
-        </div>
+        </section>
+      </section>
 
+      <section id="review-view" class="view hidden">
+        <div class="page-title">Review</div>
+        <div class="page-sub">Activity and trends for this month.</div>
+        <div class="review-filters">
+          <button class="chip" data-review-range="today">Today</button>
+          <button class="chip" data-review-range="week">7d</button>
+          <button class="chip active" data-review-range="month">Month</button>
+        </div>
+        <div id="review-activity" class="card">
+          <div class="card-title">Activity Log</div>
+          <div id="review-activity-list" class="list"></div>
+        </div>
         <div id="review-card" class="card">
           <div class="card-title">Month review</div>
           <div id="review-summary" class="review-grid"></div>
@@ -257,77 +170,130 @@
         </div>
       </section>
 
-      <section id="templates-view" class="view hidden">
-        <div class="page-title">Recurring bills</div>
-        <div class="page-sub">These generate your monthly checklist.</div>
-        <button id="open-intake" class="ghost-btn">Add bills (Mamdou)</button>
+      <section id="setup-view" class="view hidden">
+        <div class="page-title">Setup</div>
+        <div class="page-sub">Templates, categories, backups, and reserved buckets.</div>
+        <div class="disclaimer">This app tracks bills. You pay outside the app.</div>
 
-        <form id="template-form" class="template-form">
-          <input id="template-name" type="text" placeholder="Name" required />
-          <input id="template-category" type="text" placeholder="Category" />
-          <input id="template-amount" type="number" min="0" step="0.01" placeholder="Amount" required />
-          <input id="template-due-day" type="number" min="1" max="31" placeholder="Due day" required />
-          <label class="toggle small">
-            <input id="template-essential" type="checkbox" checked />
-            <span>Essential</span>
-          </label>
-          <label class="toggle small">
-            <input id="template-autopay" type="checkbox" />
-            <span>Autopay</span>
-          </label>
-          <label class="toggle small">
-            <input id="template-active" type="checkbox" checked />
-            <span>Active</span>
-          </label>
-          <input id="template-note" type="text" placeholder="Default note" />
-          <input id="template-match-key" type="text" placeholder="Match key" />
-          <input id="template-match-tolerance" type="number" min="0" step="0.01" placeholder="Match tolerance" />
-          <button class="primary-btn" type="submit">Add bill</button>
-        </form>
-        <div id="template-error" class="form-error hidden"></div>
+        <section class="setup-block">
+          <div class="block-title">Defaults</div>
+          <div class="block-sub">Period view, sort order, and due-soon window.</div>
+          <div class="defaults-grid">
+            <label>
+              Default period
+              <select id="defaults-period" class="select">
+                <option value="month">Month</option>
+              </select>
+            </label>
+            <label>
+              Default sort
+              <select id="defaults-sort" class="select">
+                <option value="due_date">Due date</option>
+                <option value="amount">Amount</option>
+                <option value="name">Name</option>
+                <option value="status">Status</option>
+              </select>
+            </label>
+            <label>
+              Due soon window (days)
+              <input id="defaults-due-soon" type="number" min="1" max="31" />
+            </label>
+            <button id="save-defaults" class="ghost-btn">Save defaults</button>
+          </div>
+        </section>
 
-        <div class="template-actions">
-          <label class="toggle small">
-            <input id="select-all-templates" type="checkbox" />
-            <span>Select all</span>
-          </label>
-          <button id="archive-selected" class="ghost-btn" disabled>Archive selected</button>
-          <button id="delete-selected" class="ghost-btn" disabled>Delete selected</button>
-          <button id="apply-templates" class="ghost-btn">Apply template updates to this month</button>
-        </div>
+        <section class="setup-block">
+          <div class="block-title">Categories</div>
+          <div class="block-sub">Manage categories used for filtering.</div>
+          <div class="categories-row">
+            <input id="category-input" type="text" placeholder="Add category" />
+            <button id="category-add" class="ghost-btn">Add</button>
+          </div>
+          <div id="categories-list" class="categories-list"></div>
+        </section>
 
-        <div id="templates-list" class="templates-list"></div>
+        <section class="setup-block">
+          <div class="block-header">
+            <div>
+              <div class="block-title">Recurring bills</div>
+              <div class="block-sub">These generate your monthly checklist.</div>
+            </div>
+            <button id="open-backup" class="ghost-btn">Backup / Export</button>
+          </div>
+          <form id="template-form" class="template-form">
+            <input id="template-name" type="text" placeholder="Name" required />
+            <input id="template-category" type="text" placeholder="Category" />
+            <input id="template-amount" type="number" min="0" step="0.01" placeholder="Amount" required />
+            <input id="template-due-day" type="number" min="1" max="31" placeholder="Due day" required />
+            <label class="toggle small">
+              <input id="template-essential" type="checkbox" checked />
+              <span>Essential</span>
+            </label>
+            <label class="toggle small">
+              <input id="template-active" type="checkbox" checked />
+              <span>Active</span>
+            </label>
+            <input id="template-note" type="text" placeholder="Default note" />
+            <input id="template-match-key" type="text" placeholder="Match key" />
+            <input id="template-match-tolerance" type="number" min="0" step="0.01" placeholder="Match tolerance" />
+            <button class="primary-btn" type="submit">Add bill</button>
+          </form>
+          <div id="template-error" class="form-error hidden"></div>
 
-        <div id="funds-section" class="section-title">Piggy banks</div>
-        <div class="page-sub">Sinking funds for yearly or quarterly obligations.</div>
+          <div class="template-actions">
+            <label class="toggle small">
+              <input id="select-all-templates" type="checkbox" />
+              <span>Select all</span>
+            </label>
+            <button id="archive-selected" class="ghost-btn" disabled>Archive selected</button>
+            <button id="delete-selected" class="ghost-btn" disabled>Delete selected</button>
+            <button id="apply-templates" class="ghost-btn">Apply template updates to this month</button>
+          </div>
 
-        <form id="fund-form" class="template-form">
-          <input id="fund-name" type="text" placeholder="Name" required />
-          <input id="fund-category" type="text" placeholder="Category" />
-          <input id="fund-target" type="number" min="0" step="0.01" placeholder="Target amount" required />
-          <input id="fund-due-date" type="date" required />
-          <select id="fund-cadence" class="select">
-            <option value="yearly">Yearly</option>
-            <option value="quarterly">Quarterly</option>
-            <option value="custom_months">Custom months</option>
-          </select>
-          <input id="fund-months" type="number" min="1" step="1" placeholder="Months per cycle" />
-          <label class="toggle small">
-            <input id="fund-essential" type="checkbox" checked />
-            <span>Essential</span>
-          </label>
-          <label class="toggle small">
-            <input id="fund-auto" type="checkbox" checked />
-            <span>Auto contribute</span>
-          </label>
-          <label class="toggle small">
-            <input id="fund-active" type="checkbox" checked />
-            <span>Active</span>
-          </label>
-          <button class="primary-btn" type="submit">Add fund</button>
-        </form>
-        <div id="fund-error" class="form-error hidden"></div>
-        <div id="funds-list" class="templates-list"></div>
+          <div id="templates-list" class="templates-list"></div>
+        </section>
+
+        <section id="funds-section" class="setup-block">
+          <div class="block-title">Reserved buckets</div>
+          <div class="block-sub">Sinking funds for yearly or quarterly obligations.</div>
+
+          <form id="fund-form" class="template-form">
+            <input id="fund-name" type="text" placeholder="Name" required />
+            <input id="fund-category" type="text" placeholder="Category" />
+            <input id="fund-target" type="number" min="0" step="0.01" placeholder="Target amount" required />
+            <input id="fund-due-date" type="date" required />
+            <select id="fund-cadence" class="select">
+              <option value="yearly">Yearly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="custom_months">Custom months</option>
+            </select>
+            <input id="fund-months" type="number" min="1" step="1" placeholder="Months per cycle" />
+            <label class="toggle small">
+              <input id="fund-essential" type="checkbox" checked />
+              <span>Essential</span>
+            </label>
+            <label class="toggle small">
+              <input id="fund-auto" type="checkbox" checked />
+              <span>Auto contribute</span>
+            </label>
+            <label class="toggle small">
+              <input id="fund-active" type="checkbox" checked />
+              <span>Active</span>
+            </label>
+            <button class="primary-btn" type="submit">Add bucket</button>
+          </form>
+          <div id="fund-error" class="form-error hidden"></div>
+          <div id="funds-list" class="templates-list"></div>
+        </section>
+
+        <section class="setup-block">
+          <div class="block-title">Data safety</div>
+          <div class="block-sub">Reset local data or start in safe mode if something breaks.</div>
+          <div class="safety-actions">
+            <button id="reset-local-inline" class="ghost-btn danger">Reset local data</button>
+            <button id="start-safe-mode" class="ghost-btn">Start in safe mode</button>
+          </div>
+        </section>
       </section>
     </main>
 
@@ -353,7 +319,106 @@
       </div>
     </div>
 
-    <!-- Intake modal removed: use the unified assistant box instead. -->
+    <div id="details-drawer" class="drawer hidden">
+      <div class="drawer-scrim" data-close="details"></div>
+      <div class="drawer-panel">
+        <div class="drawer-header">
+          <div>
+            <div id="detail-name" class="drawer-title">Bill</div>
+            <div id="detail-meta" class="drawer-sub">Due</div>
+          </div>
+          <button class="icon-btn" data-close="details" aria-label="Close">&times;</button>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-actions">
+            <button id="detail-mark-done" class="btn-primary">Mark done</button>
+            <button id="detail-skip" class="ghost-btn">Mark skipped</button>
+          </div>
+          <div class="drawer-section">
+            <div class="section-title">Log update</div>
+            <div class="log-update-row">
+              <input id="detail-log-amount" type="number" min="0" step="0.01" placeholder="Amount completed" />
+              <button id="detail-log-submit" class="btn-small btn-primary">Log update</button>
+            </div>
+            <div id="detail-log-status" class="meta"></div>
+          </div>
+          <div class="drawer-section">
+            <div class="section-title">Edit bill</div>
+            <div class="drawer-grid">
+              <label>
+                Name
+                <input id="detail-edit-name" type="text" />
+              </label>
+              <label>
+                Category
+                <input id="detail-edit-category" type="text" />
+              </label>
+              <label>
+                Amount
+                <input id="detail-edit-amount" type="number" min="0" step="0.01" />
+              </label>
+              <label>
+                Due date
+                <input id="detail-edit-due" type="date" />
+              </label>
+            </div>
+            <label>
+              Notes
+              <textarea id="detail-edit-note" rows="3"></textarea>
+            </label>
+            <button id="detail-save" class="btn-small">Save changes</button>
+            <div id="detail-save-status" class="meta"></div>
+          </div>
+          <div class="drawer-section">
+            <div class="section-title">Activity</div>
+            <div id="detail-history" class="list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden">
+      <div id="toast-message" class="toast-message"></div>
+      <button id="toast-action" class="toast-action hidden">Undo</button>
+    </div>
+
+    <button id="assistant-fab" class="fab">Mamdou</button>
+    <div id="assistant-drawer" class="drawer hidden">
+      <div class="drawer-scrim" data-close="assistant"></div>
+      <div class="drawer-panel assistant-sheet">
+        <div class="drawer-header">
+          <div>
+            <div class="drawer-title">Mamdou</div>
+            <div class="drawer-sub">Commands, suggestions, and intake.</div>
+          </div>
+          <button class="icon-btn" data-close="assistant" aria-label="Close">&times;</button>
+        </div>
+        <div class="drawer-body">
+          <div id="assistant-connection" class="assistant-connection">
+            <div class="assistant-connection-text">
+              <div id="assistant-connection-title" class="assistant-connection-title">Connect Mamdou</div>
+              <div id="assistant-connection-body" class="assistant-connection-body">Use Mamdou login to enable insights.</div>
+            </div>
+            <div id="assistant-connection-action" class="assistant-connection-action"></div>
+          </div>
+          <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Internet $90 on the 3rd” or “mark rent done”"></textarea>
+          <div class="assistant-actions">
+            <button id="llm-agent-send" class="btn-small btn-primary">Send</button>
+          </div>
+          <div id="llm-agent-output" class="assistant-status meta"></div>
+          <div id="llm-agent-actions" class="assistant-actions-row hidden">
+            <button id="llm-agent-confirm" class="btn-pill primary">Confirm</button>
+            <button id="llm-agent-cancel" class="btn-pill">Cancel</button>
+          </div>
+          <div id="llm-agent-history" class="assistant-thread"></div>
+          <div class="assistant-log">
+            <div class="assistant-log-heading">Command log</div>
+            <div id="llm-command-log" class="assistant-log-list"></div>
+          </div>
+          <button id="llm-chat-clear" class="assistant-clear">Clear chat</button>
+        </div>
+      </div>
+    </div>
 
     <script src="/app.js"></script>
   </body>

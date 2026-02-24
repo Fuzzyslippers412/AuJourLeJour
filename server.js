@@ -1779,6 +1779,17 @@ app.patch("/api/instances/:id", (req, res) => {
     fields.push("amount = ?");
     values.push(amount);
   }
+  if (body.name_snapshot !== undefined || body.name !== undefined) {
+    const nameValue = String(body.name_snapshot ?? body.name ?? "").trim();
+    if (!nameValue) return res.status(400).json({ error: "Name is required" });
+    fields.push("name_snapshot = ?");
+    values.push(nameValue);
+  }
+  if (body.category_snapshot !== undefined || body.category !== undefined) {
+    const categoryValue = String(body.category_snapshot ?? body.category ?? "").trim();
+    fields.push("category_snapshot = ?");
+    values.push(categoryValue || null);
+  }
   if (body.due_date !== undefined) {
     const error = validateDateString(body.due_date, "due_date");
     if (error) return res.status(400).json({ error });
@@ -1931,6 +1942,52 @@ app.post("/api/chat", (req, res) => {
 
 app.delete("/api/chat", (req, res) => {
   db.prepare("DELETE FROM assistant_chat").run();
+  res.json({ ok: true });
+});
+
+app.get("/api/settings", (req, res) => {
+  const settings = getMetaJson("settings") || {
+    defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
+    categories: [],
+  };
+  res.json(settings);
+});
+
+app.post("/api/settings", (req, res) => {
+  const body = req.body || {};
+  const defaults = body.defaults || {};
+  const allowedSort = new Set(["due_date", "amount", "name", "status"]);
+  const sort = allowedSort.has(defaults.sort) ? defaults.sort : "due_date";
+  let dueSoonDays = Number(defaults.dueSoonDays ?? 7);
+  if (!Number.isFinite(dueSoonDays) || dueSoonDays < 1 || dueSoonDays > 31) {
+    dueSoonDays = 7;
+  }
+  const defaultPeriod = defaults.defaultPeriod === "month" ? "month" : "month";
+  const categories = Array.isArray(body.categories)
+    ? body.categories.map((c) => String(c || "").trim()).filter(Boolean)
+    : [];
+  const payload = {
+    defaults: { sort, dueSoonDays, defaultPeriod },
+    categories,
+  };
+  setMetaJson("settings", payload);
+  res.json(payload);
+});
+
+app.post("/api/reset-local", (req, res) => {
+  db.transaction(() => {
+    db.prepare("DELETE FROM templates").run();
+    db.prepare("DELETE FROM instances").run();
+    db.prepare("DELETE FROM payment_events").run();
+    db.prepare("DELETE FROM month_settings").run();
+    db.prepare("DELETE FROM sinking_funds").run();
+    db.prepare("DELETE FROM sinking_events").run();
+    db.prepare("DELETE FROM actions").run();
+    db.prepare("DELETE FROM agent_command_log").run();
+    db.prepare("DELETE FROM assistant_chat").run();
+    db.prepare("DELETE FROM oauth_device_sessions").run();
+    db.prepare("DELETE FROM meta").run();
+  })();
   res.json({ ok: true });
 });
 
@@ -2758,6 +2815,17 @@ app.post("/api/v1/actions", (req, res) => {
           if (!Number.isFinite(amount) || amount < 0) throw new Error("Amount must be >= 0");
           fields.push("amount = ?");
           values.push(amount);
+        }
+        if (action.name_snapshot !== undefined || action.name !== undefined) {
+          const nameValue = String(action.name_snapshot ?? action.name ?? "").trim();
+          if (!nameValue) throw new Error("Name is required");
+          fields.push("name_snapshot = ?");
+          values.push(nameValue);
+        }
+        if (action.category_snapshot !== undefined || action.category !== undefined) {
+          const categoryValue = String(action.category_snapshot ?? action.category ?? "").trim();
+          fields.push("category_snapshot = ?");
+          values.push(categoryValue || null);
         }
         if (action.due_date !== undefined) {
           const error = validateDateString(action.due_date, "due_date");
