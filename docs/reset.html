@@ -5,109 +5,40 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Reset Au Jour Le Jour</title>
     <style>
-      :root {
-        color-scheme: light;
-        font-family: system-ui, -apple-system, sans-serif;
-      }
-      body {
-        margin: 0;
-        padding: 32px;
-        background: #f6f7f9;
-        color: #0f172a;
-      }
-      .card {
-        max-width: 520px;
-        margin: 0 auto;
-        background: #fff;
-        border: 1px solid #e6e8ee;
-        border-radius: 16px;
-        padding: 24px;
-        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
-      }
-      h1 {
-        margin: 0 0 12px;
-        font-size: 20px;
-      }
-      p {
-        margin: 0 0 12px;
-        color: #475569;
-        font-size: 14px;
-        line-height: 1.4;
-      }
-      .status {
-        font-size: 13px;
-        color: #0f172a;
-        margin-top: 12px;
-      }
-      .warn {
-        color: #b91c1c;
-      }
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; background: #f6f7f9; color: #0f172a; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+      .card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 6px 18px rgba(15,23,42,0.08); max-width: 420px; text-align: center; }
+      button { margin-top: 16px; padding: 10px 16px; border-radius: 8px; border: none; background: #0f172a; color: white; cursor: pointer; }
+      .meta { color: #475569; font-size: 13px; margin-top: 8px; }
     </style>
   </head>
   <body>
     <div class="card">
-      <h1>Resetting local storage…</h1>
-      <p>This page clears the Au Jour Le Jour browser storage, unregisters service workers, and reloads the app.</p>
-      <p class="status" id="status">Working…</p>
+      <h1>Reset local data</h1>
+      <p>This clears local storage for the web app.</p>
+      <button id="reset-btn">Reset now</button>
+      <div id="status" class="meta"></div>
     </div>
     <script>
-      (async () => {
-        const status = document.getElementById("status");
-        const update = (msg, warn) => {
-          status.textContent = msg;
-          status.className = warn ? "status warn" : "status";
-        };
+      async function reset() {
+        const status = document.getElementById('status');
+        status.textContent = 'Clearing local data...';
         try {
-          if ("serviceWorker" in navigator) {
-            const regs = await navigator.serviceWorker.getRegistrations();
-            await Promise.all(regs.map((reg) => reg.unregister()));
-          }
-          if ("caches" in window) {
+          if ('caches' in window) {
             const keys = await caches.keys();
-            await Promise.all(keys.map((key) => caches.delete(key)));
+            await Promise.all(keys.map((k) => caches.delete(k)));
           }
-          try {
-            const dbs = await indexedDB.databases?.();
-            if (Array.isArray(dbs)) {
-              await Promise.all(
-                dbs
-                  .map((entry) => entry && entry.name)
-                  .filter((name) => typeof name === "string" && name.startsWith("ajl_pwa"))
-                  .map(
-                    (name) =>
-                      new Promise((resolve) => {
-                        const req = indexedDB.deleteDatabase(name);
-                        req.onsuccess = () => resolve();
-                        req.onerror = () => resolve();
-                        req.onblocked = () => resolve();
-                      })
-                  )
-              );
-            } else {
-              const req = indexedDB.deleteDatabase("ajl_pwa");
-              req.onsuccess = () => null;
-              req.onerror = () => null;
-              req.onblocked = () => null;
-            }
-          } catch (err) {
-            const req = indexedDB.deleteDatabase("ajl_pwa");
-            req.onsuccess = () => null;
-            req.onerror = () => null;
-            req.onblocked = () => null;
-          }
-          try {
-            window.localStorage.removeItem("ajl_pwa_db_name");
-          } catch (err) {
-            // ignore
-          }
-          update("Reset complete. Reloading…");
-          setTimeout(() => {
-            window.location.href = "/?reset=1";
-          }, 300);
         } catch (err) {
-          update("Reset failed. Close all tabs and try again.", true);
+          // ignore
         }
-      })();
+        await new Promise((resolve) => {
+          const req = indexedDB.deleteDatabase('ajl_web');
+          req.onsuccess = () => resolve();
+          req.onerror = () => resolve();
+          req.onblocked = () => resolve();
+        });
+        status.textContent = 'Done. You can refresh the app.';
+      }
+      document.getElementById('reset-btn').addEventListener('click', reset);
     </script>
   </body>
 </html>

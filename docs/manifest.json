@@ -1,9 +1,8 @@
 {
   "name": "Au Jour Le Jour",
-  "short_name": "AuJour",
+  "short_name": "AJL",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f6f7f9",
-  "theme_color": "#0f172a",
-  "icons": []
+  "background_color": "#F6F7F9",
+  "theme_color": "#0F172A"
 }

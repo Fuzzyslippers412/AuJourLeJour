@@ -3,7 +3,6 @@ const state = {
   instances: [],
   payments: [],
   funds: [],
-  cashStart: 0,
   selectedTemplates: new Set(),
   nudges: [],
   lastNudgeKey: null,
@@ -19,19 +18,20 @@ const state = {
   selectedYear: null,
   selectedMonth: null,
   essentialsOnly: true,
-  view: "dashboard",
+  view: "today",
   templateRows: new Map(),
   filters: {
     search: "",
-    status: { pending: true, partial: true, paid: true, skipped: true },
+    status: "all",
     category: "all",
     sort: "due_date",
   },
+  reviewRange: "month",
+  selectedInstanceId: null,
 };
 
 const weeksPerMonth = 4.33;
 const daysPerMonthAvg = 30.4;
-let cashSaveTimer = null;
 let flashTimer = null;
 let autoMonthTimer = null;
 let refreshTimer = null;
@@ -41,8 +41,8 @@ const MAX_LLM_TEMPLATES = 60;
 const MAX_LLM_DUE = 8;
 const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
 const PROFILE_NAME_KEY = "ajl_profile_name";
-const PWA_DB_NAME = "ajl_pwa";
-const PWA_DB_PREFIX = "ajl_pwa";
+const PWA_DB_NAME = "ajl_web";
+const PWA_DB_PREFIX = "ajl_web";
 
 function looksLikeStorageError(err) {
   const message = String(err?.message || err || "");
@@ -149,8 +149,9 @@ const els = {
   prevMonth: document.getElementById("prev-month"),
   nextMonth: document.getElementById("next-month"),
   essentialsToggle: document.getElementById("essentials-toggle"),
-  navDashboard: document.getElementById("nav-dashboard"),
-  navTemplates: document.getElementById("nav-templates"),
+  navToday: document.getElementById("nav-today"),
+  navReview: document.getElementById("nav-review"),
+  navSetup: document.getElementById("nav-setup"),
   backupOpen: document.getElementById("open-backup"),
   backupModal: document.getElementById("backup-modal"),
   backupClose: document.getElementById("close-backup"),
@@ -158,8 +159,9 @@ const els = {
   exportBackup: document.getElementById("export-backup"),
   importBackup: document.getElementById("import-backup"),
   resetLocal: document.getElementById("reset-local"),
-  dashboardView: document.getElementById("dashboard-view"),
-  templatesView: document.getElementById("templates-view"),
+  todayView: document.getElementById("today-view"),
+  reviewView: document.getElementById("review-view"),
+  setupView: document.getElementById("setup-view"),
   requiredAmount: document.getElementById("required-amount"),
   paidAmount: document.getElementById("paid-amount"),
   remainingAmount: document.getElementById("remaining-amount"),
@@ -167,51 +169,29 @@ const els = {
   needWeek: document.getElementById("need-week"),
   needDayPlan: document.getElementById("need-day-plan"),
   needWeekPlan: document.getElementById("need-week-plan"),
-  futureReserved: document.getElementById("future-reserved"),
-  cashStart: document.getElementById("cash-start"),
-  cashSave: document.getElementById("cash-save"),
-  cashSaveStatus: document.getElementById("cash-save-status"),
-  cashEmpty: document.getElementById("cash-empty"),
-  cashRemaining: document.getElementById("cash-remaining"),
-  statusMain: document.getElementById("status-main"),
-  statusSub: document.getElementById("status-sub"),
-  heroStatus: document.getElementById("hero-status"),
-  overdueList: document.getElementById("overdue-list"),
-  dueSoonList: document.getElementById("due-soon-list"),
-  overdueCard: document.getElementById("overdue-card"),
-  dueSoonCard: document.getElementById("due-soon-card"),
-  nudgesList: document.getElementById("nudges-list"),
-  assistantCard: document.getElementById("assistant-card"),
-  assistantToggle: document.getElementById("assistant-toggle"),
-  assistantPanel: document.getElementById("assistant-panel"),
-  assistantConnection: document.getElementById("assistant-connection"),
-  assistantConnectionTitle: document.getElementById("assistant-connection-title"),
-  assistantConnectionBody: document.getElementById("assistant-connection-body"),
-  assistantConnectionAction: document.getElementById("assistant-connection-action"),
-  activityList: document.getElementById("activity-list"),
-  piggyList: document.getElementById("piggy-list"),
-  piggyCard: document.getElementById("piggy-card"),
-  openPiggyManage: document.getElementById("open-piggy-manage"),
-  piggyCta: document.getElementById("piggy-cta"),
-  llmAgentInput: document.getElementById("llm-agent-input"),
-  llmAgentSend: document.getElementById("llm-agent-send"),
-  llmAgentOutput: document.getElementById("llm-agent-output"),
-  llmAgentHistory: document.getElementById("llm-agent-history"),
-  llmCommandLog: document.getElementById("llm-command-log"),
-  llmAgentActions: document.getElementById("llm-agent-actions"),
-  llmAgentConfirm: document.getElementById("llm-agent-confirm"),
-  llmAgentCancel: document.getElementById("llm-agent-cancel"),
-  llmChatClear: document.getElementById("llm-chat-clear"),
-  assistantGreeting: document.getElementById("assistant-greeting"),
-  assistantNameInput: document.getElementById("assistant-name-input"),
-  assistantNameSave: document.getElementById("assistant-name-save"),
+  statusExpand: document.getElementById("status-expand"),
+  statusBar: document.getElementById("status-bar"),
+  countRemaining: document.getElementById("count-remaining"),
+  countOverdue: document.getElementById("count-overdue"),
+  countSoon: document.getElementById("count-soon"),
+  summarySheet: document.getElementById("summary-sheet"),
+  summaryClose: document.getElementById("summary-close"),
+  queueOverdue: document.getElementById("queue-overdue"),
+  queueSoon: document.getElementById("queue-soon"),
+  queueLater: document.getElementById("queue-later"),
+  queueSubtitle: document.getElementById("queue-subtitle"),
+  markAllOverdue: document.getElementById("mark-all-overdue"),
   itemsList: document.getElementById("items-list"),
-  reviewCard: document.getElementById("review-card"),
-  reviewSummary: document.getElementById("review-summary"),
-  reviewList: document.getElementById("review-list"),
   searchInput: document.getElementById("search-input"),
+  statusChips: Array.from(document.querySelectorAll("#status-chips .chip")),
   categoryFilter: document.getElementById("category-filter"),
   sortFilter: document.getElementById("sort-filter"),
+  zeroState: document.getElementById("zero-state"),
+  zeroTemplatesBtn: document.getElementById("zero-templates-btn"),
+  reviewActivityList: document.getElementById("review-activity-list"),
+  reviewSummary: document.getElementById("review-summary"),
+  reviewList: document.getElementById("review-list"),
+  reviewFilters: Array.from(document.querySelectorAll("[data-review-range]")),
   templateForm: document.getElementById("template-form"),
   templateError: document.getElementById("template-error"),
   templateName: document.getElementById("template-name"),
@@ -229,12 +209,6 @@ const els = {
   selectAllTemplates: document.getElementById("select-all-templates"),
   archiveSelected: document.getElementById("archive-selected"),
   deleteSelected: document.getElementById("delete-selected"),
-  openIntake: document.getElementById("open-intake"),
-  zeroState: document.getElementById("zero-state"),
-  zeroTemplatesBtn: document.getElementById("zero-templates-btn"),
-  zeroIntakeBtn: document.getElementById("zero-intake-btn"),
-  urgencyRow: document.getElementById("urgency-row"),
-  itemsCard: document.getElementById("items-card"),
   fundForm: document.getElementById("fund-form"),
   fundError: document.getElementById("fund-error"),
   fundName: document.getElementById("fund-name"),
@@ -247,6 +221,37 @@ const els = {
   fundAuto: document.getElementById("fund-auto"),
   fundActive: document.getElementById("fund-active"),
   fundsList: document.getElementById("funds-list"),
+  detailsDrawer: document.getElementById("details-drawer"),
+  detailName: document.getElementById("detail-name"),
+  detailMeta: document.getElementById("detail-meta"),
+  detailMarkDone: document.getElementById("detail-mark-done"),
+  detailSkip: document.getElementById("detail-skip"),
+  detailLogAmount: document.getElementById("detail-log-amount"),
+  detailLogSubmit: document.getElementById("detail-log-submit"),
+  detailLogStatus: document.getElementById("detail-log-status"),
+  detailEditName: document.getElementById("detail-edit-name"),
+  detailEditCategory: document.getElementById("detail-edit-category"),
+  detailEditAmount: document.getElementById("detail-edit-amount"),
+  detailEditDue: document.getElementById("detail-edit-due"),
+  detailEditNote: document.getElementById("detail-edit-note"),
+  detailSave: document.getElementById("detail-save"),
+  detailSaveStatus: document.getElementById("detail-save-status"),
+  detailHistory: document.getElementById("detail-history"),
+  assistantFab: document.getElementById("assistant-fab"),
+  assistantDrawer: document.getElementById("assistant-drawer"),
+  assistantConnection: document.getElementById("assistant-connection"),
+  assistantConnectionTitle: document.getElementById("assistant-connection-title"),
+  assistantConnectionBody: document.getElementById("assistant-connection-body"),
+  assistantConnectionAction: document.getElementById("assistant-connection-action"),
+  llmAgentInput: document.getElementById("llm-agent-input"),
+  llmAgentSend: document.getElementById("llm-agent-send"),
+  llmAgentOutput: document.getElementById("llm-agent-output"),
+  llmAgentHistory: document.getElementById("llm-agent-history"),
+  llmCommandLog: document.getElementById("llm-command-log"),
+  llmAgentActions: document.getElementById("llm-agent-actions"),
+  llmAgentConfirm: document.getElementById("llm-agent-confirm"),
+  llmAgentCancel: document.getElementById("llm-agent-cancel"),
+  llmChatClear: document.getElementById("llm-chat-clear"),
 };
 
 function pad2(value) {
@@ -305,8 +310,8 @@ function updateAssistantGreeting() {
 
 function focusAgentInput({ scroll = false } = {}) {
   if (!els.llmAgentInput) return;
-  if (scroll && els.assistantCard) {
-    els.assistantCard.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (scroll && els.assistantDrawer) {
+    els.assistantDrawer.classList.remove("hidden");
   }
   els.llmAgentInput.focus({ preventScroll: !scroll });
 }
@@ -448,66 +453,11 @@ async function loadPayments() {
   state.payments = await res.json();
 }
 
-async function loadMonthSettings() {
-  const res = await fetch(
-    `/api/month-settings?year=${state.selectedYear}&month=${state.selectedMonth}`
-  );
-  const data = await res.json();
-  state.cashStart = Number(data.cash_start || 0);
-  els.cashStart.value = state.cashStart.toFixed(2);
-  markCashDirty(false);
-  setCashSaveStatus("");
-}
-
 async function loadFunds() {
   const res = await fetch(
     `/api/sinking-funds?year=${state.selectedYear}&month=${state.selectedMonth}&include_inactive=1`
   );
   state.funds = await res.json();
-}
-
-async function saveMonthSettings(value) {
-  await fetch("/api/month-settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      year: state.selectedYear,
-      month: state.selectedMonth,
-      cash_start: value,
-    }),
-  });
-}
-
-function setCashSaveStatus(text, tone = "normal") {
-  if (!els.cashSaveStatus) return;
-  els.cashSaveStatus.textContent = text || "";
-  if (tone === "error") {
-    els.cashSaveStatus.style.color = "var(--accent-red)";
-  } else if (tone === "success") {
-    els.cashSaveStatus.style.color = "var(--accent-green)";
-  } else {
-    els.cashSaveStatus.style.color = "";
-  }
-}
-
-function markCashDirty(isDirty) {
-  if (els.cashSave) {
-    els.cashSave.disabled = !isDirty;
-  }
-}
-
-function scheduleCashSave() {
-  if (cashSaveTimer) clearTimeout(cashSaveTimer);
-  setCashSaveStatus("Saving...");
-  cashSaveTimer = setTimeout(async () => {
-    try {
-      await saveMonthSettings(state.cashStart);
-      setCashSaveStatus("Saved", "success");
-      markCashDirty(false);
-    } catch (err) {
-      setCashSaveStatus("Save failed", "error");
-    }
-  }, 600);
 }
 
 async function loadQwenAuthStatus() {
@@ -740,12 +690,27 @@ async function addPayment(instanceId, amount) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    window.alert(data.error || "Unable to add payment.");
+    window.alert(data.error || "Unable to log update.");
     return;
   }
   const data = await res.json();
   if (data.instance) updateInstanceInState(data.instance);
   flashRow(instanceId);
+  await loadPayments();
+  renderDashboard();
+}
+
+async function markPaid(instanceId) {
+  const result = await postAction({
+    type: "MARK_PAID",
+    instance_id: instanceId,
+    paid_date: getTodayDateString(),
+  });
+  if (!result || result.ok === false) {
+    window.alert(result?.error || "Unable to mark done.");
+    return;
+  }
+  if (result.instance) updateInstanceInState(result.instance);
   await loadPayments();
   renderDashboard();
 }
@@ -764,7 +729,7 @@ async function undoPayment(paymentId) {
   const res = await fetch(`/api/payments/${paymentId}`, { method: "DELETE" });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    window.alert(data.error || "Unable to undo payment.");
+    window.alert(data.error || "Unable to undo update.");
     return;
   }
   const data = await res.json();
@@ -930,7 +895,7 @@ function buildAgentPayload(userText) {
   const nameMap = new Map(state.instances.map((inst) => [inst.id, inst.name_snapshot]));
   const recentPayments = (state.payments || []).slice(0, 10).map((p) => ({
     id: p.id,
-    name: nameMap.get(p.instance_id) || "Payment",
+    name: nameMap.get(p.instance_id) || "Update",
     amount: p.amount,
     paid_date: p.paid_date,
   }));
@@ -960,203 +925,109 @@ function renderSummary(list) {
   els.needWeek.textContent = formatMoney(needWeeklyExact);
   els.needDayPlan.textContent = `Planning avg: ${formatMoney(needDailyPlan)}/day`;
   els.needWeekPlan.textContent = `Planning avg: ${formatMoney(needWeeklyPlan)}/week`;
-  if (els.futureReserved) {
-    const reserved = state.funds
-      .filter((fund) => fund.active)
-      .reduce(
-        (sum, fund) => sum + Math.max(0, Number(fund.balance || 0)),
-        0
-      );
-    els.futureReserved.textContent = formatMoney(reserved);
-  }
 
   return { ...totals, daysInMonth };
 }
 
-function renderCash() {
-  const totalPaidCash = state.payments.reduce(
-    (sum, payment) => sum + Number(payment.amount || 0),
-    0
-  );
-  const remaining = Math.max(0, state.cashStart - totalPaidCash);
-  const hasCash = Number(state.cashStart || 0) > 0;
-  if (els.cashRemaining) {
-    els.cashRemaining.textContent = formatMoney(remaining);
-    els.cashRemaining.parentElement?.classList.toggle("hidden", !hasCash);
-  }
-  if (els.cashEmpty) {
-    els.cashEmpty.classList.toggle("hidden", hasCash);
-  }
-}
-
-function renderStatus(summary, baseList) {
-  const currentMonth = isCurrentMonth(
-    state.selectedYear,
-    state.selectedMonth
-  );
-  const today = getTodayDateString();
-  const overdueCount = baseList.filter(
-    (item) =>
-      item.status_derived !== "skipped" &&
-      item.amount_remaining > 0 &&
-      currentMonth &&
-      item.due_date < today
-  ).length;
-
-  const hasTemplates = state.templates.length > 0;
-  const isFree =
-    summary.required > 0 && summary.remaining === 0 && overdueCount === 0;
-
-  if (!hasTemplates || summary.required === 0) {
-    els.heroStatus.classList.remove("free");
-    els.statusMain.textContent = "Add bills to begin";
-    els.statusSub.textContent = "Go to Templates to create your essentials.";
-    return { isFree: false };
-  }
-
-  if (isFree) {
-    els.heroStatus.classList.add("free");
-    els.statusMain.textContent = "Free for the month — essentials covered.";
-    els.statusSub.textContent = "Anything else is saving or optional.";
-  } else {
-    els.heroStatus.classList.remove("free");
-    els.statusMain.textContent = `Remaining this month: ${formatMoney(
-      summary.remaining
-    )}`;
-    els.statusSub.textContent = "You're not free yet.";
-  }
-
-  return { isFree };
-}
-
 function renderZeroState() {
+  if (!els.zeroState) return;
   if (state.templates.length === 0) {
     els.zeroState.classList.remove("hidden");
-    els.urgencyRow.classList.remove("hidden");
-    els.itemsCard.classList.add("hidden");
   } else {
     els.zeroState.classList.add("hidden");
-    els.urgencyRow.classList.remove("hidden");
-    els.itemsCard.classList.remove("hidden");
   }
 }
 
-function renderUrgency(baseList, isFree) {
-  els.overdueList.innerHTML = "";
-  els.dueSoonList.innerHTML = "";
+function renderStatusBar(baseList) {
+  if (!els.countRemaining || !els.countOverdue || !els.countSoon) return;
+  const today = getTodayDateString();
+  const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+  const remaining = baseList.filter((item) => item.status_derived !== "skipped" && item.amount_remaining > 0);
+  const overdue = remaining.filter((item) => currentMonth && item.due_date < today);
+  const soonCutoff = new Date();
+  soonCutoff.setDate(soonCutoff.getDate() + 7);
+  const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
+  const dueSoon = remaining.filter((item) => currentMonth && item.due_date >= today && item.due_date <= soonCutoffString);
 
-  if (isFree) {
-    const empty = document.createElement("div");
-    empty.className = "meta";
-    empty.textContent = "Nothing urgent right now.";
-    els.overdueList.appendChild(empty.cloneNode(true));
-    if (els.dueSoonCard) els.dueSoonCard.classList.add("hidden");
-    return;
-  }
+  els.countRemaining.textContent = remaining.length;
+  els.countOverdue.textContent = overdue.length;
+  els.countSoon.textContent = dueSoon.length;
+}
 
-  if (!isCurrentMonth(state.selectedYear, state.selectedMonth)) {
-    const empty = document.createElement("div");
-    empty.className = "meta";
-    empty.textContent = "Nothing urgent right now.";
-    els.overdueList.appendChild(empty);
-    if (els.dueSoonCard) els.dueSoonCard.classList.add("hidden");
-    return;
-  }
+function renderActionQueue(baseList) {
+  if (!els.queueOverdue || !els.queueSoon || !els.queueLater) return;
+  els.queueOverdue.innerHTML = "";
+  els.queueSoon.innerHTML = "";
+  els.queueLater.innerHTML = "";
 
   const today = getTodayDateString();
-  const nextWeek = new Date();
-  nextWeek.setDate(nextWeek.getDate() + 7);
-  const nextWeekString = `${nextWeek.getFullYear()}-${pad2(
-    nextWeek.getMonth() + 1
-  )}-${pad2(nextWeek.getDate())}`;
+  const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+  const soonCutoff = new Date();
+  soonCutoff.setDate(soonCutoff.getDate() + 7);
+  const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
 
-  const overdue = baseList.filter(
-    (item) =>
-      item.status_derived !== "skipped" &&
-      item.amount_remaining > 0 &&
-      item.due_date < today
-  );
-  const dueSoon = baseList.filter(
-    (item) =>
-      item.status_derived !== "skipped" &&
-      item.amount_remaining > 0 &&
-      item.due_date >= today &&
-      item.due_date <= nextWeekString
-  );
+  const remaining = baseList.filter((item) => item.status_derived !== "skipped" && item.amount_remaining > 0);
+  const overdue = remaining.filter((item) => currentMonth && item.due_date < today);
+  const dueSoon = remaining.filter((item) => currentMonth && item.due_date >= today && item.due_date <= soonCutoffString);
+  const later = remaining.filter((item) => !currentMonth || item.due_date > soonCutoffString);
 
-  const renderItem = (item, overdueFlag) => {
+  if (els.queueSubtitle) {
+    els.queueSubtitle.textContent = `Overdue: ${overdue.length} items`;
+  }
+  if (els.markAllOverdue) {
+    els.markAllOverdue.disabled = overdue.length === 0;
+  }
+
+  const renderQueueRow = (item) => {
     const row = document.createElement("div");
-    row.className = `list-item ${overdueFlag ? "overdue" : "due-soon"}`.trim();
-
-    const left = document.createElement("div");
-    const name = document.createElement("div");
-    name.className = "title";
-    name.textContent = item.name_snapshot;
+    row.className = "queue-row";
+    const main = document.createElement("div");
+    main.className = "item-main";
+    const title = document.createElement("div");
+    title.className = "item-title";
+    title.textContent = item.name_snapshot;
     const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = `Due ${formatShortDate(item.due_date)}`;
-    left.appendChild(name);
-    left.appendChild(meta);
+    meta.className = "item-sub";
+    meta.textContent = `Due ${formatShortDate(item.due_date)}${item.autopay_snapshot ? " · Autopay" : ""}`;
+    main.appendChild(title);
+    main.appendChild(meta);
 
-    if (item.autopay_snapshot) {
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = "Autopay";
-      meta.appendChild(document.createTextNode(" "));
-      meta.appendChild(badge);
-    }
-
-    const actions = document.createElement("div");
-    actions.className = "list-actions";
-
-    const payFull = document.createElement("button");
-    payFull.className = "btn-pill primary";
-    payFull.textContent = "Pay full";
-    payFull.addEventListener("click", () => {
-      if (item.amount_remaining > 0) {
-        addPayment(item.id, item.amount_remaining);
-      }
-    });
-
-    const addBtn = document.createElement("button");
-    addBtn.className = "btn-pill";
-    addBtn.textContent = "Add payment";
-    addBtn.addEventListener("click", () => {
-      const raw = window.prompt("Payment amount:");
-      if (!raw) return;
-      const value = Number(raw);
-      if (!Number.isFinite(value) || value <= 0) return;
-      addPayment(item.id, value);
-    });
-
-    actions.appendChild(payFull);
-    actions.appendChild(addBtn);
-
+    const right = document.createElement("div");
+    right.className = "item-meta";
     const amount = document.createElement("div");
-    amount.className = "urgent-amount";
+    amount.className = "item-amount";
     amount.textContent = formatMoney(item.amount_remaining);
+    const action = document.createElement("button");
+    action.className = "btn-small btn-primary";
+    action.textContent = "Mark done";
+    action.addEventListener("click", (event) => {
+      event.stopPropagation();
+      markPaid(item.id);
+    });
+    right.appendChild(amount);
+    right.appendChild(action);
 
-    row.appendChild(left);
-    row.appendChild(amount);
-    row.appendChild(actions);
+    row.appendChild(main);
+    row.appendChild(right);
+    row.addEventListener("click", () => openInstanceDetail(item.id));
     return row;
   };
 
-  if (overdue.length === 0) {
+  const renderEmpty = (target) => {
     const empty = document.createElement("div");
     empty.className = "meta";
-    empty.textContent = "Nothing urgent right now.";
-    els.overdueList.appendChild(empty);
-  } else {
-    overdue.forEach((item) => els.overdueList.appendChild(renderItem(item, true)));
-  }
+    empty.textContent = "Nothing here.";
+    target.appendChild(empty);
+  };
 
-  if (dueSoon.length === 0) {
-    if (els.dueSoonCard) els.dueSoonCard.classList.add("hidden");
-  } else {
-    if (els.dueSoonCard) els.dueSoonCard.classList.remove("hidden");
-    dueSoon.forEach((item) => els.dueSoonList.appendChild(renderItem(item, false)));
-  }
+  if (overdue.length === 0) renderEmpty(els.queueOverdue);
+  else overdue.forEach((item) => els.queueOverdue.appendChild(renderQueueRow(item)));
+
+  if (dueSoon.length === 0) renderEmpty(els.queueSoon);
+  else dueSoon.forEach((item) => els.queueSoon.appendChild(renderQueueRow(item)));
+
+  if (later.length === 0) renderEmpty(els.queueLater);
+  else later.forEach((item) => els.queueLater.appendChild(renderQueueRow(item)));
 }
 
 function formatMonthYear(dateString) {
@@ -1178,6 +1049,13 @@ function statusLabel(status) {
   if (status === "behind") return "Behind";
   if (status === "due") return "Due";
   return "On track";
+}
+
+function formatStatusLabel(status) {
+  if (status === "paid") return "Done";
+  if (status === "partial") return "Partial";
+  if (status === "skipped") return "Skipped";
+  return "Pending";
 }
 
 async function handlePiggyEvent(fundId, type, amount) {
@@ -1286,14 +1164,14 @@ function renderPiggy() {
 
     const paidBtn = document.createElement("button");
     paidBtn.className = "btn-small";
-    paidBtn.textContent = "Mark paid";
+    paidBtn.textContent = "Mark done";
     paidBtn.addEventListener("click", () => handleMarkFundPaid(fund.id));
 
     const editBtn = document.createElement("button");
     editBtn.className = "btn-small";
     editBtn.textContent = "Edit";
     editBtn.addEventListener("click", () => {
-      state.view = "templates";
+      state.view = "setup";
       renderView();
       document.getElementById("funds-section")?.scrollIntoView({ behavior: "smooth" });
     });
@@ -1316,12 +1194,13 @@ function renderPiggy() {
 }
 
 function renderActivity() {
-  els.activityList.innerHTML = "";
+  if (!els.reviewActivityList) return;
+  els.reviewActivityList.innerHTML = "";
   if (state.payments.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
-    empty.textContent = "No recent payments.";
-    els.activityList.appendChild(empty);
+    empty.textContent = "No activity yet.";
+    els.reviewActivityList.appendChild(empty);
     return;
   }
 
@@ -1329,31 +1208,43 @@ function renderActivity() {
     state.instances.map((inst) => [inst.id, inst.name_snapshot])
   );
 
-  state.payments.slice(0, 10).forEach((payment) => {
+  const filtered = state.payments.filter((payment) => {
+    if (state.reviewRange === "today") {
+      return payment.paid_date === getTodayDateString();
+    }
+    if (state.reviewRange === "week") {
+      const diff = diffDays(payment.paid_date, getTodayDateString());
+      return diff >= -6;
+    }
+    return true;
+  }).sort((a, b) => b.paid_date.localeCompare(a.paid_date));
+
+  filtered.slice(0, 30).forEach((payment) => {
     const row = document.createElement("div");
-    row.className = "list-item activity-item";
+    row.className = "list-row";
 
     const left = document.createElement("div");
-    const name = instanceMap.get(payment.instance_id) || "Payment";
+    left.className = "list-main";
+    const name = instanceMap.get(payment.instance_id) || "Update";
     const title = document.createElement("div");
-    title.className = "title";
-    title.textContent = `Paid ${formatMoney(payment.amount)} → ${name}`;
+    title.className = "item-title";
+    title.textContent = `${name} · Logged update`;
     const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = formatShortDate(payment.paid_date);
+    meta.className = "item-sub";
+    meta.textContent = `${formatMoney(payment.amount)} · ${formatShortDate(payment.paid_date)}`;
     left.appendChild(title);
     left.appendChild(meta);
 
     const actions = document.createElement("div");
     const undo = document.createElement("button");
-    undo.className = "btn-link";
+    undo.className = "ghost-btn";
     undo.textContent = "Undo";
     undo.addEventListener("click", () => undoPayment(payment.id));
     actions.appendChild(undo);
 
     row.appendChild(left);
     row.appendChild(actions);
-    els.activityList.appendChild(row);
+    els.reviewActivityList.appendChild(row);
   });
 }
 
@@ -1429,7 +1320,7 @@ function fallbackNudges(events) {
         id: `due_${index}`,
         severity: "warn",
         title: `${event.facts.item} due in ${event.facts.days_left} days`,
-        body: "Pay full or add a partial payment.",
+        body: "Mark done or log an update.",
         cta: { label: "Open due soon", action_type: "OPEN_DUE_SOON", payload: null },
       };
     }
@@ -1591,22 +1482,24 @@ async function applyProposal(proposal) {
 
   if (!instance && intent && intent.startsWith("SHOW_")) {
     if (intent === "SHOW_DUE_SOON") {
-      document.getElementById("due-soon-list")?.scrollIntoView({ behavior: "smooth" });
+      document.getElementById("queue-soon")?.scrollIntoView({ behavior: "smooth" });
     } else if (intent === "SHOW_OVERDUE") {
-      document.getElementById("overdue-list")?.scrollIntoView({ behavior: "smooth" });
+      document.getElementById("queue-overdue")?.scrollIntoView({ behavior: "smooth" });
     } else if (intent === "SHOW_TEMPLATES") {
-      state.view = "templates";
+      state.view = "setup";
       renderView();
     } else if (intent === "SHOW_PIGGY") {
+      state.view = "setup";
+      renderView();
       document.getElementById("funds-section")?.scrollIntoView({ behavior: "smooth" });
     } else if (intent === "SHOW_BACKUP") {
       els.backupOpen?.click();
     } else if (intent === "SHOW_SUMMARY" || intent === "SHOW_DASHBOARD") {
-      state.view = "dashboard";
+      state.view = "today";
       renderView();
-      document.querySelector(".hero")?.scrollIntoView({ behavior: "smooth" });
+      els.summarySheet?.classList.remove("hidden");
     } else {
-      document.querySelector(".hero")?.scrollIntoView({ behavior: "smooth" });
+      els.summarySheet?.classList.remove("hidden");
     }
     return { ok: true, message: "Opened the requested section." };
   }
@@ -1673,15 +1566,7 @@ async function applyProposal(proposal) {
   }
 
   if (intent === "SET_CASH_START") {
-    const cash = parseMoney(proposal.payload?.cash_start);
-    if (!Number.isFinite(cash) || cash < 0) {
-      return { ok: false, message: "Invalid cash amount." };
-    }
-    state.cashStart = cash;
-    if (els.cashStart) els.cashStart.value = cash.toFixed(2);
-    renderCash();
-    await saveMonthSettings(cash);
-    return { ok: true, message: "Cash start updated." };
+    return { ok: false, message: "Cash tracking is not available in tracker mode." };
   }
 
   if (intent === "CREATE_TEMPLATE") {
@@ -1795,11 +1680,11 @@ async function applyProposal(proposal) {
       active: payload.active !== false,
     });
     await refreshAll();
-    return { ok: true, message: "Piggy bank created." };
+    return { ok: true, message: "Reserved bucket created." };
   }
 
   if (intent === "UPDATE_FUND") {
-    if (!fund) return { ok: false, message: "Piggy bank not found." };
+    if (!fund) return { ok: false, message: "Reserved bucket not found." };
     const parsedTarget = proposal.payload?.target_amount;
     const targetAmount = Number.isFinite(parseMoney(parsedTarget))
       ? parseMoney(parsedTarget)
@@ -1818,29 +1703,29 @@ async function applyProposal(proposal) {
       active: proposal.payload?.active ?? fund.active,
     });
     await refreshAll();
-    return { ok: true, message: "Piggy bank updated." };
+    return { ok: true, message: "Reserved bucket updated." };
   }
 
   if (intent === "ARCHIVE_FUND") {
-    if (!fund) return { ok: false, message: "Piggy bank not found." };
+    if (!fund) return { ok: false, message: "Reserved bucket not found." };
     await postAction({ type: "ARCHIVE_FUND", fund_id: fund.id });
     await refreshAll();
-    return { ok: true, message: "Piggy bank archived." };
+    return { ok: true, message: "Reserved bucket archived." };
   }
 
   if (intent === "DELETE_FUND") {
-    if (!fund) return { ok: false, message: "Piggy bank not found." };
+    if (!fund) return { ok: false, message: "Reserved bucket not found." };
     await postAction({ type: "DELETE_FUND", fund_id: fund.id });
     await refreshAll();
-    return { ok: true, message: "Piggy bank deleted." };
+    return { ok: true, message: "Reserved bucket deleted." };
   }
 
   if (intent === "ADD_SINKING_EVENT") {
-    if (!fund) return { ok: false, message: "Piggy bank not found." };
+    if (!fund) return { ok: false, message: "Reserved bucket not found." };
     const amount = parseMoney(proposal.payload?.amount);
     const eventType = String(proposal.payload?.event_type || proposal.payload?.type || "").toUpperCase();
     if (!amount || !eventType) {
-      return { ok: false, message: "Missing piggy bank event details." };
+      return { ok: false, message: "Missing reserved bucket event details." };
     }
     await postAction({
       type: "ADD_SINKING_EVENT",
@@ -1850,11 +1735,11 @@ async function applyProposal(proposal) {
       note: proposal.payload?.note || null,
     });
     await refreshAll();
-    return { ok: true, message: "Piggy bank event added." };
+    return { ok: true, message: "Reserved bucket event added." };
   }
 
   if (intent === "MARK_FUND_PAID") {
-    if (!fund) return { ok: false, message: "Piggy bank not found." };
+    if (!fund) return { ok: false, message: "Reserved bucket not found." };
     await postAction({
       type: "MARK_FUND_PAID",
       fund_id: fund.id,
@@ -1863,7 +1748,7 @@ async function applyProposal(proposal) {
         : proposal.payload?.amount,
     });
     await refreshAll();
-    return { ok: true, message: "Piggy bank marked paid." };
+    return { ok: true, message: "Reserved bucket marked done." };
   }
 
   if (!instance) {
@@ -1877,11 +1762,11 @@ async function applyProposal(proposal) {
       targetPaymentId = latest?.id;
     }
     if (!targetPaymentId) {
-      return { ok: false, message: "No recent payment found to undo." };
+      return { ok: false, message: "No recent update found to undo." };
     }
     await postAction({ type: "UNDO_PAYMENT", payment_id: targetPaymentId });
     await refreshAll();
-    return { ok: true, message: "Payment undone." };
+    return { ok: true, message: "Update undone." };
   }
   if (intent === "MARK_PAID") {
     await postAction({
@@ -1896,13 +1781,15 @@ async function applyProposal(proposal) {
   } else if (intent === "ADD_PAYMENT") {
     const amount = resolvePaymentAmount(proposal.payload || {}, instance);
     if (!Number.isFinite(amount) || amount <= 0) {
-      return { ok: false, message: "Invalid payment amount." };
+      return { ok: false, message: "Invalid update amount." };
     }
     await postAction({ type: "ADD_PAYMENT", instance_id: instance.id, amount });
   } else if (intent === "UPDATE_INSTANCE_FIELDS") {
     await postAction({
       type: "UPDATE_INSTANCE_FIELDS",
       instance_id: instance.id,
+      name_snapshot: proposal.payload?.name_snapshot ?? proposal.payload?.name,
+      category_snapshot: proposal.payload?.category_snapshot ?? proposal.payload?.category,
       amount: Number.isFinite(parseMoney(proposal.payload?.amount))
         ? parseMoney(proposal.payload?.amount)
         : proposal.payload?.amount,
@@ -2162,14 +2049,14 @@ function summarizeProposal(proposal) {
   if (!proposal) return "No proposal.";
   const intent = String(proposal.intent || proposal.action || "UNKNOWN").toUpperCase();
   const target = proposal.target?.name || proposal.payload?.name || "Unknown";
-  if (intent === "MARK_PAID") return `Mark paid: ${target}`;
+  if (intent === "MARK_PAID") return `Mark done: ${target}`;
   if (intent === "SKIP_INSTANCE") return `Skip: ${target}`;
   if (intent === "MARK_PENDING") return `Mark pending: ${target}`;
   if (intent === "ADD_PAYMENT") {
     const mode = proposal.payload?.amount_mode || "FIXED";
-    if (mode === "FULL_REMAINING") return `Pay full remaining: ${target}`;
-    if (mode === "FRACTION") return `Pay ${proposal.payload?.fraction || 0} of ${target}`;
-    return `Add payment to ${target}`;
+    if (mode === "FULL_REMAINING") return `Mark done: ${target}`;
+    if (mode === "FRACTION") return `Log ${proposal.payload?.fraction || 0} progress: ${target}`;
+    return `Log update for ${target}`;
   }
   if (intent === "UPDATE_INSTANCE_FIELDS") return `Update bill: ${target}`;
   if (intent === "CREATE_TEMPLATE") return `Create template: ${target}`;
@@ -2177,20 +2064,20 @@ function summarizeProposal(proposal) {
   if (intent === "ARCHIVE_TEMPLATE") return `Archive template: ${target}`;
   if (intent === "DELETE_TEMPLATE") return `Delete template: ${target}`;
   if (intent === "APPLY_TEMPLATES") return "Apply templates to this month";
-  if (intent === "CREATE_FUND") return `Create piggy bank: ${target}`;
-  if (intent === "UPDATE_FUND") return `Update piggy bank: ${target}`;
-  if (intent === "ARCHIVE_FUND") return `Archive piggy bank: ${target}`;
-  if (intent === "DELETE_FUND") return `Delete piggy bank: ${target}`;
-  if (intent === "ADD_SINKING_EVENT") return `Add piggy bank event: ${target}`;
-  if (intent === "MARK_FUND_PAID") return `Mark piggy bank paid: ${target}`;
-  if (intent === "SET_CASH_START") return "Update cash on hand";
+  if (intent === "CREATE_FUND") return `Create reserved bucket: ${target}`;
+  if (intent === "UPDATE_FUND") return `Update reserved bucket: ${target}`;
+  if (intent === "ARCHIVE_FUND") return `Archive reserved bucket: ${target}`;
+  if (intent === "DELETE_FUND") return `Delete reserved bucket: ${target}`;
+  if (intent === "ADD_SINKING_EVENT") return `Add reserved bucket event: ${target}`;
+  if (intent === "MARK_FUND_PAID") return `Mark reserved bucket done: ${target}`;
+  if (intent === "SET_CASH_START") return "Cash tracking removed";
   if (intent === "EXPORT_MONTH") return "Export current month CSV";
   if (intent === "EXPORT_BACKUP") return "Export full backup JSON";
   if (intent === "GENERATE_MONTH") return "Generate month";
-  if (intent === "UNDO_PAYMENT") return `Undo payment: ${target}`;
+  if (intent === "UNDO_PAYMENT") return `Undo update: ${target}`;
   if (intent === "SET_MONTH") return "Switch month";
   if (intent === "SET_ESSENTIALS_ONLY") return "Toggle essentials only";
-  if (intent === "SHOW_SUMMARY") return "Show dashboard";
+  if (intent === "SHOW_SUMMARY") return "Show Today";
   return `Intent: ${intent}`;
 }
 
@@ -2266,8 +2153,8 @@ function renderAssistantConnection() {
 
 
 function renderNudges() {
-  if (!els.nudgesList) return;
   renderAssistantConnection();
+  if (!els.nudgesList) return;
   els.nudgesList.innerHTML = "";
   let hasStatusRow = false;
 
@@ -2439,14 +2326,14 @@ function renderNudges() {
 function handleNudgeAction(cta) {
   if (!cta) return;
   if (cta.action_type === "OPEN_OVERDUE") {
-    document.getElementById("overdue-list")?.scrollIntoView({ behavior: "smooth" });
+    document.getElementById("queue-overdue")?.scrollIntoView({ behavior: "smooth" });
   } else if (cta.action_type === "OPEN_DUE_SOON") {
-    document.getElementById("due-soon-list")?.scrollIntoView({ behavior: "smooth" });
+    document.getElementById("queue-soon")?.scrollIntoView({ behavior: "smooth" });
   } else if (cta.action_type === "OPEN_TEMPLATES") {
-    state.view = "templates";
+    state.view = "setup";
     renderView();
   } else {
-    document.querySelector(".hero")?.scrollIntoView({ behavior: "smooth" });
+    els.summarySheet?.classList.remove("hidden");
   }
 }
 
@@ -2461,7 +2348,7 @@ function renderCategoryFilter(list) {
   els.categoryFilter.innerHTML = "";
   const allOption = document.createElement("option");
   allOption.value = "all";
-  allOption.textContent = "All";
+  allOption.textContent = "All categories";
   els.categoryFilter.appendChild(allOption);
 
   Array.from(categories)
@@ -2481,7 +2368,11 @@ function renderCategoryFilter(list) {
 
 function renderItems(baseList) {
   const filters = state.filters;
-  let list = baseList.filter((item) => filters.status[item.status_derived]);
+  let list = baseList.slice();
+
+  if (filters.status !== "all") {
+    list = list.filter((item) => item.status_derived === filters.status);
+  }
 
   if (filters.category !== "all") {
     list = list.filter((item) => (item.category_snapshot || "") === filters.category);
@@ -2497,12 +2388,9 @@ function renderItems(baseList) {
   }
 
   list.sort((a, b) => {
-    if (filters.sort === "amount") {
-      return Number(a.amount) - Number(b.amount);
-    }
-    if (filters.sort === "name") {
-      return a.name_snapshot.localeCompare(b.name_snapshot);
-    }
+    if (filters.sort === "amount") return Number(a.amount) - Number(b.amount);
+    if (filters.sort === "name") return a.name_snapshot.localeCompare(b.name_snapshot);
+    if (filters.sort === "status") return a.status_derived.localeCompare(b.status_derived);
     const dueCompare = a.due_date.localeCompare(b.due_date);
     if (dueCompare !== 0) return dueCompare;
     return a.name_snapshot.localeCompare(b.name_snapshot);
@@ -2524,189 +2412,133 @@ function renderItems(baseList) {
   const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
 
   list.forEach((item) => {
-    const daysUntilDue = currentMonth ? diffDays(item.due_date, today) : null;
-    const isOverdue =
-      currentMonth && item.amount_remaining > 0 && daysUntilDue !== null && daysUntilDue < 0;
-    const isDueSoon =
-      currentMonth &&
-      item.amount_remaining > 0 &&
-      daysUntilDue !== null &&
-      daysUntilDue >= 0 &&
-      daysUntilDue <= 7;
-
-    let stateClass = "";
-    if (isOverdue) stateClass = "state-overdue";
-    else if (isDueSoon) stateClass = "state-due-soon";
-    else if (item.status_derived === "partial") stateClass = "state-partial";
-    else if (item.status_derived === "paid") stateClass = "state-paid";
-
     const row = document.createElement("div");
-    row.className = `item-row ${stateClass}`;
+    row.className = `item-row status-${item.status_derived}`;
     row.dataset.id = item.id;
-    if (state.flashInstanceId && item.id === state.flashInstanceId) {
-      row.classList.add("row-flash");
-    }
 
-    const statusCell = document.createElement("div");
-    statusCell.className = "status-cell";
-    const statusPill = document.createElement("div");
-    statusPill.className = `status-pill status-${item.status_derived}`;
-    statusPill.textContent = item.status_derived.charAt(0).toUpperCase() + item.status_derived.slice(1);
-    statusCell.appendChild(statusPill);
+    if (currentMonth && item.amount_remaining > 0) {
+      const daysUntil = diffDays(item.due_date, today);
+      if (daysUntil < 0) row.classList.add("status-overdue");
+      else if (daysUntil <= 7) row.classList.add("status-soon");
+    }
 
     const main = document.createElement("div");
     main.className = "item-main";
-    const name = document.createElement("div");
-    name.className = "name";
-    name.textContent = item.name_snapshot;
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    const metaParts = [];
-    if (item.category_snapshot) {
-      const span = document.createElement("span");
-      span.textContent = item.category_snapshot;
-      metaParts.push(span);
-    }
-    if (item.autopay_snapshot) {
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = "Autopay";
-      metaParts.push(badge);
-    }
-    metaParts.forEach((part, index) => {
-      if (index > 0) {
-        const dot = document.createElement("span");
-        dot.textContent = " · ";
-        meta.appendChild(dot);
-      }
-      meta.appendChild(part);
-    });
-    if (item.note) {
-      const noteDot = document.createElement("span");
-      noteDot.className = "note-indicator";
-      noteDot.title = item.note;
-      meta.appendChild(noteDot);
-    }
-    main.appendChild(name);
-    main.appendChild(meta);
+    const title = document.createElement("div");
+    title.className = "item-title";
+    title.textContent = item.name_snapshot;
+    const sub = document.createElement("div");
+    sub.className = "item-sub";
+    const category = item.category_snapshot ? ` · ${item.category_snapshot}` : "";
+    sub.textContent = `Due ${formatShortDate(item.due_date)}${category}`;
+    main.appendChild(title);
+    main.appendChild(sub);
 
-    const due = document.createElement("div");
-    due.className = "item-due";
-    due.textContent = formatShortDate(item.due_date);
-
-    const amountDue = document.createElement("div");
-    amountDue.className = "item-amount";
-    amountDue.textContent = formatMoney(item.amount);
-
-    const progress = document.createElement("div");
-    progress.className = "progress-wrap";
-    const progressBar = document.createElement("div");
-    progressBar.className = "progress-bar";
-    const progressFill = document.createElement("span");
-    const ratio =
-      item.amount > 0
-        ? Math.min(1, Math.max(0, item.amount_paid / item.amount))
-        : item.status_derived === "paid"
-        ? 1
-        : 0;
-    progressFill.style.width = `${Math.round(ratio * 100)}%`;
-    progressBar.appendChild(progressFill);
-    const progressText = document.createElement("div");
-    progressText.className = "progress-text";
-    if (item.status_derived === "skipped") {
-      progressText.textContent = "Skipped";
-    } else if (item.amount_remaining <= 0) {
-      progressText.textContent = "Paid in full";
-    } else {
-      progressText.textContent = `${formatMoney(item.amount_remaining)} remaining`;
-    }
-    progress.appendChild(progressBar);
-    progress.appendChild(progressText);
-    if (item.status_derived === "partial" || item.status_derived === "paid") {
-      const paidLine = document.createElement("div");
-      paidLine.className = "progress-sub";
-      paidLine.textContent = `${formatMoney(item.amount_paid)} paid of ${formatMoney(
-        item.amount
-      )}`;
-      progress.appendChild(paidLine);
+    const right = document.createElement("div");
+    right.className = "item-meta";
+    const amount = document.createElement("div");
+    amount.className = "item-amount";
+    amount.textContent = formatMoney(item.amount);
+    const pill = document.createElement("div");
+    pill.className = `status-pill ${item.status_derived === "paid" ? "done" : item.status_derived}`;
+    pill.textContent = formatStatusLabel(item.status_derived);
+    right.appendChild(amount);
+    right.appendChild(pill);
+    if (item.status_derived !== "paid" && item.status_derived !== "skipped") {
+      const doneBtn = document.createElement("button");
+      doneBtn.className = "btn-small btn-primary";
+      doneBtn.textContent = "Mark done";
+      doneBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        markPaid(item.id);
+      });
+      right.appendChild(doneBtn);
     }
 
-    const actionsWrap = document.createElement("div");
-    actionsWrap.className = "row-actions";
-    const paymentGroup = document.createElement("div");
-    paymentGroup.className = "payment-inline";
-    const plus = document.createElement("span");
-    plus.textContent = "+$";
-    const paymentInput = document.createElement("input");
-    paymentInput.type = "number";
-    paymentInput.min = "0";
-    paymentInput.step = "0.01";
-    paymentInput.className = "inline-input";
-    paymentInput.placeholder = "0.00";
-    const applyBtn = document.createElement("button");
-    applyBtn.className = "btn-pill";
-    applyBtn.textContent = "Apply";
-    const applyPayment = () => {
-      const value = Number(paymentInput.value);
-      if (!Number.isFinite(value) || value <= 0) return;
-      addPayment(item.id, value);
-      paymentInput.value = "";
-    };
-    applyBtn.addEventListener("click", applyPayment);
-    paymentInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        applyPayment();
-      }
-    });
-    paymentGroup.appendChild(plus);
-    paymentGroup.appendChild(paymentInput);
-    paymentGroup.appendChild(applyBtn);
-    actionsWrap.appendChild(paymentGroup);
-
-    const payFull = document.createElement("button");
-    payFull.className = "btn-pill primary";
-    payFull.textContent = "Pay full";
-    payFull.disabled = item.amount_remaining <= 0;
-    payFull.addEventListener("click", () => {
-      if (item.amount_remaining > 0) {
-        addPayment(item.id, item.amount_remaining);
-      }
-    });
-    actionsWrap.appendChild(payFull);
-
-    const kebabWrap = document.createElement("div");
-    kebabWrap.className = "kebab-wrap";
-    const kebab = document.createElement("button");
-    kebab.className = "kebab";
-    kebab.textContent = "⋯";
-    kebab.addEventListener("click", () => {
-      const choice = window.prompt("Actions: note, skip, unskip");
-      if (!choice) return;
-      const action = choice.toLowerCase().trim();
-      if (action === "note") {
-        const note = window.prompt("Note:", item.note || "");
-        if (note !== null) patchInstance(item.id, { note });
-      }
-      if (action === "skip") {
-        patchInstance(item.id, { status: "skipped" });
-      }
-      if (action === "unskip") {
-        patchInstance(item.id, { status: "pending" });
-      }
-    });
-    kebabWrap.appendChild(kebab);
-
-    row.appendChild(statusCell);
     row.appendChild(main);
-    row.appendChild(due);
-    row.appendChild(amountDue);
-    row.appendChild(progress);
-    row.appendChild(actionsWrap);
-    row.appendChild(kebabWrap);
-
+    row.appendChild(right);
+    row.addEventListener("click", () => openInstanceDetail(item.id));
     els.itemsList.appendChild(row);
   });
+}
+
+function renderDetailHistory(instanceId) {
+  if (!els.detailHistory) return;
+  els.detailHistory.innerHTML = "";
+  const events = state.payments.filter((payment) => payment.instance_id === instanceId);
+  if (events.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "No updates yet.";
+    els.detailHistory.appendChild(empty);
+    return;
+  }
+  events
+    .slice()
+    .sort((a, b) => b.paid_date.localeCompare(a.paid_date))
+    .forEach((event) => {
+      const row = document.createElement("div");
+      row.className = "list-row";
+      const left = document.createElement("div");
+      left.className = "list-main";
+      const title = document.createElement("div");
+      title.className = "item-title";
+      title.textContent = `Logged update ${formatMoney(event.amount)}`;
+      const meta = document.createElement("div");
+      meta.className = "item-sub";
+      meta.textContent = formatShortDate(event.paid_date);
+      left.appendChild(title);
+      left.appendChild(meta);
+      const undo = document.createElement("button");
+      undo.className = "ghost-btn";
+      undo.textContent = "Undo";
+      undo.addEventListener("click", async () => {
+        await undoPayment(event.id);
+        openInstanceDetail(instanceId);
+      });
+      row.appendChild(left);
+      row.appendChild(undo);
+      els.detailHistory.appendChild(row);
+    });
+}
+
+function openInstanceDetail(instanceId) {
+  const derived = deriveInstances();
+  const item = derived.find((entry) => entry.id === instanceId);
+  if (!item || !els.detailsDrawer) return;
+  state.selectedInstanceId = instanceId;
+  if (els.detailName) els.detailName.textContent = item.name_snapshot;
+  if (els.detailMeta) {
+    const statusLabel = formatStatusLabel(item.status_derived);
+    els.detailMeta.textContent = `Due ${formatShortDate(item.due_date)} · ${statusLabel}`;
+  }
+  if (els.detailMarkDone) {
+    const isDone = item.status_derived === "paid" || item.amount_remaining <= 0;
+    els.detailMarkDone.textContent = isDone ? "Done" : "Mark done";
+    els.detailMarkDone.disabled = isDone;
+  }
+  if (els.detailSkip) {
+    els.detailSkip.textContent = item.status_derived === "skipped" ? "Unskip" : "Mark skipped";
+  }
+  if (els.detailLogSubmit) {
+    els.detailLogSubmit.disabled = item.status_derived === "skipped";
+  }
+  if (els.detailEditName) els.detailEditName.value = item.name_snapshot || "";
+  if (els.detailEditCategory) els.detailEditCategory.value = item.category_snapshot || "";
+  if (els.detailEditAmount) els.detailEditAmount.value = Number(item.amount || 0).toFixed(2);
+  if (els.detailEditDue) els.detailEditDue.value = item.due_date || "";
+  if (els.detailEditNote) els.detailEditNote.value = item.note || "";
+  if (els.detailLogAmount) els.detailLogAmount.value = "";
+  if (els.detailLogStatus) els.detailLogStatus.textContent = "";
+  if (els.detailSaveStatus) els.detailSaveStatus.textContent = "";
+  renderDetailHistory(instanceId);
+  els.detailsDrawer.classList.remove("hidden");
+}
+
+function closeInstanceDetail() {
+  if (!els.detailsDrawer) return;
+  els.detailsDrawer.classList.add("hidden");
+  state.selectedInstanceId = null;
 }
 
 function renderMonthReview(baseList) {
@@ -2765,39 +2597,35 @@ function renderMonthReview(baseList) {
   const onTimeRate = paidCount > 0 ? Math.round((onTimeCount / paidCount) * 100) : 0;
   const avgDays = paidCount > 0 ? (daySum / paidCount).toFixed(1) : "0.0";
 
-  const coverageMetric = document.createElement("div");
-  coverageMetric.className = "review-metric";
-  const coverageLabel = document.createElement("div");
-  coverageLabel.className = "review-label";
-  coverageLabel.textContent = "Coverage";
-  const coverageValue = document.createElement("div");
-  coverageValue.className = "review-value";
-  coverageValue.textContent =
-    summary.required > 0 && summary.remaining === 0 ? "Covered" : formatMoney(summary.remaining);
-  const coverageSub = document.createElement("div");
-  coverageSub.className = "review-sub";
-  coverageSub.textContent =
-    summary.required > 0 && summary.remaining === 0
-      ? "Essentials covered"
-      : "Remaining this month";
-  coverageMetric.appendChild(coverageLabel);
-  coverageMetric.appendChild(coverageValue);
-  coverageMetric.appendChild(coverageSub);
+  const remainingMetric = document.createElement("div");
+  remainingMetric.className = "review-metric";
+  const remainingLabel = document.createElement("div");
+  remainingLabel.className = "review-label";
+  remainingLabel.textContent = "Remaining total";
+  const remainingValue = document.createElement("div");
+  remainingValue.className = "review-value";
+  remainingValue.textContent = formatMoney(summary.remaining);
+  const remainingSub = document.createElement("div");
+  remainingSub.className = "review-sub";
+  remainingSub.textContent = "Reference amount";
+  remainingMetric.appendChild(remainingLabel);
+  remainingMetric.appendChild(remainingValue);
+  remainingMetric.appendChild(remainingSub);
 
-  const paidMetric = document.createElement("div");
-  paidMetric.className = "review-metric";
-  const paidLabel = document.createElement("div");
-  paidLabel.className = "review-label";
-  paidLabel.textContent = "Bills Paid";
-  const paidValue = document.createElement("div");
-  paidValue.className = "review-value";
-  paidValue.textContent = `${paidItems.length}/${activeItems.length}`;
-  const paidSub = document.createElement("div");
-  paidSub.className = "review-sub";
-  paidSub.textContent = `${formatMoney(summary.paid)} of ${formatMoney(summary.required)}`;
-  paidMetric.appendChild(paidLabel);
-  paidMetric.appendChild(paidValue);
-  paidMetric.appendChild(paidSub);
+  const doneMetric = document.createElement("div");
+  doneMetric.className = "review-metric";
+  const doneLabel = document.createElement("div");
+  doneLabel.className = "review-label";
+  doneLabel.textContent = "Items done";
+  const doneValue = document.createElement("div");
+  doneValue.className = "review-value";
+  doneValue.textContent = `${paidItems.length}/${activeItems.length}`;
+  const doneSub = document.createElement("div");
+  doneSub.className = "review-sub";
+  doneSub.textContent = `${formatMoney(summary.paid)} of ${formatMoney(summary.required)}`;
+  doneMetric.appendChild(doneLabel);
+  doneMetric.appendChild(doneValue);
+  doneMetric.appendChild(doneSub);
 
   const timeMetric = document.createElement("div");
   timeMetric.className = "review-metric";
@@ -2814,31 +2642,8 @@ function renderMonthReview(baseList) {
   timeMetric.appendChild(timeValue);
   timeMetric.appendChild(timeSub);
 
-  if (els.cashStart && Number(state.cashStart || 0) > 0) {
-    const totalPaidCash = payments.reduce(
-      (sum, item) => sum + Number(item.amount || 0),
-      0
-    );
-    const remainingCash = Number(state.cashStart || 0) - totalPaidCash;
-    const cashMetric = document.createElement("div");
-    cashMetric.className = "review-metric";
-    const cashLabel = document.createElement("div");
-    cashLabel.className = "review-label";
-    cashLabel.textContent = "Cash Remaining";
-    const cashValue = document.createElement("div");
-    cashValue.className = "review-value";
-    cashValue.textContent = formatMoney(remainingCash);
-    const cashSub = document.createElement("div");
-    cashSub.className = "review-sub";
-    cashSub.textContent = "Based on cash on hand";
-    cashMetric.appendChild(cashLabel);
-    cashMetric.appendChild(cashValue);
-    cashMetric.appendChild(cashSub);
-    els.reviewSummary.appendChild(cashMetric);
-  }
-
-  els.reviewSummary.appendChild(coverageMetric);
-  els.reviewSummary.appendChild(paidMetric);
+  els.reviewSummary.appendChild(remainingMetric);
+  els.reviewSummary.appendChild(doneMetric);
   els.reviewSummary.appendChild(timeMetric);
 
   const addRow = (title, body) => {
@@ -2857,19 +2662,19 @@ function renderMonthReview(baseList) {
     els.reviewList.appendChild(row);
   };
 
-  addRow("Payments logged", `${payments.length} payment(s)`);
+  addRow("Updates logged", `${payments.length} update(s)`);
 
   if (firstPayment) {
-    const name = nameMap.get(firstPayment.instance_id) || "Payment";
+    const name = nameMap.get(firstPayment.instance_id) || "Update";
     addRow(
-      "Paid first",
+      "First update",
       `${name} on ${formatShortDate(firstPayment.paid_date)} (${formatMoney(firstPayment.amount)})`
     );
   }
   if (lastPayment) {
-    const name = nameMap.get(lastPayment.instance_id) || "Payment";
+    const name = nameMap.get(lastPayment.instance_id) || "Update";
     addRow(
-      "Paid last",
+      "Last update",
       `${name} on ${formatShortDate(lastPayment.paid_date)} (${formatMoney(lastPayment.amount)})`
     );
   }
@@ -2885,7 +2690,7 @@ function renderMonthReview(baseList) {
   if (!firstPayment && payments.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
-    empty.textContent = "No payments logged yet.";
+    empty.textContent = "No updates logged yet.";
     els.reviewList.appendChild(empty);
   }
 }
@@ -3230,7 +3035,7 @@ function renderFundsList() {
   if (!state.funds || state.funds.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
-    empty.textContent = "Add a piggy bank to get started.";
+    empty.textContent = "Add a reserved bucket to get started.";
     els.fundsList.appendChild(empty);
     return;
   }
@@ -3340,7 +3145,7 @@ function renderFundsList() {
     archiveBtn.className = "btn-small";
     archiveBtn.textContent = "Archive";
     archiveBtn.addEventListener("click", async () => {
-      const confirmed = window.confirm("Archive this piggy bank?");
+      const confirmed = window.confirm("Archive this reserved bucket?");
       if (!confirmed) return;
       await postAction({ type: "ARCHIVE_FUND", fund_id: fund.id });
       await refreshAll();
@@ -3350,7 +3155,7 @@ function renderFundsList() {
     deleteBtn.className = "btn-small";
     deleteBtn.textContent = "Delete";
     deleteBtn.addEventListener("click", async () => {
-      const confirmed = window.confirm("Delete this piggy bank? This cannot be undone.");
+      const confirmed = window.confirm("Delete this reserved bucket? This cannot be undone.");
       if (!confirmed) return;
       await postAction({ type: "DELETE_FUND", fund_id: fund.id });
       await refreshAll();
@@ -3378,38 +3183,28 @@ function renderFundsList() {
 function renderDashboard() {
   const derived = deriveInstances();
   const base = getBaseInstances(derived);
-  const summary = renderSummary(base);
-  renderCash();
+  renderSummary(base);
   renderZeroState();
-  const { isFree } = renderStatus(summary, base);
-  renderUrgency(base, isFree);
-  renderPiggy();
-  renderActivity();
-  renderMonthReview(base);
-  const events = buildNudgeEvents(base, summary, isFree);
-  const key = JSON.stringify(events);
-  if (key !== state.lastNudgeKey) {
-    state.lastNudgeKey = key;
-    fetchNudges(events);
-  } else {
-    renderNudges();
-  }
+  renderStatusBar(base);
+  renderActionQueue(base);
   renderCategoryFilter(base);
   renderItems(base);
+  renderActivity();
+  renderMonthReview(base);
 }
 
 function renderView() {
-  if (state.view === "dashboard") {
-    els.dashboardView.classList.remove("hidden");
-    els.templatesView.classList.add("hidden");
-    els.navDashboard.classList.add("active");
-    els.navTemplates.classList.remove("active");
-  } else {
-    els.templatesView.classList.remove("hidden");
-    els.dashboardView.classList.add("hidden");
-    els.navTemplates.classList.add("active");
-    els.navDashboard.classList.remove("active");
-  }
+  const isToday = state.view === "today";
+  const isReview = state.view === "review";
+  const isSetup = state.view === "setup";
+
+  if (els.todayView) els.todayView.classList.toggle("hidden", !isToday);
+  if (els.reviewView) els.reviewView.classList.toggle("hidden", !isReview);
+  if (els.setupView) els.setupView.classList.toggle("hidden", !isSetup);
+
+  if (els.navToday) els.navToday.classList.toggle("active", isToday);
+  if (els.navReview) els.navReview.classList.toggle("active", isReview);
+  if (els.navSetup) els.navSetup.classList.toggle("active", isSetup);
 }
 
 async function refreshAll() {
@@ -3420,7 +3215,6 @@ async function refreshAll() {
       loadTemplates(),
       loadInstances(),
       loadPayments(),
-      loadMonthSettings(),
       loadFunds(),
       loadQwenAuthStatus(),
       loadCommandLog(),
@@ -3471,15 +3265,26 @@ function bindEvents() {
     renderDashboard();
   });
 
-  els.navDashboard.addEventListener("click", () => {
-    state.view = "dashboard";
-    renderView();
-  });
+  if (els.navToday) {
+    els.navToday.addEventListener("click", () => {
+      state.view = "today";
+      renderView();
+    });
+  }
 
-  els.navTemplates.addEventListener("click", () => {
-    state.view = "templates";
-    renderView();
-  });
+  if (els.navReview) {
+    els.navReview.addEventListener("click", () => {
+      state.view = "review";
+      renderView();
+    });
+  }
+
+  if (els.navSetup) {
+    els.navSetup.addEventListener("click", () => {
+      state.view = "setup";
+      renderView();
+    });
+  }
 
   els.backupOpen.addEventListener("click", () => {
     els.backupModal.classList.remove("hidden");
@@ -3489,9 +3294,52 @@ function bindEvents() {
     els.backupModal.classList.add("hidden");
   });
 
+  if (els.statusExpand && els.summarySheet) {
+    els.statusExpand.addEventListener("click", () => {
+      els.summarySheet.classList.remove("hidden");
+    });
+  }
+  if (els.summaryClose && els.summarySheet) {
+    els.summaryClose.addEventListener("click", () => {
+      els.summarySheet.classList.add("hidden");
+    });
+  }
+  if (els.summarySheet) {
+    els.summarySheet.addEventListener("click", (event) => {
+      if (event.target === els.summarySheet) {
+        els.summarySheet.classList.add("hidden");
+      }
+    });
+  }
+
+  if (els.markAllOverdue) {
+    els.markAllOverdue.addEventListener("click", async () => {
+      const derived = deriveInstances();
+      const base = getBaseInstances(derived);
+      const today = getTodayDateString();
+      const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+      const overdue = base.filter(
+        (item) =>
+          item.status_derived !== "skipped" &&
+          item.amount_remaining > 0 &&
+          currentMonth &&
+          item.due_date < today
+      );
+      if (overdue.length === 0) {
+        window.alert("No overdue items.");
+        return;
+      }
+      const confirmed = window.confirm(`Mark ${overdue.length} overdue item(s) done?`);
+      if (!confirmed) return;
+      for (const item of overdue) {
+        await markPaid(item.id);
+      }
+    });
+  }
+
   if (els.openPiggyManage) {
     els.openPiggyManage.addEventListener("click", () => {
-      state.view = "templates";
+      state.view = "setup";
       renderView();
       document.getElementById("funds-section")?.scrollIntoView({ behavior: "smooth" });
     });
@@ -3499,7 +3347,7 @@ function bindEvents() {
 
   if (els.piggyCta) {
     els.piggyCta.addEventListener("click", () => {
-      state.view = "templates";
+      state.view = "setup";
       renderView();
       document.getElementById("funds-section")?.scrollIntoView({ behavior: "smooth" });
     });
@@ -3568,18 +3416,36 @@ function bindEvents() {
     });
   }
 
-  els.searchInput.addEventListener("input", () => {
-    state.filters.search = els.searchInput.value.trim();
-    renderDashboard();
-  });
-
-  document.querySelectorAll("[data-status]").forEach((checkbox) => {
-    checkbox.addEventListener("change", () => {
-      const status = checkbox.dataset.status;
-      state.filters.status[status] = checkbox.checked;
+  if (els.searchInput) {
+    els.searchInput.addEventListener("input", () => {
+      state.filters.search = els.searchInput.value.trim();
       renderDashboard();
     });
-  });
+  }
+
+  if (els.statusChips) {
+    els.statusChips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const status = chip.dataset.status || "all";
+        state.filters.status = status;
+        els.statusChips.forEach((btn) => btn.classList.remove("active"));
+        chip.classList.add("active");
+        renderDashboard();
+      });
+    });
+  }
+
+  if (els.reviewFilters) {
+    els.reviewFilters.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const range = chip.dataset.reviewRange || "month";
+        state.reviewRange = range;
+        els.reviewFilters.forEach((btn) => btn.classList.remove("active"));
+        chip.classList.add("active");
+        renderActivity();
+      });
+    });
+  }
 
   els.categoryFilter.addEventListener("change", () => {
     state.filters.category = els.categoryFilter.value;
@@ -3591,40 +3457,91 @@ function bindEvents() {
     renderDashboard();
   });
 
-  if (els.cashStart) {
-    els.cashStart.addEventListener("input", () => {
-      const value = Number(els.cashStart.value);
-      if (!Number.isFinite(value) || value < 0) {
-        return;
-      }
-      state.cashStart = value;
-      renderCash();
-      markCashDirty(true);
-      scheduleCashSave();
-    });
-
-    els.cashStart.addEventListener("blur", () => {
-      const value = Number(els.cashStart.value);
-      if (!Number.isFinite(value) || value < 0) {
-        els.cashStart.value = state.cashStart.toFixed(2);
-        return;
-      }
-      els.cashStart.value = value.toFixed(2);
-    });
-  }
-
-  if (els.cashSave) {
-    els.cashSave.addEventListener("click", async () => {
-      setCashSaveStatus("Saving...");
-      try {
-        await saveMonthSettings(state.cashStart);
-        setCashSaveStatus("Saved", "success");
-        markCashDirty(false);
-      } catch (err) {
-        setCashSaveStatus("Save failed", "error");
+  if (els.detailsDrawer) {
+    els.detailsDrawer.addEventListener("click", (event) => {
+      const target = event.target;
+      if (target && target.dataset && target.dataset.close === "details") {
+        closeInstanceDetail();
       }
     });
   }
+
+  if (els.detailMarkDone) {
+    els.detailMarkDone.addEventListener("click", async () => {
+      if (!state.selectedInstanceId) return;
+      await markPaid(state.selectedInstanceId);
+      renderDetailHistory(state.selectedInstanceId);
+      openInstanceDetail(state.selectedInstanceId);
+    });
+  }
+
+  if (els.detailSkip) {
+    els.detailSkip.addEventListener("click", async () => {
+      if (!state.selectedInstanceId) return;
+      const derived = deriveInstances();
+      const current = derived.find((item) => item.id === state.selectedInstanceId);
+      const nextStatus = current?.status_derived === "skipped" ? "pending" : "skipped";
+      await patchInstance(state.selectedInstanceId, { status: nextStatus });
+      openInstanceDetail(state.selectedInstanceId);
+    });
+  }
+
+  if (els.detailLogSubmit) {
+    els.detailLogSubmit.addEventListener("click", async () => {
+      if (!state.selectedInstanceId) return;
+      const value = Number(els.detailLogAmount?.value || 0);
+      if (!Number.isFinite(value) || value <= 0) {
+        if (els.detailLogStatus) els.detailLogStatus.textContent = "Enter a valid amount.";
+        return;
+      }
+      await addPayment(state.selectedInstanceId, value);
+      if (els.detailLogAmount) els.detailLogAmount.value = "";
+      if (els.detailLogStatus) els.detailLogStatus.textContent = "Update logged.";
+      openInstanceDetail(state.selectedInstanceId);
+    });
+  }
+
+  if (els.detailSave) {
+    els.detailSave.addEventListener("click", async () => {
+      if (!state.selectedInstanceId) return;
+      const current = state.instances.find((inst) => inst.id === state.selectedInstanceId);
+      const nameValue = String(els.detailEditName?.value || "").trim() || current?.name_snapshot || "";
+      const categoryValue = String(els.detailEditCategory?.value || "").trim();
+      const dueValue = els.detailEditDue?.value || current?.due_date || "";
+      const payload = {
+        name_snapshot: nameValue,
+        category_snapshot: categoryValue || null,
+        amount: Number(els.detailEditAmount?.value || 0),
+        due_date: dueValue,
+        note: els.detailEditNote?.value || "",
+      };
+      await patchInstance(state.selectedInstanceId, payload);
+      if (els.detailSaveStatus) els.detailSaveStatus.textContent = "Saved.";
+      openInstanceDetail(state.selectedInstanceId);
+    });
+  }
+
+  if (els.assistantFab && els.assistantDrawer) {
+    els.assistantFab.addEventListener("click", () => {
+      els.assistantDrawer.classList.remove("hidden");
+    });
+  }
+
+  if (els.assistantDrawer) {
+    els.assistantDrawer.addEventListener("click", (event) => {
+      const target = event.target;
+      if (target && target.dataset && target.dataset.close === "assistant") {
+        els.assistantDrawer.classList.add("hidden");
+      }
+    });
+  }
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "/" && document.activeElement !== els.searchInput) {
+      event.preventDefault();
+      els.searchInput?.focus();
+    }
+  });
 
   els.templateForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -3893,7 +3810,7 @@ function bindEvents() {
 
   if (els.zeroTemplatesBtn) {
     els.zeroTemplatesBtn.addEventListener("click", () => {
-      state.view = "templates";
+      state.view = "setup";
       renderView();
     });
   }
@@ -3906,12 +3823,10 @@ function init() {
   state.lastAutoMonthKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
   state.essentialsOnly = els.essentialsToggle.checked;
   state.profileName = loadProfileName();
+  state.view = "today";
   setupStorageRecovery();
-  if (els.assistantNameInput) {
-    els.assistantNameInput.value = state.profileName;
-  }
-  updateAssistantGreeting();
   bindEvents();
+  renderView();
   if (els.fundMonths && els.fundCadence && els.fundCadence.value !== "custom_months") {
     els.fundMonths.disabled = true;
   }

@@ -5,85 +5,10 @@
   }
 
   window.AJL_PWA = true;
-  const LLM_BASE_URL = window.AJL_LLM_BASE_URL ? String(window.AJL_LLM_BASE_URL) : "";
-  const LLM_ENABLED = Boolean(LLM_BASE_URL);
 
-  const DB_SCHEMA_VERSION = 4;
-  const DB_PREFIX = `ajl_pwa_v${DB_SCHEMA_VERSION}`;
+  const DB_NAME = "ajl_web";
 
-  function getDbName() {
-    try {
-      const existing = window.localStorage.getItem("ajl_pwa_db_name");
-      if (existing && existing.startsWith(DB_PREFIX)) return existing;
-    } catch (err) {
-      // ignore
-    }
-    const name = `${DB_PREFIX}_${Date.now()}`;
-    try {
-      window.localStorage.setItem("ajl_pwa_db_name", name);
-    } catch (err) {
-      // ignore
-    }
-    return name;
-  }
-
-  function rotateDbName() {
-    const name = `${DB_PREFIX}_${Date.now()}`;
-    try {
-      window.localStorage.setItem("ajl_pwa_db_name", name);
-    } catch (err) {
-      // ignore
-    }
-    return name;
-  }
-
-  async function deleteAllPwaDatabases() {
-    try {
-      if (indexedDB.databases) {
-        const dbs = await indexedDB.databases();
-        if (Array.isArray(dbs)) {
-          await Promise.all(
-            dbs
-              .map((entry) => entry && entry.name)
-              .filter((name) => typeof name === "string" && name.startsWith("ajl_pwa"))
-              .map(
-                (name) =>
-                  new Promise((resolve) => {
-                    const req = indexedDB.deleteDatabase(name);
-                    req.onsuccess = () => resolve();
-                    req.onerror = () => resolve();
-                    req.onblocked = () => resolve();
-                  })
-              )
-          );
-          return;
-        }
-      }
-    } catch (err) {
-      // ignore
-    }
-    await new Promise((resolve) => {
-      const req = indexedDB.deleteDatabase("ajl_pwa");
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
-      req.onblocked = () => resolve();
-    });
-    try {
-      const stored = window.localStorage.getItem("ajl_pwa_db_name");
-      if (stored) {
-        await new Promise((resolve) => {
-          const req = indexedDB.deleteDatabase(stored);
-          req.onsuccess = () => resolve();
-          req.onerror = () => resolve();
-          req.onblocked = () => resolve();
-        });
-      }
-    } catch (err) {
-      // ignore
-    }
-  }
-
-  const db = new Dexie(getDbName());
+  const db = new Dexie(DB_NAME);
   db.version(1).stores({
     templates: "id, active, name",
     instances: "id, [year+month], [template_id+year+month], template_id, due_date, status",
@@ -96,88 +21,17 @@
   });
 
   function uuid() {
-    return (crypto && crypto.randomUUID) ? crypto.randomUUID() : `id_${Date.now()}_${Math.random()}`;
+    return crypto && crypto.randomUUID ? crypto.randomUUID() : `id_${Date.now()}_${Math.random()}`;
   }
 
   function validId(value) {
-    return typeof value === "string" && value.trim().length > 0;
+    if (typeof value === "string") return value.trim().length > 0;
+    if (typeof value === "number") return Number.isFinite(value);
+    return false;
   }
 
   function validYearMonth(year, month) {
     return Number.isInteger(year) && Number.isInteger(month) && month >= 1 && month <= 12;
-  }
-
-  async function safeOpenDb() {
-    try {
-      await db.open();
-    } catch (err) {
-      if (isStorageError(err) || err?.name === "SchemaError" || err?.name === "InvalidStateError") {
-        await hardResetDatabase();
-        await rotateDatabase();
-        setTimeout(() => window.location.reload(), 50);
-        return false;
-      }
-      throw err;
-    }
-    return true;
-  }
-
-  async function purgeInvalidRows() {
-    const opened = await safeOpenDb();
-    if (!opened) return;
-    const badInstances = await db.instances
-      .filter((row) => !validId(row.id) || !validYearMonth(Number(row.year), Number(row.month)))
-      .toArray();
-    if (badInstances.length > 0) {
-      const badIds = badInstances.map((row) => row.id).filter(validId);
-      if (badIds.length > 0) {
-        await db.payment_events.where("instance_id").anyOf(badIds).delete();
-      }
-      await db.instances.bulkDelete(badInstances.map((row) => row.id).filter(validId));
-    }
-
-    const badPayments = await db.payment_events
-      .filter((row) => !validId(row.id) || !validId(row.instance_id))
-      .toArray();
-    if (badPayments.length > 0) {
-      await db.payment_events.bulkDelete(badPayments.map((row) => row.id).filter(validId));
-    }
-
-    const badTemplates = await db.templates
-      .filter((row) => !validId(row.id))
-      .toArray();
-    if (badTemplates.length > 0) {
-      await db.templates.bulkDelete(badTemplates.map((row) => row.id).filter(validId));
-    }
-
-    const badFunds = await db.sinking_funds
-      .filter((row) => !validId(row.id))
-      .toArray();
-    if (badFunds.length > 0) {
-      await db.sinking_funds.bulkDelete(badFunds.map((row) => row.id).filter(validId));
-    }
-
-    const badFundEvents = await db.sinking_events
-      .filter((row) => !validId(row.id) || !validId(row.fund_id))
-      .toArray();
-    if (badFundEvents.length > 0) {
-      await db.sinking_events.bulkDelete(badFundEvents.map((row) => row.id).filter(validId));
-    }
-  }
-
-  async function resetLocalData() {
-    const opened = await safeOpenDb();
-    if (!opened) return;
-    await Promise.all([
-      db.templates.clear(),
-      db.instances.clear(),
-      db.payment_events.clear(),
-      db.month_settings.clear(),
-      db.sinking_funds.clear(),
-      db.sinking_events.clear(),
-      db.agent_command_log.clear(),
-      db.assistant_chat.clear(),
-    ]);
   }
 
   function pad2(value) {
@@ -186,19 +40,6 @@
 
   function nowIso() {
     return new Date().toISOString();
-  }
-
-  function getAgentSessionId() {
-    const key = "ajl_agent_session";
-    try {
-      const existing = window.localStorage.getItem(key);
-      if (existing) return existing;
-      const fresh = uuid();
-      window.localStorage.setItem(key, fresh);
-      return fresh;
-    } catch (err) {
-      return uuid();
-    }
   }
 
   function nowIsoLocal() {
@@ -228,9 +69,13 @@
   }
 
   function parseYearMonth(params) {
-    const year = Number(params.get("year"));
-    const month = Number(params.get("month"));
-    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return null;
+    const rawYear = params.get("year");
+    const rawMonth = params.get("month");
+    if (rawYear == null || rawMonth == null) return null;
+    const year = Number(rawYear);
+    const month = Number(rawMonth);
+    if (!Number.isInteger(year) || !Number.isInteger(month)) return null;
+    if (month < 1 || month > 12) return null;
     return { year, month };
   }
 
@@ -255,38 +100,9 @@
     });
   }
 
-  function isStorageError(err) {
-    const message = String(err?.message || err || "");
-    return message.includes("IDBKeyRange") || message.includes("DataError") || message.includes("IndexedDB");
-  }
-
-  async function hardResetDatabase() {
-    try {
-      await db.close();
-    } catch (err) {
-      // ignore
-    }
-    try {
-      await db.delete();
-    } catch (err) {
-      // ignore
-    }
-    await deleteAllPwaDatabases();
-  }
-
-  async function rotateDatabase() {
-    try {
-      await db.close();
-    } catch (err) {
-      // ignore
-    }
-    rotateDbName();
-  }
-
   async function ensureMonth(year, month) {
     if (!validYearMonth(year, month)) return;
-    const opened = await safeOpenDb();
-    if (!opened) return;
+    await db.open();
     const templates = await db.templates.where("active").equals(true).toArray();
     const stamp = nowIso();
     for (const template of templates) {
@@ -341,10 +157,7 @@
 
   async function getInstances(year, month) {
     if (!validYearMonth(year, month)) return [];
-    const rows = await db.instances
-      .where("[year+month]")
-      .equals([year, month])
-      .toArray();
+    const rows = await db.instances.where("[year+month]").equals([year, month]).toArray();
     rows.sort((a, b) =>
       String(a.due_date).localeCompare(String(b.due_date)) ||
       String(a.name_snapshot).localeCompare(String(b.name_snapshot), undefined, { sensitivity: "base" })
@@ -363,9 +176,7 @@
   }
 
   function computeSummary(instances, { year, month, essentialsOnly }) {
-    const list = essentialsOnly
-      ? instances.filter((item) => item.essential_snapshot)
-      : instances;
+    const list = essentialsOnly ? instances.filter((item) => item.essential_snapshot) : instances;
     const today = todayDate();
     let required = 0;
     let paid = 0;
@@ -557,109 +368,120 @@
   async function handleImportBackup(payload) {
     if (!payload) return jsonResponse({ ok: false, error: "Invalid payload" }, 400);
     await db.open();
-    await db.transaction("rw", db.templates, db.instances, db.payment_events, db.month_settings, db.sinking_funds, db.sinking_events, db.agent_command_log, db.assistant_chat, async () => {
-      await db.templates.clear();
-      await db.instances.clear();
-      await db.payment_events.clear();
-      await db.month_settings.clear();
-      await db.sinking_funds.clear();
-      await db.sinking_events.clear();
-      await db.agent_command_log.clear();
-      await db.assistant_chat.clear();
+    await db.transaction(
+      "rw",
+      db.templates,
+      db.instances,
+      db.payment_events,
+      db.month_settings,
+      db.sinking_funds,
+      db.sinking_events,
+      db.agent_command_log,
+      db.assistant_chat,
+      async () => {
+        await db.templates.clear();
+        await db.instances.clear();
+        await db.payment_events.clear();
+        await db.month_settings.clear();
+        await db.sinking_funds.clear();
+        await db.sinking_events.clear();
+        await db.agent_command_log.clear();
+        await db.assistant_chat.clear();
 
-      const templates = Array.isArray(payload.templates) ? payload.templates : [];
-      const instances = Array.isArray(payload.instances) ? payload.instances : [];
-      const payments = Array.isArray(payload.payment_events) ? payload.payment_events : [];
-      const monthSettings = Array.isArray(payload.month_settings) ? payload.month_settings : [];
-      const sinkingFunds = Array.isArray(payload.sinking_funds) ? payload.sinking_funds : [];
-      const sinkingEvents = Array.isArray(payload.sinking_events) ? payload.sinking_events : [];
+        const templates = Array.isArray(payload.templates) ? payload.templates : [];
+        const instances = Array.isArray(payload.instances) ? payload.instances : [];
+        const payments = Array.isArray(payload.payment_events) ? payload.payment_events : [];
+        const monthSettings = Array.isArray(payload.month_settings) ? payload.month_settings : [];
+        const sinkingFunds = Array.isArray(payload.sinking_funds) ? payload.sinking_funds : [];
+        const sinkingEvents = Array.isArray(payload.sinking_events) ? payload.sinking_events : [];
 
-      for (const tmpl of templates) {
-        await db.templates.add({
-          id: String(tmpl.id || uuid()),
-          name: tmpl.name,
-          category: tmpl.category || null,
-          amount_default: Number(tmpl.amount_default || 0),
-          due_day: Number(tmpl.due_day || 1),
-          autopay: !!tmpl.autopay,
-          essential: tmpl.essential !== false,
-          active: tmpl.active !== false,
-          default_note: tmpl.default_note || null,
-          match_payee_key: tmpl.match_payee_key || null,
-          match_amount_tolerance: Number(tmpl.match_amount_tolerance || 0),
-          created_at: tmpl.created_at || nowIso(),
-          updated_at: tmpl.updated_at || nowIso(),
-        });
+        for (const tmpl of templates) {
+          await db.templates.add({
+            id: String(tmpl.id || uuid()),
+            name: tmpl.name,
+            category: tmpl.category || null,
+            amount_default: Number(tmpl.amount_default || 0),
+            due_day: Number(tmpl.due_day || 1),
+            autopay: !!tmpl.autopay,
+            essential: tmpl.essential !== false,
+            active: tmpl.active !== false,
+            default_note: tmpl.default_note || null,
+            match_payee_key: tmpl.match_payee_key || null,
+            match_amount_tolerance: Number(tmpl.match_amount_tolerance || 0),
+            created_at: tmpl.created_at || nowIso(),
+            updated_at: tmpl.updated_at || nowIso(),
+          });
+        }
+
+        for (const inst of instances) {
+          await db.instances.add({
+            id: String(inst.id || uuid()),
+            template_id: String(inst.template_id || ""),
+            year: Number(inst.year),
+            month: Number(inst.month),
+            name_snapshot: inst.name_snapshot || inst.name || "",
+            category_snapshot: inst.category_snapshot || inst.category || null,
+            amount: Number(inst.amount || 0),
+            due_date: inst.due_date,
+            autopay_snapshot: !!inst.autopay_snapshot,
+            essential_snapshot: !!inst.essential_snapshot,
+            status: ["pending", "paid", "skipped"].includes(inst.status) ? inst.status : "pending",
+            paid_date: inst.paid_date || null,
+            note: inst.note || null,
+            created_at: inst.created_at || nowIso(),
+            updated_at: inst.updated_at || nowIso(),
+          });
+        }
+
+        for (const payment of payments) {
+          await db.payment_events.add({
+            id: String(payment.id || uuid()),
+            instance_id: String(payment.instance_id || ""),
+            amount: Number(payment.amount || 0),
+            paid_date: payment.paid_date || todayDate(),
+            created_at: payment.created_at || nowIso(),
+          });
+        }
+
+        for (const setting of monthSettings) {
+          await db.month_settings.put({
+            year: Number(setting.year),
+            month: Number(setting.month),
+            cash_start: Number(setting.cash_start || 0),
+            updated_at: setting.updated_at || nowIso(),
+          });
+        }
+
+        for (const fund of sinkingFunds) {
+          await db.sinking_funds.add({
+            id: String(fund.id || uuid()),
+            name: fund.name,
+            category: fund.category || null,
+            target_amount: Number(fund.target_amount || 0),
+            due_date: fund.due_date,
+            cadence: fund.cadence || "yearly",
+            months_per_cycle: Number(fund.months_per_cycle || 1),
+            essential: fund.essential !== false,
+            active: fund.active !== false,
+            auto_contribute: fund.auto_contribute !== false,
+            created_at: fund.created_at || nowIso(),
+            updated_at: fund.updated_at || nowIso(),
+          });
+        }
+
+        for (const event of sinkingEvents) {
+          await db.sinking_events.add({
+            id: String(event.id || uuid()),
+            fund_id: String(event.fund_id || ""),
+            amount: Number(event.amount || 0),
+            type: event.type || "CONTRIBUTION",
+            event_date: event.event_date || todayDate(),
+            note: event.note || null,
+            created_at: event.created_at || nowIso(),
+          });
+        }
       }
-
-      for (const inst of instances) {
-        await db.instances.add({
-          id: String(inst.id || uuid()),
-          template_id: String(inst.template_id || ""),
-          year: Number(inst.year),
-          month: Number(inst.month),
-          name_snapshot: inst.name_snapshot || inst.name || "",
-          category_snapshot: inst.category_snapshot || inst.category || null,
-          amount: Number(inst.amount || 0),
-          due_date: inst.due_date,
-          autopay_snapshot: !!inst.autopay_snapshot,
-          essential_snapshot: !!inst.essential_snapshot,
-          status: ["pending", "paid", "skipped"].includes(inst.status) ? inst.status : "pending",
-          paid_date: inst.paid_date || null,
-          note: inst.note || null,
-          created_at: inst.created_at || nowIso(),
-          updated_at: inst.updated_at || nowIso(),
-        });
-      }
-
-      for (const payment of payments) {
-        await db.payment_events.add({
-          id: String(payment.id || uuid()),
-          instance_id: String(payment.instance_id || ""),
-          amount: Number(payment.amount || 0),
-          paid_date: payment.paid_date || todayDate(),
-          created_at: payment.created_at || nowIso(),
-        });
-      }
-
-      for (const setting of monthSettings) {
-        await db.month_settings.put({
-          year: Number(setting.year),
-          month: Number(setting.month),
-          cash_start: Number(setting.cash_start || 0),
-          updated_at: setting.updated_at || nowIso(),
-        });
-      }
-
-      for (const fund of sinkingFunds) {
-        await db.sinking_funds.add({
-          id: String(fund.id || uuid()),
-          name: fund.name,
-          category: fund.category || null,
-          target_amount: Number(fund.target_amount || 0),
-          due_date: fund.due_date,
-          cadence: fund.cadence || "yearly",
-          months_per_cycle: Number(fund.months_per_cycle || 1),
-          essential: fund.essential !== false,
-          active: fund.active !== false,
-          auto_contribute: fund.auto_contribute !== false,
-          created_at: fund.created_at || nowIso(),
-          updated_at: fund.updated_at || nowIso(),
-        });
-      }
-
-      for (const event of sinkingEvents) {
-        await db.sinking_events.add({
-          id: String(event.id || uuid()),
-          fund_id: String(event.fund_id || ""),
-          amount: Number(event.amount || 0),
-          type: event.type || "CONTRIBUTION",
-          event_date: event.event_date || todayDate(),
-          note: event.note || null,
-          created_at: event.created_at || nowIso(),
-        });
-      }
-    });
+    );
     return jsonResponse({ ok: true });
   }
 
@@ -667,6 +489,7 @@
     const type = String(action.type || "").trim();
     if (!type) return { ok: false, error: "type is required" };
     switch (type) {
+      case "MARK_DONE":
       case "MARK_PAID": {
         const id = String(action.instance_id || "");
         if (!id) return { ok: false, error: "instance_id is required" };
@@ -704,7 +527,8 @@
         const updated = await db.instances.get(id);
         return { ok: true, instance: (await attachPayments([updated]))[0] };
       }
-      case "ADD_PAYMENT": {
+      case "ADD_PAYMENT":
+      case "ADD_UPDATE": {
         const id = String(action.instance_id || "");
         const amount = Number(action.amount);
         if (!id) return { ok: false, error: "instance_id is required" };
@@ -725,11 +549,12 @@
         const updated = await db.instances.get(id);
         return { ok: true, payment: { id: paymentId, instance_id: id, amount, paid_date: paidDate }, instance: (await attachPayments([updated]))[0] };
       }
-      case "UNDO_PAYMENT": {
+      case "UNDO_PAYMENT":
+      case "UNDO_UPDATE": {
         const id = String(action.payment_id || "");
         if (!id) return { ok: false, error: "payment_id is required" };
         const payment = await db.payment_events.get(id);
-        if (!payment) return { ok: false, error: "Payment not found" };
+        if (!payment) return { ok: false, error: "Update not found" };
         await db.payment_events.delete(id);
         const instance = await db.instances.get(payment.instance_id);
         return { ok: true, instance_id: payment.instance_id, instance: instance ? (await attachPayments([instance]))[0] : null };
@@ -761,6 +586,12 @@
         }
         if (action.note !== undefined) {
           updates.note = action.note || null;
+        }
+        if (action.name_snapshot !== undefined) {
+          updates.name_snapshot = String(action.name_snapshot || "");
+        }
+        if (action.category_snapshot !== undefined) {
+          updates.category_snapshot = action.category_snapshot || null;
         }
         updates.updated_at = nowIso();
         await db.instances.update(id, updates);
@@ -1006,15 +837,23 @@
   }
 
   async function handleApi(path, method, params, body) {
-    const opened = await safeOpenDb();
-    if (!opened) return jsonResponse({ error: "Local storage error" }, 500);
+    await db.open();
 
     if (path === "/api/health") {
       return jsonResponse({ ok: true });
     }
 
     if (path === "/api/reset-local" && method === "POST") {
-      await resetLocalData();
+      await Promise.all([
+        db.templates.clear(),
+        db.instances.clear(),
+        db.payment_events.clear(),
+        db.month_settings.clear(),
+        db.sinking_funds.clear(),
+        db.sinking_events.clear(),
+        db.agent_command_log.clear(),
+        db.assistant_chat.clear(),
+      ]);
       return jsonResponse({ ok: true });
     }
 
@@ -1127,6 +966,12 @@
       if (body.note !== undefined) {
         updates.note = body.note || null;
       }
+      if (body.name_snapshot !== undefined) {
+        updates.name_snapshot = String(body.name_snapshot || "");
+      }
+      if (body.category_snapshot !== undefined) {
+        updates.category_snapshot = body.category_snapshot || null;
+      }
       updates.updated_at = nowIso();
       await db.instances.update(id, updates);
       const updated = await db.instances.get(id);
@@ -1143,7 +988,7 @@
     if (path.startsWith("/api/payments/") && method === "DELETE") {
       const id = path.split("/")[3];
       const payment = await db.payment_events.get(id);
-      if (!payment) return jsonResponse({ error: "Payment not found" }, 404);
+      if (!payment) return jsonResponse({ error: "Update not found" }, 404);
       await db.payment_events.delete(id);
       const instance = await db.instances.get(payment.instance_id);
       return jsonResponse({ ok: true, instance_id: payment.instance_id, instance: instance ? (await attachPayments([instance]))[0] : null });
@@ -1193,7 +1038,7 @@
       const sinkingEvents = await db.sinking_events.toArray();
       return jsonResponse({
         app: "au-jour-le-jour",
-        app_version: "pwa",
+        app_version: "web",
         schema_version: "2",
         exported_at: nowIsoLocal(),
         templates,
@@ -1221,21 +1066,14 @@
       await ensureMonth(parsed.year, parsed.month);
       const essentialsOnly = params.get("essentials_only") !== "false";
       const instances = await getInstances(parsed.year, parsed.month);
-      const summary = computeSummary(instances, {
-        year: parsed.year,
-        month: parsed.month,
-        essentialsOnly,
-      });
+      const summary = computeSummary(instances, { year: parsed.year, month: parsed.month, essentialsOnly });
       const funds = await getSinkingFunds(parsed.year, parsed.month, false);
-      const futureReserved = funds.reduce(
-        (sum, fund) => sum + Math.max(0, Number(fund.balance || 0)),
-        0
-      );
+      const futureReserved = funds.reduce((sum, fund) => sum + Math.max(0, Number(fund.balance || 0)), 0);
       return jsonResponse({
         app: "au-jour-le-jour",
-        app_version: "pwa",
+        app_version: "web",
         schema_version: "2",
-        version: "pwa",
+        version: "web",
         period: `${parsed.year}-${pad2(parsed.month)}`,
         filters: { essentials_only: essentialsOnly },
         required_month: summary.required_month,
@@ -1255,9 +1093,7 @@
       await ensureMonth(parsed.year, parsed.month);
       const essentialsOnly = params.get("essentials_only") !== "false";
       const instances = await getInstances(parsed.year, parsed.month);
-      const filtered = essentialsOnly
-        ? instances.filter((item) => item.essential_snapshot)
-        : instances;
+      const filtered = essentialsOnly ? instances.filter((item) => item.essential_snapshot) : instances;
       const items = filtered.map((item) => ({
         instance_id: item.id,
         template_id: item.template_id,
@@ -1273,7 +1109,7 @@
       }));
       return jsonResponse({
         app: "au-jour-le-jour",
-        app_version: "pwa",
+        app_version: "web",
         schema_version: "2",
         period: `${parsed.year}-${pad2(parsed.month)}`,
         items,
@@ -1285,7 +1121,7 @@
       templates.sort((a, b) =>
         String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" })
       );
-      return jsonResponse({ app: "au-jour-le-jour", app_version: "pwa", schema_version: "2", templates });
+      return jsonResponse({ app: "au-jour-le-jour", app_version: "web", schema_version: "2", templates });
     }
 
     if (path === "/api/v1/actions" && method === "POST") {
@@ -1295,68 +1131,16 @@
       return jsonResponse(result);
     }
 
-    if (path.startsWith("/internal/agent/log") && method === "POST") {
-      const entry = body || {};
-      await db.agent_command_log.add({
-        id: uuid(),
-        created_at: nowIso(),
-        user_text: entry.user_text || "",
-        kind: entry.kind || "command",
-        summary: entry.summary || "",
-        payload: entry.payload || null,
-        result: entry.result || null,
-        status: entry.status || "ok",
-      });
-      return jsonResponse({ ok: true });
-    }
-
-    if (path.startsWith("/internal/agent/log") && method === "GET") {
-      const limitRaw = Number(params.get("limit") || 20);
-      const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
-      const items = await db.agent_command_log.orderBy("created_at").reverse().limit(limit).toArray();
-      return jsonResponse({ ok: true, items });
-    }
-
     if (path === "/api/chat" && method === "GET") {
-      const limitRaw = Number(params.get("limit") || 50);
-      const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, limitRaw)) : 50;
-      const items = await db.assistant_chat.orderBy("created_at").limit(limit).toArray();
-      return jsonResponse({ ok: true, items });
+      return jsonResponse({ ok: true, items: [] });
     }
 
     if (path === "/api/chat" && method === "POST") {
-      const role = String(body.role || "").trim();
-      const text = String(body.text || "").trim();
-      if (!role || !text) return jsonResponse({ ok: false, error: "Invalid message" }, 400);
-      await db.assistant_chat.add({
-        id: uuid(),
-        created_at: nowIso(),
-        role,
-        text,
-        meta: body.meta || "",
-      });
       return jsonResponse({ ok: true });
     }
 
     if (path === "/api/chat" && method === "DELETE") {
-      await db.assistant_chat.clear();
       return jsonResponse({ ok: true });
-    }
-
-    if (!LLM_ENABLED && path.startsWith("/api/llm/qwen/oauth/status") && method === "GET") {
-      return jsonResponse({ connected: false, disabled: true });
-    }
-
-    if (!LLM_ENABLED && path.startsWith("/api/llm/qwen/oauth") && method === "POST") {
-      return jsonResponse({ error: "Mamdou is available in the local app only." }, 503);
-    }
-
-    if (!LLM_ENABLED && path.startsWith("/internal/advisor/query") && method === "POST") {
-      return jsonResponse({ ok: false, error: "Mamdou is available in the local app only." }, 503);
-    }
-
-    if (!LLM_ENABLED && path.startsWith("/internal/behavior/features") && method === "GET") {
-      return jsonResponse({ ok: false, error: "Not available in web mode." }, 503);
     }
 
     return jsonResponse({ error: "Not found" }, 404);
@@ -1367,33 +1151,10 @@
     const request = typeof input === "string" ? null : input;
     const url = typeof input === "string" ? input : input.url;
     if (!url) return originalFetch(input, init);
-    if (!window.__AJL_PWA_PURGE__) {
-      window.__AJL_PWA_PURGE__ = true;
-      try {
-        await purgeInvalidRows();
-      } catch (err) {
-        if (isStorageError(err)) {
-          await hardResetDatabase();
-          await rotateDatabase();
-          setTimeout(() => window.location.reload(), 50);
-          return jsonResponse({ error: "Local storage error" }, 500);
-        }
-      }
-    }
+
     const urlObj = new URL(url, window.location.origin);
     const pathname = urlObj.pathname;
 
-    if (
-      LLM_ENABLED &&
-      (pathname.startsWith("/api/llm/") ||
-        pathname.startsWith("/internal/advisor/") ||
-        pathname.startsWith("/internal/behavior/"))
-    ) {
-      const target = new URL(pathname + urlObj.search, LLM_BASE_URL);
-      const headers = new Headers(init.headers || {});
-      headers.set("X-AJL-Session", getAgentSessionId());
-      return originalFetch(target.toString(), { ...init, headers, credentials: "include" });
-    }
     if (pathname.startsWith("/api/") || pathname.startsWith("/internal/")) {
       const method = (init.method || request?.method || "GET").toUpperCase();
       let body = null;
@@ -1408,12 +1169,8 @@
       try {
         return await handleApi(pathname, method, params, body);
       } catch (err) {
-        if (isStorageError(err)) {
-          await hardResetDatabase();
-          await rotateDatabase();
-          setTimeout(() => window.location.reload(), 50);
-        }
-        return jsonResponse({ error: "Local storage error", detail: String(err?.message || err) }, 500);
+        console.error("PWA adapter error", err);
+        return jsonResponse({ error: "Local storage error" }, 500);
       }
     }
     return originalFetch(input, init);
