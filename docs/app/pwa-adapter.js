@@ -5,6 +5,8 @@
   }
 
   window.AJL_PWA = true;
+  const LLM_BASE_URL = window.AJL_LLM_BASE_URL ? String(window.AJL_LLM_BASE_URL) : "";
+  const LLM_ENABLED = Boolean(LLM_BASE_URL);
 
   const db = new Dexie("ajl_pwa");
   db.version(1).stores({
@@ -155,6 +157,43 @@
     const rows = await db.payment_events.where("instance_id").anyOf(ids).toArray();
     rows.sort((a, b) => String(b.paid_date).localeCompare(String(a.paid_date)));
     return rows;
+  }
+
+  function computeSummary(instances, { year, month, essentialsOnly }) {
+    const list = essentialsOnly
+      ? instances.filter((item) => item.essential_snapshot)
+      : instances;
+    const today = todayDate();
+    let required = 0;
+    let paid = 0;
+    let remaining = 0;
+    let overduePending = false;
+    list.forEach((item) => {
+      if (item.status === "skipped") return;
+      required += Number(item.amount || 0);
+      paid += Number(item.amount_paid || 0);
+      remaining += Number(item.amount_remaining || 0);
+      if (
+        item.status_derived !== "paid" &&
+        item.status_derived !== "skipped" &&
+        item.due_date &&
+        item.due_date < today
+      ) {
+        overduePending = true;
+      }
+    });
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const needDailyExact = daysInMonth > 0 ? required / daysInMonth : 0;
+    const needWeeklyExact = needDailyExact * 7;
+    const freeForMonth = required > 0 && remaining === 0 && !overduePending;
+    return {
+      required_month: Number(required.toFixed(2)),
+      paid_month: Number(paid.toFixed(2)),
+      remaining_month: Number(remaining.toFixed(2)),
+      need_daily_exact: Number(needDailyExact.toFixed(2)),
+      need_weekly_exact: Number(needWeeklyExact.toFixed(2)),
+      free_for_month: freeForMonth,
+    };
   }
 
   function resolveMonthsPerCycle(cadence, monthsPerCycle) {
@@ -966,6 +1005,79 @@
       return handleExportMonthCSV(parsed.year, parsed.month);
     }
 
+    if (path === "/api/v1/summary" && method === "GET") {
+      const parsed = parseYearMonth(params);
+      if (!parsed) return jsonResponse({ error: "Invalid year/month" }, 400);
+      await ensureMonth(parsed.year, parsed.month);
+      const essentialsOnly = params.get("essentials_only") !== "false";
+      const instances = await getInstances(parsed.year, parsed.month);
+      const summary = computeSummary(instances, {
+        year: parsed.year,
+        month: parsed.month,
+        essentialsOnly,
+      });
+      const funds = await getSinkingFunds(parsed.year, parsed.month, false);
+      const futureReserved = funds.reduce(
+        (sum, fund) => sum + Math.max(0, Number(fund.balance || 0)),
+        0
+      );
+      return jsonResponse({
+        app: "au-jour-le-jour",
+        app_version: "pwa",
+        schema_version: "2",
+        version: "pwa",
+        period: `${parsed.year}-${pad2(parsed.month)}`,
+        filters: { essentials_only: essentialsOnly },
+        required_month: summary.required_month,
+        paid_month: summary.paid_month,
+        remaining_month: summary.remaining_month,
+        need_daily_exact: summary.need_daily_exact,
+        need_weekly_exact: summary.need_weekly_exact,
+        free_for_month: summary.free_for_month,
+        future_reserved: Number(futureReserved.toFixed(2)),
+        generated_at: nowIsoLocal(),
+      });
+    }
+
+    if (path === "/api/v1/month" && method === "GET") {
+      const parsed = parseYearMonth(params);
+      if (!parsed) return jsonResponse({ error: "Invalid year/month" }, 400);
+      await ensureMonth(parsed.year, parsed.month);
+      const essentialsOnly = params.get("essentials_only") !== "false";
+      const instances = await getInstances(parsed.year, parsed.month);
+      const filtered = essentialsOnly
+        ? instances.filter((item) => item.essential_snapshot)
+        : instances;
+      const items = filtered.map((item) => ({
+        instance_id: item.id,
+        template_id: item.template_id,
+        name: item.name_snapshot,
+        category: item.category_snapshot || null,
+        amount: Number(item.amount || 0),
+        due_date: item.due_date,
+        status: item.status,
+        paid_date: item.paid_date || null,
+        autopay: !!item.autopay_snapshot,
+        essential: !!item.essential_snapshot,
+        note: item.note || null,
+      }));
+      return jsonResponse({
+        app: "au-jour-le-jour",
+        app_version: "pwa",
+        schema_version: "2",
+        period: `${parsed.year}-${pad2(parsed.month)}`,
+        items,
+      });
+    }
+
+    if (path === "/api/v1/templates" && method === "GET") {
+      const templates = await db.templates.toArray();
+      templates.sort((a, b) =>
+        String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" })
+      );
+      return jsonResponse({ app: "au-jour-le-jour", app_version: "pwa", schema_version: "2", templates });
+    }
+
     if (path === "/api/v1/actions" && method === "POST") {
       const action = body || {};
       const result = await handleAction(action);
@@ -1021,19 +1133,19 @@
       return jsonResponse({ ok: true });
     }
 
-    if (path.startsWith("/api/llm/qwen/oauth/status") && method === "GET") {
+    if (!LLM_ENABLED && path.startsWith("/api/llm/qwen/oauth/status") && method === "GET") {
       return jsonResponse({ connected: false, disabled: true });
     }
 
-    if (path.startsWith("/api/llm/qwen/oauth") && method === "POST") {
+    if (!LLM_ENABLED && path.startsWith("/api/llm/qwen/oauth") && method === "POST") {
       return jsonResponse({ error: "Mamdou is available in the local app only." }, 503);
     }
 
-    if (path.startsWith("/internal/advisor/query") && method === "POST") {
+    if (!LLM_ENABLED && path.startsWith("/internal/advisor/query") && method === "POST") {
       return jsonResponse({ ok: false, error: "Mamdou is available in the local app only." }, 503);
     }
 
-    if (path.startsWith("/internal/behavior/features") && method === "GET") {
+    if (!LLM_ENABLED && path.startsWith("/internal/behavior/features") && method === "GET") {
       return jsonResponse({ ok: false, error: "Not available in web mode." }, 503);
     }
 
@@ -1045,7 +1157,18 @@
     const request = typeof input === "string" ? null : input;
     const url = typeof input === "string" ? input : input.url;
     if (!url) return originalFetch(input, init);
-    const pathname = new URL(url, window.location.origin).pathname;
+    const urlObj = new URL(url, window.location.origin);
+    const pathname = urlObj.pathname;
+
+    if (
+      LLM_ENABLED &&
+      (pathname.startsWith("/api/llm/") ||
+        pathname.startsWith("/internal/advisor/") ||
+        pathname.startsWith("/internal/behavior/"))
+    ) {
+      const target = new URL(pathname + urlObj.search, LLM_BASE_URL);
+      return originalFetch(target.toString(), { ...init, credentials: "include" });
+    }
     if (pathname.startsWith("/api/") || pathname.startsWith("/internal/")) {
       const method = (init.method || request?.method || "GET").toUpperCase();
       let body = null;
