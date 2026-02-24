@@ -78,6 +78,10 @@ const els = {
   assistantCard: document.getElementById("assistant-card"),
   assistantToggle: document.getElementById("assistant-toggle"),
   assistantPanel: document.getElementById("assistant-panel"),
+  assistantConnection: document.getElementById("assistant-connection"),
+  assistantConnectionTitle: document.getElementById("assistant-connection-title"),
+  assistantConnectionBody: document.getElementById("assistant-connection-body"),
+  assistantConnectionAction: document.getElementById("assistant-connection-action"),
   activityList: document.getElementById("activity-list"),
   piggyList: document.getElementById("piggy-list"),
   piggyCard: document.getElementById("piggy-card"),
@@ -450,24 +454,30 @@ async function resumeQwenAuth() {
 let qwenPollTimer = null;
 
 async function startQwenAuth() {
-  const res = await fetch("/api/llm/qwen/oauth/start", { method: "POST" });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    state.qwenAuth.status = "error";
-    state.qwenAuth.error = data.error || "Unable to start Mamdou auth.";
+  try {
+    const res = await fetch("/api/llm/qwen/oauth/start", { method: "POST" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      state.qwenAuth.status = "error";
+      state.qwenAuth.error = data.error || "Unable to start Mamdou auth.";
+      renderNudges();
+      return;
+    }
+    const data = await res.json();
+    state.qwenAuth = {
+      connected: false,
+      status: "pending",
+      session_id: data.session_id,
+      verification_uri_complete: data.verification_uri_complete || data.verification_uri,
+      interval_seconds: data.interval_seconds || 5,
+    };
     renderNudges();
-    return;
+    startQwenPolling();
+  } catch (err) {
+    state.qwenAuth.status = "error";
+    state.qwenAuth.error = err.message || "Unable to start Mamdou auth.";
+    renderNudges();
   }
-  const data = await res.json();
-  state.qwenAuth = {
-    connected: false,
-    status: "pending",
-    session_id: data.session_id,
-    verification_uri_complete: data.verification_uri_complete || data.verification_uri,
-    interval_seconds: data.interval_seconds || 5,
-  };
-  renderNudges();
-  startQwenPolling();
 }
 
 function stopQwenPolling() {
@@ -479,36 +489,43 @@ function stopQwenPolling() {
 
 async function pollQwenAuth() {
   if (!state.qwenAuth.session_id) return;
-  const res = await fetch("/api/llm/qwen/oauth/poll", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: state.qwenAuth.session_id }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (data.status === "pending") {
-    state.qwenAuth.status = "pending";
-    state.qwenAuth.interval_seconds = data.interval_seconds || state.qwenAuth.interval_seconds || 5;
-    renderNudges();
-    startQwenPolling();
-    return;
-  }
-  if (data.status === "success") {
-    state.qwenAuth.connected = true;
-    state.qwenAuth.status = "connected";
-    stopQwenPolling();
-    renderNudges();
-    await refreshAll();
-    return;
-  }
-  if (data.status === "expired") {
-    state.qwenAuth.status = "expired";
-    stopQwenPolling();
-    renderNudges();
-    return;
-  }
-  if (data.status === "error") {
+  try {
+    const res = await fetch("/api/llm/qwen/oauth/poll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: state.qwenAuth.session_id }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.status === "pending") {
+      state.qwenAuth.status = "pending";
+      state.qwenAuth.interval_seconds = data.interval_seconds || state.qwenAuth.interval_seconds || 5;
+      renderNudges();
+      startQwenPolling();
+      return;
+    }
+    if (data.status === "success") {
+      state.qwenAuth.connected = true;
+      state.qwenAuth.status = "connected";
+      stopQwenPolling();
+      renderNudges();
+      await refreshAll();
+      return;
+    }
+    if (data.status === "expired") {
+      state.qwenAuth.status = "expired";
+      stopQwenPolling();
+      renderNudges();
+      return;
+    }
+    if (data.status === "error") {
+      state.qwenAuth.status = "error";
+      state.qwenAuth.error = data.message || "OAuth error";
+      stopQwenPolling();
+      renderNudges();
+    }
+  } catch (err) {
     state.qwenAuth.status = "error";
-    state.qwenAuth.error = data.message || "OAuth error";
+    state.qwenAuth.error = err.message || "OAuth error";
     stopQwenPolling();
     renderNudges();
   }
@@ -2047,9 +2064,74 @@ function summarizeProposal(proposal) {
   return `Intent: ${intent}`;
 }
 
+function renderAssistantConnection() {
+  if (!els.assistantConnection || !els.assistantConnectionTitle || !els.assistantConnectionBody || !els.assistantConnectionAction) {
+    return;
+  }
+  const actionWrap = els.assistantConnectionAction;
+  actionWrap.innerHTML = "";
+
+  const status = state.qwenAuth?.status || "unknown";
+  const connected = !!state.qwenAuth?.connected;
+  const authUrl = state.qwenAuth?.verification_uri_complete || state.llmStatus?.auth_url || null;
+  const errorText = state.qwenAuth?.error || state.llmStatus?.error || "";
+
+  let title = "Connect Mamdou";
+  let body = "Use Mamdou login to enable insights.";
+  let action = null;
+
+  if (status === "disabled") {
+    title = "Mamdou unavailable";
+    body = "Use the local app to connect Mamdou.";
+  } else if (connected) {
+    title = "Agent connected";
+    body = "Mamdou is ready.";
+  } else if (status === "pending" && authUrl) {
+    title = "Authorize Mamdou";
+    body = "Authorize in browser, then return here.";
+    action = { type: "link", label: "Open login", href: authUrl };
+  } else if (state.llmStatus?.status === "auth_required" && authUrl) {
+    title = "Mamdou login required";
+    body = "Complete device authorization.";
+    action = { type: "link", label: "Complete login", href: authUrl };
+  } else if (status === "expired") {
+    title = "Login expired";
+    body = "Start Mamdou login again.";
+    action = { type: "button", label: "Start login", onClick: startQwenAuth };
+  } else if (status === "error") {
+    title = "Mamdou error";
+    body = errorText || "Unable to start Mamdou auth.";
+    action = { type: "button", label: "Retry", onClick: startQwenAuth };
+  } else if (!connected) {
+    action = { type: "button", label: "Start login", onClick: startQwenAuth };
+  }
+
+  els.assistantConnectionTitle.textContent = title;
+  els.assistantConnectionBody.textContent = body;
+
+  if (action) {
+    if (action.type === "link") {
+      const link = document.createElement("a");
+      link.className = "btn-small";
+      link.href = action.href;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = action.label;
+      actionWrap.appendChild(link);
+    } else {
+      const btn = document.createElement("button");
+      btn.className = "btn-small";
+      btn.textContent = action.label;
+      btn.addEventListener("click", action.onClick);
+      actionWrap.appendChild(btn);
+    }
+  }
+}
+
 
 function renderNudges() {
   if (!els.nudgesList) return;
+  renderAssistantConnection();
   els.nudgesList.innerHTML = "";
   let hasStatusRow = false;
 

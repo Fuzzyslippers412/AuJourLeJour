@@ -126,6 +126,85 @@ select:focus {
   justify-content: flex-end;
 }
 
+.local-status {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-variant);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+
+.local-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #16a34a;
+}
+
+.local-text {
+  white-space: nowrap;
+}
+
+.local-device {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-2);
+  background: #fff;
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.local-tooltip {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: #111827;
+  color: #fff;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  width: 220px;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 10;
+}
+
+.local-status:hover .local-tooltip,
+.local-status:focus .local-tooltip,
+.local-status:active .local-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.local-tooltip-title {
+  font-weight: 700;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.local-tooltip-body {
+  font-size: 12px;
+  color: #e5e7eb;
+}
+
+.modal-footer-hint {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .toggle {
   display: inline-flex;
   align-items: center;
@@ -524,6 +603,45 @@ select:focus {
 
 .assistant-panel {
   display: grid;
+  gap: 8px;
+}
+
+.assistant-connection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.assistant-connection.hidden {
+  display: none;
+}
+
+.assistant-connection-text {
+  display: grid;
+  gap: 2px;
+}
+
+.assistant-connection-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.assistant-connection-body {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.assistant-connection-action {
+  display: flex;
+  align-items: center;
   gap: 8px;
 }
 

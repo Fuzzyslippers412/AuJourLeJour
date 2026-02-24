@@ -27,6 +27,15 @@
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
         </label>
+        <div id="local-status" class="local-status" tabindex="0" role="button" aria-label="Storage info">
+          <span class="local-dot"></span>
+          <span class="local-text">Local-only · Autosaves</span>
+          <span class="local-device">This browser</span>
+          <div class="local-tooltip">
+            <div class="local-tooltip-title">Private to this browser</div>
+            <div class="local-tooltip-body">No account, no sync. Export JSON to move to another device.</div>
+          </div>
+        </div>
         <button id="nav-dashboard" class="tab-btn active">This Month</button>
         <button id="nav-templates" class="tab-btn">Templates</button>
         <button id="open-backup" class="primary-btn">Backup/Export</button>
@@ -123,6 +132,13 @@
                 <div class="assistant-box">
                   <div class="assistant-title">Mamdou</div>
                   <div class="assistant-sub">Ask, add bills, or run commands in one box.</div>
+                  <div id="assistant-connection" class="assistant-connection">
+                    <div class="assistant-connection-text">
+                      <div id="assistant-connection-title" class="assistant-connection-title">Connect Mamdou</div>
+                      <div id="assistant-connection-body" class="assistant-connection-body">Use Mamdou login to enable insights.</div>
+                    </div>
+                    <div id="assistant-connection-action" class="assistant-connection-action"></div>
+                  </div>
                   <div class="assistant-personal">
                     <div id="assistant-greeting" class="assistant-greeting">Hi there.</div>
                     <label class="assistant-name-label" for="assistant-name-input">Call me</label>
@@ -304,6 +320,7 @@
             <input id="import-backup" type="file" accept="application/json" />
           </label>
         </div>
+        <div class="modal-footer-hint">Saved in this browser. To move devices: Export JSON → Import on the new device.</div>
       </div>
     </div>
 
