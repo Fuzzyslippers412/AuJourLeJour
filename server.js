@@ -1730,6 +1730,7 @@ function ensureMonth(year, month) {
   });
 
   run();
+  autoContributeForMonth(year, month);
 }
 
 function applyTemplateToMonth(template, year, month) {

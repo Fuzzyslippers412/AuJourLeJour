@@ -124,6 +124,15 @@ async function run() {
     assert.strictEqual(res.data.hasCompletedOnboarding, false);
   });
 
+  test("invalid template input returns 400", async () => {
+    const res = await request("POST", "/api/templates", {
+      name: "",
+      amount_default: -5,
+      due_day: 0,
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
   test("template create + instance generation", async () => {
     const res = await request(
       "POST",
@@ -228,6 +237,47 @@ async function run() {
     assert.ok(types.has("status_changed"));
   });
 
+  test("invalid payment amount is rejected", async () => {
+    const res = await request(
+      "POST",
+      `/api/instances/${instanceId}/payments`,
+      { amount: -1 }
+    );
+    assert.strictEqual(res.status, 400);
+  });
+
+  test("skip and unskip via actions", async () => {
+    const skipRes = await request("POST", "/api/v1/actions", {
+      action_id: newActionId(),
+      type: "SKIP_INSTANCE",
+      instance_id: instanceId,
+    });
+    assert.strictEqual(skipRes.status, 200);
+    assert.strictEqual(skipRes.data.instance.status, "skipped");
+
+    const pendingRes = await request("POST", "/api/v1/actions", {
+      action_id: newActionId(),
+      type: "MARK_PENDING",
+      instance_id: instanceId,
+    });
+    assert.strictEqual(pendingRes.status, 200);
+    assert.strictEqual(pendingRes.data.instance.status, "pending");
+  });
+
+  test("update instance fields via actions", async () => {
+    const res = await request("POST", "/api/v1/actions", {
+      action_id: newActionId(),
+      type: "UPDATE_INSTANCE_FIELDS",
+      instance_id: instanceId,
+      amount: 155,
+      due_date: "2026-02-20",
+      note: "Janitor update",
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.instance.amount, 155);
+    assert.strictEqual(res.data.instance.due_date, "2026-02-20");
+  });
+
   test("month settings roundtrip", async () => {
     const setRes = await request("POST", "/api/month-settings", {
       year: 2026,
@@ -262,6 +312,43 @@ async function run() {
     );
     assert.ok(Array.isArray(fundsRes.data));
     assert.strictEqual(fundsRes.data.length, 1);
+  });
+
+  test("auto-contribute creates sinking event", async () => {
+    const fundsRes = await request(
+      "GET",
+      "/api/sinking-funds?year=2026&month=2"
+    );
+    const fundId = fundsRes.data[0]?.id;
+    assert.ok(fundId);
+    await request("GET", "/api/ensure-month?year=2026&month=2");
+    const eventsRes = await request(
+      "GET",
+      `/api/sinking-events?fund_id=${fundId}`
+    );
+    assert.ok(Array.isArray(eventsRes.data));
+    assert.ok(eventsRes.data.length > 0);
+  });
+
+  test("mark fund paid rolls due date forward", async () => {
+    const fundsRes = await request(
+      "GET",
+      "/api/sinking-funds?year=2026&month=2"
+    );
+    const fund = fundsRes.data[0];
+    const res = await request("POST", "/api/v1/actions", {
+      action_id: newActionId(),
+      type: "MARK_FUND_PAID",
+      fund_id: fund.id,
+      amount: fund.target_amount,
+      event_date: "2026-02-10",
+    });
+    assert.strictEqual(res.status, 200);
+    const updated = await request(
+      "GET",
+      "/api/sinking-funds?year=2026&month=2"
+    );
+    assert.ok(updated.data[0].due_date !== fund.due_date);
   });
 
   test("share link lifecycle", async () => {
@@ -305,6 +392,23 @@ async function run() {
       { useCookie: false }
     );
     assert.ok(oldRes.status === 410 || oldRes.status === 404);
+  });
+
+  test("share disable blocks access", async () => {
+    const shareRes = await request("POST", "/api/shares", { mode: "live" });
+    const token = shareRes.data.shareToken;
+    assert.ok(token);
+    const disableRes = await request("PATCH", `/api/shares/${token}`, {
+      isActive: false,
+    });
+    assert.strictEqual(disableRes.status, 200);
+    const viewRes = await request(
+      "GET",
+      `/api/shares/${token}`,
+      undefined,
+      { useCookie: false }
+    );
+    assert.strictEqual(viewRes.status, 410);
   });
 
   test("export/import roundtrip", async () => {
@@ -367,6 +471,20 @@ async function run() {
       assert.ok(content.includes("Private bill tracker"));
       assert.ok(content.includes("Know what’s due. Stay in control."));
       assert.ok(content.includes("Import your backup"));
+    });
+  });
+
+  test("required UI elements exist in both builds", () => {
+    const files = [
+      path.join(__dirname, "..", "public", "index.html"),
+      path.join(__dirname, "..", "docs", "index.html"),
+    ];
+    files.forEach((file) => {
+      const content = fs.readFileSync(file, "utf8");
+      assert.ok(content.includes("first-visit-hero"));
+      assert.ok(content.includes("summary-panel"));
+      assert.ok(content.includes("mini-remaining-amount"));
+      assert.ok(content.includes("mini-done-amount"));
     });
   });
 
