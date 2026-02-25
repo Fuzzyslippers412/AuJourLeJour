@@ -15,10 +15,11 @@ const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT) || 4567;
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
 
-const dataDir = path.join(__dirname, "data");
-const dbFile = path.join(dataDir, "au_jour_le_jour.sqlite");
-const backupDir = path.join(dataDir, "backups");
-const lockFile = path.join(dataDir, "server.lock");
+const dataDir = process.env.AJL_DATA_DIR || path.join(__dirname, "data");
+const dbFile = process.env.AJL_DB_PATH || path.join(dataDir, "au_jour_le_jour.sqlite");
+const backupDir = process.env.AJL_BACKUP_DIR || path.join(dataDir, "backups");
+const lockFile = process.env.AJL_LOCK_FILE || path.join(dataDir, "server.lock");
+const disableLock = process.env.AJL_DISABLE_LOCK === "1";
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(backupDir, { recursive: true });
 
@@ -3771,10 +3772,26 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true });
 });
 
-ensureSingleInstance();
-app.listen(PORT, HOST, () => {
-  console.log(`Au Jour Le Jour running on http://${HOST}:${PORT}`);
-  if (PUBLIC_BASE_URL) {
-    console.log(`Public URL: ${PUBLIC_BASE_URL}`);
+if (require.main === module) {
+  if (!disableLock) {
+    ensureSingleInstance();
   }
-});
+  app.listen(PORT, HOST, () => {
+    console.log(`Au Jour Le Jour running on http://${HOST}:${PORT}`);
+    if (PUBLIC_BASE_URL) {
+      console.log(`Public URL: ${PUBLIC_BASE_URL}`);
+    }
+  });
+}
+
+module.exports = {
+  app,
+  db,
+  close: () => {
+    try {
+      db.close();
+    } catch (err) {
+      // ignore
+    }
+  },
+};

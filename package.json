@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "start:6709": "PORT=6709 node server.js",
-    "seed": "node scripts/seed_templates.js"
+    "seed": "node scripts/seed_templates.js",
+    "janitor": "node scripts/janitor.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.1",
