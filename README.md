@@ -2,49 +2,49 @@
 
 Local-first essentials tracker. Runs fully offline with a local SQLite file.
 
+## Web + Local
+
+Web app (static): [aujourlejour.xyz](https://aujourlejour.xyz)
+
+Local app (recommended): run on your machine with SQLite and full features.
+
 Built to plug into the **MyCasaPro Finance Agent (Mamdou)** later via a stable contract. AJL remains a standalone ledger and exposes a clean integration surface for the agent to read summaries and propose actions.
 
-## Run
+## Install Local (Recommended)
 
 ```sh
-cd /path/to/au-jour-le-jour
+git clone https://github.com/Fuzzyslippers412/AuJourLeJour.git
+cd AuJourLeJour
 ./start.sh
 ```
 
 Open `http://localhost:6709` or `http://<your-ip>:6709` on your local network.
 
-## Domain / Public URL
-
-Planned public domain: `https://aujourlejour.xyz`
-
-If you deploy AJL publicly, set `PUBLIC_BASE_URL` and point DNS to your host.
-
 Requirements:
 - Node.js 18+ (start.sh will install dependencies automatically if missing)
 
-## Web PWA (Browser-Only)
+## Web vs Local (What’s Different)
 
-The public web version lives in `docs/` and runs entirely in the browser using IndexedDB.
+Web (static, GitHub Pages):
+- Runs in the browser only
+- Data stays in your browser storage (localStorage/IndexedDB)
+- No server required
+- Best for quick access, but data is device/browser specific
 
-- Launch (GitHub Pages): `https://aujourlejour.xyz/`
-- Data stays on the user’s device (no accounts, no server).
-- The local server version remains unchanged and is still the recommended full experience.
+Local (server + SQLite):
+- Runs on your machine with SQLite persistence
+- Full feature set and local network access
+- Recommended for long-term use and reliability
 
-### Mamdou on Web (Agent Bridge)
+## Web Build (Static)
 
-To enable Mamdou on the web PWA, deploy the **Agent Bridge** (Fly.io). This is a thin OAuth + LLM proxy that never touches the ledger.
+The public web build lives in `docs/` and runs entirely in the browser.
 
-Steps (Fly.io):
-1. `cd bridge`
-2. `fly launch --name ajl-agent --no-deploy`
-3. `fly volumes create ajl_agent_data --size 1 --region ord`
-4. `fly deploy`
-5. Add DNS:
-   - `agent.aujourlejour.xyz` → CNAME `ajl-agent.fly.dev`
-6. In `docs/index.html`, set:
-   - `window.AJL_LLM_BASE_URL = "https://agent.aujourlejour.xyz"`
+If you deploy AJL publicly yourself, set `PUBLIC_BASE_URL` and point DNS to your host.
 
-The PWA will then connect Mamdou via Qwen OAuth without storing ledger data on the server.
+## Domain / Public URL
+
+Public domain: [aujourlejour.xyz](https://aujourlejour.xyz)
 
 ## Data
 

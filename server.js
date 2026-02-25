@@ -2193,10 +2193,15 @@ app.delete("/api/chat", (req, res) => {
 });
 
 app.get("/api/settings", (req, res) => {
-  const settings = getMetaJson("settings") || {
+  const stored = getMetaJson("settings") || {};
+  const settings = {
     defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
     categories: [],
+    firstRunCompleted: !!stored.firstRunCompleted,
+    hasCompletedOnboarding: !!(stored.hasCompletedOnboarding ?? stored.firstRunCompleted),
   };
+  if (stored.defaults) settings.defaults = stored.defaults;
+  if (Array.isArray(stored.categories)) settings.categories = stored.categories;
   res.json(settings);
 });
 
@@ -2213,9 +2218,14 @@ app.post("/api/settings", (req, res) => {
   const categories = Array.isArray(body.categories)
     ? body.categories.map((c) => String(c || "").trim()).filter(Boolean)
     : [];
+  const firstRunCompleted = body.firstRunCompleted === true;
+  const hasCompletedOnboarding =
+    body.hasCompletedOnboarding === true || body.firstRunCompleted === true;
   const payload = {
     defaults: { sort, dueSoonDays, defaultPeriod },
     categories,
+    firstRunCompleted,
+    hasCompletedOnboarding,
   };
   setMetaJson("settings", payload);
   res.json(payload);

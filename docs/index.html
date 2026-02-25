@@ -59,30 +59,21 @@
         <div class="today-layout">
           <div class="today-main">
             <div id="status-bar" class="status-bar">
-              <div class="status-counts">
+              <div class="status-metrics">
                 <div class="status-count"><span id="count-remaining">0</span> Remaining</div>
                 <div class="status-count overdue"><span id="count-overdue">0</span> Overdue</div>
                 <div class="status-count soon"><span id="count-soon">0</span> Due soon</div>
+                <div class="status-amount"><span id="mini-remaining-amount">$0.00</span> Remaining $</div>
+                <div class="status-amount"><span id="mini-done-amount">$0.00</span> Done $</div>
               </div>
               <div id="status-period" class="status-period"></div>
-              <button id="status-expand" class="ghost-btn">Summary</button>
+              <button id="status-expand" class="ghost-btn">View summary</button>
             </div>
 
-            <div id="summary-sheet" class="sheet hidden">
-              <div class="sheet-card">
-                <div class="sheet-header">
-                  <div>
-                    <div class="sheet-title">Monthly summary</div>
-                    <div class="sheet-sub">Reference totals only.</div>
-                  </div>
-                  <button id="summary-close" class="icon-btn" aria-label="Close">&times;</button>
-                </div>
-                <div class="summary-counts">
-                  <div>Remaining: <span id="summary-count-remaining">0</span></div>
-                  <div>Overdue: <span id="summary-count-overdue">0</span></div>
-                  <div>Due soon: <span id="summary-count-soon">0</span></div>
-                  <div>Done: <span id="summary-count-done">0</span></div>
-                </div>
+            <div id="summary-panel" class="summary-panel collapsed">
+              <div class="summary-panel-card">
+                <div class="summary-panel-title">Monthly summary</div>
+                <div class="summary-panel-sub">Reference totals only.</div>
                 <div class="summary-grid">
                   <div class="summary-item">
                     <div class="summary-label">Required</div>
@@ -107,6 +98,31 @@
                     <div id="need-week-plan" class="summary-caption">Planning avg: $0.00/week</div>
                   </div>
                 </div>
+                <div class="summary-counts">
+                  <div>Remaining: <span id="summary-count-remaining">0</span></div>
+                  <div>Overdue: <span id="summary-count-overdue">0</span></div>
+                  <div>Due soon: <span id="summary-count-soon">0</span></div>
+                  <div>Done: <span id="summary-count-done">0</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="first-visit-hero" class="first-visit-hero hidden">
+              <div class="first-visit-card">
+                <div class="first-visit-eyebrow">Private bill tracker</div>
+                <h1>Know what’s due. Stay in control.</h1>
+                <p>Au Jour Le Jour gives you a clear monthly view of your bills so you always know what’s coming up, what’s overdue, and what’s already handled — without connecting to your bank accounts.</p>
+                <ul>
+                  <li>Clear monthly view of upcoming and overdue bills</li>
+                  <li>Fast mark-done workflow with full history</li>
+                  <li>Local-first with export and backup control</li>
+                </ul>
+                <div class="first-visit-actions">
+                  <button id="first-visit-import" class="primary-btn">Import your backup</button>
+                  <button id="first-visit-template" class="ghost-btn">Create your first template</button>
+                </div>
+                <button id="first-visit-continue" class="link-btn">Continue without setup</button>
+                <div class="first-visit-trust">No financial connections. Your data stays under your control.</div>
               </div>
             </div>
 

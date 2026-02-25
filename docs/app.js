@@ -44,8 +44,11 @@ const state = {
   pendingImport: null,
   lastBackupAt: null,
   readOnly: false,
+  summaryExpanded: false,
   shareToken: null,
   shareInfo: null,
+  dataVersion: 0,
+  summaryCache: null,
 };
 
 const weeksPerMonth = 4.33;
@@ -269,6 +272,10 @@ const els = {
   setupCta: document.getElementById("setup-cta"),
   ctaImport: document.getElementById("cta-import"),
   ctaTemplate: document.getElementById("cta-template"),
+  firstVisitHero: document.getElementById("first-visit-hero"),
+  firstVisitImport: document.getElementById("first-visit-import"),
+  firstVisitTemplate: document.getElementById("first-visit-template"),
+  firstVisitContinue: document.getElementById("first-visit-continue"),
   wizardModal: document.getElementById("first-run-modal"),
   wizardImport: document.getElementById("wizard-import"),
   wizardTemplate: document.getElementById("wizard-template"),
@@ -287,11 +294,12 @@ const els = {
   statusExpand: document.getElementById("status-expand"),
   statusBar: document.getElementById("status-bar"),
   statusPeriod: document.getElementById("status-period"),
+  miniRemainingAmount: document.getElementById("mini-remaining-amount"),
+  miniDoneAmount: document.getElementById("mini-done-amount"),
   countRemaining: document.getElementById("count-remaining"),
   countOverdue: document.getElementById("count-overdue"),
   countSoon: document.getElementById("count-soon"),
-  summarySheet: document.getElementById("summary-sheet"),
-  summaryClose: document.getElementById("summary-close"),
+  summaryPanel: document.getElementById("summary-panel"),
   summaryCountRemaining: document.getElementById("summary-count-remaining"),
   summaryCountOverdue: document.getElementById("summary-count-overdue"),
   summaryCountSoon: document.getElementById("summary-count-soon"),
@@ -445,6 +453,7 @@ function loadWebMeta() {
       return {
         schemaVersion: 1,
         firstRunCompleted: false,
+        hasCompletedOnboarding: false,
         lastBackupAt: null,
         editCountSinceBackup: 0,
         readOnlyPreview: false,
@@ -456,6 +465,7 @@ function loadWebMeta() {
     return {
       schemaVersion: 1,
       firstRunCompleted: !!parsed.firstRunCompleted,
+      hasCompletedOnboarding: !!(parsed.hasCompletedOnboarding ?? parsed.firstRunCompleted),
       lastBackupAt: parsed.lastBackupAt || null,
       editCountSinceBackup: Number(parsed.editCountSinceBackup || 0),
       readOnlyPreview: !!parsed.readOnlyPreview,
@@ -466,6 +476,7 @@ function loadWebMeta() {
     return {
       schemaVersion: 1,
       firstRunCompleted: false,
+      hasCompletedOnboarding: false,
       lastBackupAt: null,
       editCountSinceBackup: 0,
       readOnlyPreview: false,
@@ -481,6 +492,31 @@ function saveWebMeta(meta) {
   } catch (err) {
     // ignore
   }
+}
+
+function isFirstRunCompleted() {
+  if (AJL_WEB_MODE) return !!state.webMeta?.hasCompletedOnboarding;
+  return !!state.settings?.hasCompletedOnboarding;
+}
+
+async function setFirstRunCompleted(value) {
+  return setOnboardingComplete(value);
+}
+
+async function setOnboardingComplete(value) {
+  if (AJL_WEB_MODE) {
+    if (!state.webMeta) state.webMeta = loadWebMeta();
+    state.webMeta.firstRunCompleted = !!value;
+    state.webMeta.hasCompletedOnboarding = !!value;
+    saveWebMeta(state.webMeta);
+    return;
+  }
+  state.settings.hasCompletedOnboarding = !!value;
+  state.settings.firstRunCompleted = !!value;
+  await saveSettings({
+    hasCompletedOnboarding: state.settings.hasCompletedOnboarding,
+    firstRunCompleted: state.settings.firstRunCompleted,
+  });
 }
 
 function recordMutation() {
@@ -924,6 +960,7 @@ async function loadInstances() {
   );
   const data = await readApiData(res);
   state.instances = Array.isArray(data) ? data : [];
+  state.dataVersion += 1;
 }
 
 async function loadPayments() {
@@ -932,6 +969,7 @@ async function loadPayments() {
   );
   const data = await readApiData(res);
   state.payments = Array.isArray(data) ? data : [];
+  state.dataVersion += 1;
 }
 
 async function loadInstanceEvents(instanceId) {
@@ -970,6 +1008,8 @@ async function loadSettings() {
         defaultPeriod: defaults.defaultPeriod || "month",
       },
       categories,
+      firstRunCompleted: !!data.firstRunCompleted,
+      hasCompletedOnboarding: !!(data.hasCompletedOnboarding ?? data.firstRunCompleted),
     };
     state.filters.sort = state.settings.defaults.sort || state.filters.sort;
     if (els.sortFilter) els.sortFilter.value = state.filters.sort;
@@ -1196,6 +1236,7 @@ async function clearChatHistory() {
 function updateInstanceInState(updated) {
   const idx = state.instances.findIndex((inst) => inst.id === updated.id);
   if (idx >= 0) state.instances[idx] = updated;
+  state.dataVersion += 1;
 }
 
 async function addPayment(instanceId, amount) {
@@ -1210,7 +1251,7 @@ async function addPayment(instanceId, amount) {
     window.alert(data.error || "Unable to log update.");
     return;
   }
-  const data = await res.json();
+  const data = await readApiData(res);
   if (data.instance) updateInstanceInState(data.instance);
   flashRow(instanceId);
   await loadPayments();
@@ -1278,7 +1319,7 @@ async function undoPayment(paymentId) {
     window.alert(data.error || "Unable to undo update.");
     return;
   }
-  const data = await res.json();
+  const data = await readApiData(res);
   if (data.instance) updateInstanceInState(data.instance);
   await loadPayments();
   await loadActivityEvents();
@@ -1299,7 +1340,7 @@ async function patchInstance(id, body) {
     window.alert(data.error || "Unable to update item.");
     return;
   }
-  const updated = await res.json();
+  const updated = await readApiData(res);
   updateInstanceInState(updated);
   await loadActivityEvents();
   renderDashboard();
@@ -1331,7 +1372,7 @@ function deriveInstances() {
       ...item,
       amount_paid: amountPaid,
       amount_remaining: amountRemaining,
-      status_derived: item.status_derived || status,
+      status_derived: status,
     };
   });
 }
@@ -1359,6 +1400,16 @@ function computeTotals(list) {
     .filter((item) => item.status_derived !== "skipped")
     .reduce((sum, item) => sum + Number(item.amount_remaining || 0), 0);
   return { required, paid, remaining };
+}
+
+function getSummaryTotals(list) {
+  const key = `${state.selectedYear}-${state.selectedMonth}-${state.essentialsOnly}-${state.dataVersion}`;
+  if (state.summaryCache && state.summaryCache.key === key) {
+    return state.summaryCache.totals;
+  }
+  const totals = computeTotals(list);
+  state.summaryCache = { key, totals };
+  return totals;
 }
 
 function prioritizeInstancesForAgent(list) {
@@ -1464,7 +1515,7 @@ function buildAgentPayload(userText) {
 }
 
 function renderSummary(list) {
-  const totals = computeTotals(list);
+  const totals = getSummaryTotals(list);
   const daysInMonth = getDaysInMonth(state.selectedYear, state.selectedMonth);
   const needDailyExact = totals.required / daysInMonth;
   const needWeeklyExact = needDailyExact * 7;
@@ -1484,10 +1535,20 @@ function renderSummary(list) {
   els.requiredAmount.textContent = formatMoney(totals.required);
   els.paidAmount.textContent = formatMoney(totals.paid);
   els.remainingAmount.textContent = formatMoney(totals.remaining);
+  if (els.miniRemainingAmount) els.miniRemainingAmount.textContent = formatMoney(totals.remaining);
+  if (els.miniDoneAmount) els.miniDoneAmount.textContent = formatMoney(totals.paid);
   els.needDay.textContent = formatMoney(needDailyExact);
   els.needWeek.textContent = formatMoney(needWeeklyExact);
   els.needDayPlan.textContent = `Planning avg: ${formatMoney(needDailyPlan)}/day`;
   els.needWeekPlan.textContent = `Planning avg: ${formatMoney(needWeeklyPlan)}/week`;
+
+  if (els.summaryPanel) {
+    els.summaryPanel.classList.toggle("expanded", state.summaryExpanded);
+    els.summaryPanel.classList.toggle("collapsed", !state.summaryExpanded);
+  }
+  if (els.statusExpand) {
+    els.statusExpand.textContent = state.summaryExpanded ? "Hide summary" : "View summary";
+  }
 
   if (els.summaryCountRemaining) els.summaryCountRemaining.textContent = remainingItems.length;
   if (els.summaryCountOverdue) els.summaryCountOverdue.textContent = overdue.length;
@@ -1499,7 +1560,7 @@ function renderSummary(list) {
 
 function renderZeroState() {
   if (!els.zeroState) return;
-  if (state.templates.length === 0) {
+  if (state.templates.length === 0 && isFirstRunCompleted()) {
     els.zeroState.classList.remove("hidden");
   } else {
     els.zeroState.classList.add("hidden");
@@ -2137,9 +2198,11 @@ async function applyProposal(proposal) {
     } else if (intent === "SHOW_SUMMARY" || intent === "SHOW_DASHBOARD") {
       state.view = "today";
       renderView();
-      els.summarySheet?.classList.remove("hidden");
+      state.summaryExpanded = true;
+      renderDashboard();
     } else {
-      els.summarySheet?.classList.remove("hidden");
+      state.summaryExpanded = true;
+      renderDashboard();
     }
     return { ok: true, message: "Opened the requested section." };
   }
@@ -2973,7 +3036,8 @@ function handleNudgeAction(cta) {
     state.view = "setup";
     renderView();
   } else {
-    els.summarySheet?.classList.remove("hidden");
+    state.summaryExpanded = true;
+    renderDashboard();
   }
 }
 
@@ -3420,8 +3484,8 @@ async function applyImport() {
     });
     state.pendingImport = null;
     renderImportPreview();
+    await setOnboardingComplete(true);
     if (AJL_WEB_MODE && state.webMeta) {
-      state.webMeta.firstRunCompleted = true;
       state.webMeta.editCountSinceBackup = 0;
       saveWebMeta(state.webMeta);
       state.lastBackupAt = state.webMeta.lastBackupAt || state.lastBackupAt;
@@ -3465,6 +3529,8 @@ async function saveSettings(updates) {
   const payload = {
     defaults: state.settings.defaults,
     categories: state.settings.categories,
+    firstRunCompleted: state.settings.firstRunCompleted,
+    hasCompletedOnboarding: state.settings.hasCompletedOnboarding,
     ...updates,
   };
   const res = await fetch("/api/settings", {
@@ -3749,6 +3815,16 @@ function renderSetupCta() {
   els.setupCta.classList.toggle("hidden", !show);
 }
 
+function renderFirstVisitHero() {
+  if (!els.firstVisitHero) return;
+  const hasTemplates = Array.isArray(state.templates) && state.templates.length > 0;
+  const hasItems = Array.isArray(state.instances) && state.instances.length > 0;
+  const isEmptyState = !hasTemplates && !hasItems && !isFirstRunCompleted();
+  const hide = !isEmptyState || state.readOnly || state.safeMode;
+  els.firstVisitHero.classList.toggle("hidden", hide);
+  document.body.classList.toggle("landing", !hide);
+}
+
 async function updateStorageHealth() {
   if (!els.storageHealth) return;
   if (!AJL_WEB_MODE) {
@@ -3772,11 +3848,17 @@ async function updateStorageHealth() {
 
 function maybeShowFirstRunWizard() {
   if (!AJL_WEB_MODE || !state.webMeta || !els.wizardModal) return;
-  if (state.webMeta.firstRunCompleted) return;
+  if (state.webMeta.hasCompletedOnboarding) return;
   const hasTemplates = Array.isArray(state.templates) && state.templates.length > 0;
   const hasItems = Array.isArray(state.instances) && state.instances.length > 0;
+  const isEmptyState = !hasTemplates && !hasItems && !isFirstRunCompleted();
+  if (isEmptyState) {
+    // Landing hero replaces the old wizard for empty-state onboarding.
+    return;
+  }
   if (hasTemplates || hasItems) {
     state.webMeta.firstRunCompleted = true;
+    state.webMeta.hasCompletedOnboarding = true;
     saveWebMeta(state.webMeta);
     return;
   }
@@ -4538,6 +4620,7 @@ function renderDashboard() {
   const derived = deriveInstances();
   const base = getBaseInstances(derived);
   renderSummary(base);
+  renderFirstVisitHero();
   renderZeroState();
   renderStatusBar(base);
   renderActionQueue(base);
@@ -4707,21 +4790,10 @@ function bindEvents() {
     });
   }
 
-  if (els.statusExpand && els.summarySheet) {
+  if (els.statusExpand) {
     els.statusExpand.addEventListener("click", () => {
-      els.summarySheet.classList.remove("hidden");
-    });
-  }
-  if (els.summaryClose && els.summarySheet) {
-    els.summaryClose.addEventListener("click", () => {
-      els.summarySheet.classList.add("hidden");
-    });
-  }
-  if (els.summarySheet) {
-    els.summarySheet.addEventListener("click", (event) => {
-      if (event.target === els.summarySheet) {
-        els.summarySheet.classList.add("hidden");
-      }
+      state.summaryExpanded = !state.summaryExpanded;
+      renderDashboard();
     });
   }
 
@@ -4893,10 +4965,7 @@ function bindEvents() {
 
   if (els.wizardSkip) {
     els.wizardSkip.addEventListener("click", () => {
-      if (AJL_WEB_MODE && state.webMeta) {
-        state.webMeta.firstRunCompleted = true;
-        saveWebMeta(state.webMeta);
-      }
+      setOnboardingComplete(true);
       closeWizard();
       renderSetupCta();
     });
@@ -4914,6 +4983,28 @@ function bindEvents() {
       renderView();
       els.templateForm?.scrollIntoView({ behavior: "smooth", block: "start" });
       els.templateName?.focus();
+    });
+  }
+
+  if (els.firstVisitImport && els.importBackup) {
+    els.firstVisitImport.addEventListener("click", () => {
+      els.importBackup.click();
+    });
+  }
+
+  if (els.firstVisitTemplate) {
+    els.firstVisitTemplate.addEventListener("click", () => {
+      state.view = "setup";
+      renderView();
+      els.templateForm?.scrollIntoView({ behavior: "smooth", block: "start" });
+      els.templateName?.focus();
+    });
+  }
+
+  if (els.firstVisitContinue) {
+    els.firstVisitContinue.addEventListener("click", async () => {
+      await setOnboardingComplete(true);
+      renderDashboard();
     });
   }
 
@@ -5257,11 +5348,8 @@ function bindEvents() {
       els.templateActive.checked = true;
       await refreshAll();
       recordMutation();
-      if (AJL_WEB_MODE && state.webMeta) {
-        state.webMeta.firstRunCompleted = true;
-        saveWebMeta(state.webMeta);
-        closeWizard();
-      }
+      await setOnboardingComplete(true);
+      closeWizard();
     } else if (els.templateError) {
       let message = "Unable to add bill.";
       try {
