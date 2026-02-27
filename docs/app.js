@@ -26,6 +26,7 @@ const state = {
   view: "today",
   safeMode: false,
   safeReason: "",
+  integrityStatus: "unknown",
   queueLaterCollapsed: true,
   templateRows: new Map(),
   filters: {
@@ -47,6 +48,7 @@ const state = {
   summaryExpanded: false,
   shareToken: null,
   shareInfo: null,
+  lanInfo: null,
   dataVersion: 0,
   summaryCache: null,
 };
@@ -65,6 +67,8 @@ const MAX_LLM_DUE = 8;
 const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
 const PROFILE_NAME_KEY = "ajl_profile_name";
 const BACKUP_LAST_KEY = "ajl_last_backup_at";
+const LOCAL_EDIT_COUNT_KEY = "ajl_local_edit_count";
+const LOCAL_BACKUP_REMINDER_KEY = "ajl_local_backup_reminder";
 const PWA_DB_NAME = "ajl_pwa";
 const PWA_DB_PREFIX = "ajl_pwa";
 const WEB_META_KEY = "auj_web_meta";
@@ -86,6 +90,21 @@ function unwrapApiData(payload) {
 async function readApiData(res) {
   const payload = await res.json().catch(() => null);
   return unwrapApiData(payload);
+}
+
+async function apiFetch(url, options = {}, opts = {}) {
+  const res = await fetch(url, options);
+  if (!res.ok && !opts.silent) {
+    let message = `Request failed (${res.status}).`;
+    try {
+      const data = await res.clone().json();
+      message = getErrorMessage(data, message);
+    } catch (err) {
+      // ignore
+    }
+    showSystemBanner(message);
+  }
+  return res;
 }
 
 function getErrorMessage(data, fallback) {
@@ -263,11 +282,14 @@ const els = {
   importConfirm: document.getElementById("import-confirm"),
   importModeChips: Array.from(document.querySelectorAll("#import-mode .chip")),
   exportMonth: document.getElementById("export-month"),
+  exportSqlite: document.getElementById("export-sqlite"),
   exportBackup: document.getElementById("export-backup"),
   importBackup: document.getElementById("import-backup"),
   resetLocalInline: document.getElementById("reset-local-inline"),
   clearFilters: document.getElementById("clear-filters"),
   storageHealth: document.getElementById("storage-health"),
+  lanUrl: document.getElementById("lan-url"),
+  lanCopy: document.getElementById("lan-copy"),
   previewReadonly: document.getElementById("preview-readonly"),
   setupCta: document.getElementById("setup-cta"),
   ctaImport: document.getElementById("cta-import"),
@@ -276,6 +298,7 @@ const els = {
   firstVisitImport: document.getElementById("first-visit-import"),
   firstVisitTemplate: document.getElementById("first-visit-template"),
   firstVisitContinue: document.getElementById("first-visit-continue"),
+  firstVisitWebNote: document.getElementById("first-visit-web-note"),
   wizardModal: document.getElementById("first-run-modal"),
   wizardImport: document.getElementById("wizard-import"),
   wizardTemplate: document.getElementById("wizard-template"),
@@ -312,6 +335,7 @@ const els = {
   toggleLater: document.getElementById("toggle-later"),
   queueSubtitle: document.getElementById("queue-subtitle"),
   markAllOverdue: document.getElementById("mark-all-overdue"),
+  markAllSoon: document.getElementById("mark-all-soon"),
   recentStrip: document.getElementById("recent-strip"),
   itemsList: document.getElementById("items-list"),
   searchInput: document.getElementById("search-input"),
@@ -331,6 +355,7 @@ const els = {
   reviewActivityList: document.getElementById("review-activity-list"),
   reviewSummary: document.getElementById("review-summary"),
   reviewList: document.getElementById("review-list"),
+  reviewExport: document.getElementById("review-export"),
   reviewFilters: Array.from(document.querySelectorAll("[data-review-range]")),
   defaultsPeriod: document.getElementById("defaults-period"),
   defaultsSort: document.getElementById("defaults-sort"),
@@ -340,6 +365,7 @@ const els = {
   categoryAdd: document.getElementById("category-add"),
   categoriesList: document.getElementById("categories-list"),
   startSafeMode: document.getElementById("start-safe-mode"),
+  integrityStatus: document.getElementById("integrity-status"),
   templateForm: document.getElementById("template-form"),
   templateError: document.getElementById("template-error"),
   templateName: document.getElementById("template-name"),
@@ -417,6 +443,14 @@ function formatMoney(value) {
     currency: "USD",
     minimumFractionDigits: 2,
   }).format(amount);
+}
+
+function escapeCsv(value) {
+  const raw = value == null ? "" : String(value);
+  if (raw.includes(",") || raw.includes("\"") || raw.includes("\n")) {
+    return `"${raw.replace(/\"/g, '""')}"`;
+  }
+  return raw;
 }
 
 function parseMoney(value) {
@@ -520,20 +554,34 @@ async function setOnboardingComplete(value) {
 }
 
 function recordMutation() {
-  if (!AJL_WEB_MODE || !state.webMeta) return;
-  state.webMeta.editCountSinceBackup = (state.webMeta.editCountSinceBackup || 0) + 1;
-  saveWebMeta(state.webMeta);
+  if (AJL_WEB_MODE) {
+    if (!state.webMeta) return;
+    state.webMeta.editCountSinceBackup = (state.webMeta.editCountSinceBackup || 0) + 1;
+    saveWebMeta(state.webMeta);
+    maybeShowBackupReminder();
+    return;
+  }
+  const current = loadLocalEditCount();
+  saveLocalEditCount(current + 1);
   maybeShowBackupReminder();
 }
 
 function maybeShowBackupReminder() {
-  if (!AJL_WEB_MODE || !state.webMeta) return;
-  if (state.webMeta.editCountSinceBackup < BACKUP_REMINDER_THRESHOLD) return;
   const now = Date.now();
-  const last = state.webMeta.lastBackupReminderAt || 0;
-  if (now - last < 24 * 60 * 60 * 1000) return;
-  state.webMeta.lastBackupReminderAt = now;
-  saveWebMeta(state.webMeta);
+  if (AJL_WEB_MODE) {
+    if (!state.webMeta) return;
+    if (state.webMeta.editCountSinceBackup < BACKUP_REMINDER_THRESHOLD) return;
+    const last = state.webMeta.lastBackupReminderAt || 0;
+    if (now - last < 24 * 60 * 60 * 1000) return;
+    state.webMeta.lastBackupReminderAt = now;
+    saveWebMeta(state.webMeta);
+  } else {
+    const editCount = loadLocalEditCount();
+    if (editCount < BACKUP_REMINDER_THRESHOLD) return;
+    const last = loadLocalBackupReminder();
+    if (now - last < 24 * 60 * 60 * 1000) return;
+    saveLocalBackupReminder(now);
+  }
   showToast("Tip: Export a backup.", "Export", () => {
     if (els.exportBackup) els.exportBackup.click();
   });
@@ -545,6 +593,40 @@ function loadLastBackupAt() {
     return raw ? Number(raw) : null;
   } catch (err) {
     return null;
+  }
+}
+
+function loadLocalEditCount() {
+  try {
+    const raw = localStorage.getItem(LOCAL_EDIT_COUNT_KEY);
+    return raw ? Number(raw) : 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
+function saveLocalEditCount(value) {
+  try {
+    localStorage.setItem(LOCAL_EDIT_COUNT_KEY, String(value));
+  } catch (err) {
+    // ignore
+  }
+}
+
+function loadLocalBackupReminder() {
+  try {
+    const raw = localStorage.getItem(LOCAL_BACKUP_REMINDER_KEY);
+    return raw ? Number(raw) : 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
+function saveLocalBackupReminder(value) {
+  try {
+    localStorage.setItem(LOCAL_BACKUP_REMINDER_KEY, String(value));
+  } catch (err) {
+    // ignore
   }
 }
 
@@ -896,7 +978,9 @@ function setMonthWithLock(year, month, lock = true) {
 function enterSafeMode(reason) {
   state.safeMode = true;
   state.safeReason = reason || "Safe mode enabled.";
+  state.integrityStatus = "safe";
   showSystemBanner(`Safe mode: ${state.safeReason} Use Setup → Reset local data or refresh without ?safe=1.`);
+  renderIntegrityStatus();
 }
 
 async function handleResetFlag() {
@@ -908,6 +992,8 @@ async function handleResetFlag() {
       try {
         localStorage.removeItem(WEB_META_KEY);
         localStorage.removeItem(BACKUP_LAST_KEY);
+        localStorage.removeItem(LOCAL_EDIT_COUNT_KEY);
+        localStorage.removeItem(LOCAL_BACKUP_REMINDER_KEY);
       } catch (err) {
         // ignore
       }
@@ -945,17 +1031,17 @@ function syncToCurrentMonth() {
 }
 
 async function ensureMonth() {
-  await fetch(`/api/ensure-month?year=${state.selectedYear}&month=${state.selectedMonth}`);
+  await apiFetch(`/api/ensure-month?year=${state.selectedYear}&month=${state.selectedMonth}`, {}, { silent: true });
 }
 
 async function loadTemplates() {
-  const res = await fetch("/api/templates");
+  const res = await apiFetch("/api/templates");
   const data = await readApiData(res);
   state.templates = Array.isArray(data) ? data : [];
 }
 
 async function loadInstances() {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/instances?year=${state.selectedYear}&month=${state.selectedMonth}`
   );
   const data = await readApiData(res);
@@ -964,7 +1050,7 @@ async function loadInstances() {
 }
 
 async function loadPayments() {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/payments?year=${state.selectedYear}&month=${state.selectedMonth}`
   );
   const data = await readApiData(res);
@@ -974,7 +1060,7 @@ async function loadPayments() {
 
 async function loadInstanceEvents(instanceId) {
   if (!instanceId) return [];
-  const res = await fetch(`/api/instances/${instanceId}/events`);
+  const res = await apiFetch(`/api/instances/${instanceId}/events`);
   const data = await readApiData(res);
   const events = Array.isArray(data) ? data : [];
   state.instanceEvents[instanceId] = events;
@@ -982,13 +1068,13 @@ async function loadInstanceEvents(instanceId) {
 }
 
 async function loadActivityEvents() {
-  const res = await fetch(`/api/instance-events?year=${state.selectedYear}&month=${state.selectedMonth}`);
+  const res = await apiFetch(`/api/instance-events?year=${state.selectedYear}&month=${state.selectedMonth}`);
   const data = await readApiData(res);
   state.activityEvents = Array.isArray(data) ? data : [];
 }
 
 async function loadFunds() {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/sinking-funds?year=${state.selectedYear}&month=${state.selectedMonth}&include_inactive=1`
   );
   const data = await readApiData(res);
@@ -996,7 +1082,7 @@ async function loadFunds() {
 }
 
 async function loadSettings() {
-  const res = await fetch("/api/settings");
+  const res = await apiFetch("/api/settings");
   const data = await readApiData(res);
   if (data && typeof data === "object") {
     const defaults = data.defaults || state.settings.defaults;
@@ -1022,7 +1108,7 @@ async function loadQwenAuthStatus() {
     return;
   }
   try {
-    const res = await fetch("/api/llm/qwen/oauth/status");
+    const res = await apiFetch("/api/llm/qwen/oauth/status", {}, { silent: true });
     if (!res.ok) return;
     const data = await res.json();
     if (data.disabled) {
@@ -1154,11 +1240,11 @@ function startQwenPolling() {
 }
 
 async function postAction(payload) {
-  const res = await fetch("/api/v1/actions", {
+  const res = await apiFetch("/api/v1/actions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action_id: crypto.randomUUID(), ...payload }),
-  });
+  }, { silent: true });
   return readApiData(res);
 }
 
@@ -1182,7 +1268,7 @@ async function loadCommandLog() {
   }
   if (!els.llmCommandLog) return;
   try {
-    const res = await fetch("/internal/agent/log?limit=12");
+    const res = await apiFetch("/internal/agent/log?limit=12", {}, { silent: true });
     if (!res.ok) return;
     const data = await res.json();
     state.commandLog = Array.isArray(data.items) ? data.items : [];
@@ -1199,7 +1285,7 @@ async function loadChatHistory() {
     return;
   }
   try {
-    const res = await fetch("/api/chat?limit=50");
+    const res = await apiFetch("/api/chat?limit=50", {}, { silent: true });
     if (!res.ok) return;
     const data = await res.json();
     state.llmHistory = Array.isArray(data.items)
@@ -1241,11 +1327,11 @@ function updateInstanceInState(updated) {
 
 async function addPayment(instanceId, amount) {
   if (state.readOnly) return;
-  const res = await fetch(`/api/instances/${instanceId}/payments`, {
+  const res = await apiFetch(`/api/instances/${instanceId}/payments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ amount }),
-  });
+  }, { silent: true });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     window.alert(data.error || "Unable to log update.");
@@ -1313,7 +1399,7 @@ function flashRow(instanceId) {
 
 async function undoPayment(paymentId) {
   if (state.readOnly) return;
-  const res = await fetch(`/api/payments/${paymentId}`, { method: "DELETE" });
+  const res = await apiFetch(`/api/payments/${paymentId}`, { method: "DELETE" }, { silent: true });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     window.alert(data.error || "Unable to undo update.");
@@ -1330,11 +1416,11 @@ async function undoPayment(paymentId) {
 
 async function patchInstance(id, body) {
   if (state.readOnly) return;
-  const res = await fetch(`/api/instances/${id}`, {
+  const res = await apiFetch(`/api/instances/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }, { silent: true });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     window.alert(data.error || "Unable to update item.");
@@ -1567,6 +1653,18 @@ function renderZeroState() {
   }
 }
 
+function validateLoadedState() {
+  const ok =
+    Array.isArray(state.templates) &&
+    Array.isArray(state.instances) &&
+    Array.isArray(state.payments) &&
+    Array.isArray(state.funds);
+  if (!ok) {
+    return { ok: false, reason: "Loaded data is invalid. Entering safe mode." };
+  }
+  return { ok: true };
+}
+
 function renderStatusBar(baseList) {
   if (!els.countRemaining || !els.countOverdue || !els.countSoon) return;
   const today = getTodayDateString();
@@ -1612,6 +1710,9 @@ function renderActionQueue(baseList) {
   }
   if (els.markAllOverdue) {
     els.markAllOverdue.disabled = overdue.length === 0;
+  }
+  if (els.markAllSoon) {
+    els.markAllSoon.disabled = dueSoon.length === 0;
   }
 
   const renderQueueRow = (item) => {
@@ -3823,6 +3924,17 @@ function renderFirstVisitHero() {
   const hide = !isEmptyState || state.readOnly || state.safeMode;
   els.firstVisitHero.classList.toggle("hidden", hide);
   document.body.classList.toggle("landing", !hide);
+  if (els.firstVisitWebNote) {
+    els.firstVisitWebNote.classList.toggle("hidden", !AJL_WEB_MODE);
+  }
+}
+
+function renderIntegrityStatus() {
+  if (!els.integrityStatus) return;
+  let label = "Integrity: Unknown";
+  if (state.integrityStatus === "ok") label = "Integrity: OK";
+  if (state.integrityStatus === "safe") label = "Integrity: Safe mode";
+  els.integrityStatus.textContent = label;
 }
 
 async function updateStorageHealth() {
@@ -3843,6 +3955,26 @@ async function updateStorageHealth() {
     }
   } catch (err) {
     els.storageHealth.textContent = "Storage health: Unknown";
+  }
+}
+
+async function loadLanInfo() {
+  if (AJL_WEB_MODE || !els.lanUrl) return;
+  if (state.lanInfo) return;
+  try {
+    const res = await fetch("/api/lan");
+    if (!res.ok) return;
+    const data = await res.json();
+    state.lanInfo = data;
+    const urls = Array.isArray(data.urls) ? data.urls : [];
+    if (urls.length > 0) {
+      els.lanUrl.textContent = urls[0];
+      if (urls.length > 1) {
+        els.lanUrl.title = urls.join("\n");
+      }
+    }
+  } catch (err) {
+    // ignore
   }
 }
 
@@ -4143,6 +4275,53 @@ function renderMonthReview(baseList) {
     empty.textContent = "No updates logged yet.";
     els.reviewList.appendChild(empty);
   }
+}
+
+function exportReviewCsv() {
+  const derived = deriveInstances();
+  const baseList = getBaseInstances(derived);
+  const payments = state.payments || [];
+  const lastPaidMap = new Map();
+  payments.forEach((payment) => {
+    const current = lastPaidMap.get(payment.instance_id);
+    if (!current || payment.paid_date > current) {
+      lastPaidMap.set(payment.instance_id, payment.paid_date);
+    }
+  });
+  const lines = [
+    [
+      "name",
+      "category",
+      "due_date",
+      "status",
+      "amount",
+      "amount_paid",
+      "amount_remaining",
+      "last_update",
+    ].join(","),
+  ];
+  baseList.forEach((item) => {
+    const row = [
+      item.name_snapshot,
+      item.category_snapshot || "",
+      item.due_date || "",
+      item.status_derived || item.status || "",
+      Number(item.amount || 0),
+      Number(item.amount_paid || 0),
+      Number(item.amount_remaining || 0),
+      lastPaidMap.get(item.id) || item.paid_date || "",
+    ].map(escapeCsv);
+    lines.push(row.join(","));
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `au_jour_le_jour_review_${state.selectedYear}-${pad2(
+    state.selectedMonth
+  )}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function renderTemplates() {
@@ -4658,6 +4837,7 @@ function renderView() {
     renderImportPreview();
     renderSetupCta();
     updateStorageHealth();
+    renderIntegrityStatus();
     if (AJL_WEB_MODE && els.previewReadonly && state.webMeta) {
       els.previewReadonly.checked = !!state.webMeta.readOnlyPreview;
     }
@@ -4681,6 +4861,15 @@ async function refreshAll() {
       loadCommandLog(),
       loadChatHistory(),
     ]);
+    const valid = validateLoadedState();
+    if (!valid.ok) {
+      enterSafeMode(valid.reason);
+      state.view = "setup";
+      renderView();
+      return;
+    }
+    state.integrityStatus = "ok";
+    renderIntegrityStatus();
     renderDefaults();
     renderCategories();
     renderDashboard();
@@ -4830,6 +5019,44 @@ function bindEvents() {
     });
   }
 
+  if (els.markAllSoon) {
+    els.markAllSoon.addEventListener("click", async () => {
+      const derived = deriveInstances();
+      const base = getBaseInstances(derived);
+      const today = getTodayDateString();
+      const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+      const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
+      const soonCutoff = new Date();
+      soonCutoff.setDate(soonCutoff.getDate() + Math.max(1, dueSoonDays));
+      const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
+      const dueSoon = base.filter(
+        (item) =>
+          item.status_derived !== "skipped" &&
+          item.amount_remaining > 0 &&
+          currentMonth &&
+          item.due_date >= today &&
+          item.due_date <= soonCutoffString
+      );
+      if (dueSoon.length === 0) {
+        window.alert("No due-soon items.");
+        return;
+      }
+      const preview = dueSoon.slice(0, 5).map((item) => item.name_snapshot).join(", ");
+      const suffix = dueSoon.length > 5 ? "…" : "";
+      const confirmed = window.confirm(`Mark ${dueSoon.length} due-soon item(s) done?\n${preview}${suffix}`);
+      if (!confirmed) return;
+      const ids = dueSoon.map((item) => item.id);
+      for (const item of dueSoon) {
+        await markPaid(item.id, { silent: true });
+      }
+      showToast(`Marked ${dueSoon.length} due-soon item(s) done.`, "Undo", async () => {
+        for (const id of ids) {
+          await markPending(id);
+        }
+      });
+    });
+  }
+
   if (els.toggleLater) {
     els.toggleLater.addEventListener("click", () => {
       state.queueLaterCollapsed = !state.queueLaterCollapsed;
@@ -4919,9 +5146,36 @@ function bindEvents() {
       saveWebMeta(state.webMeta);
     } else {
       saveLastBackupAt(now);
+      saveLocalEditCount(0);
+      saveLocalBackupReminder(0);
     }
     renderBackupStatus();
   });
+
+  if (els.exportSqlite) {
+    els.exportSqlite.addEventListener("click", async () => {
+      if (AJL_WEB_MODE) {
+        showToast("SQLite export is available in the local app only.");
+        return;
+      }
+      try {
+        const res = await fetch("/api/export/sqlite");
+        if (!res.ok) throw new Error("SQLite export failed.");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "au_jour_le_jour.sqlite";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        showToast("Exported SQLite database.");
+      } catch (err) {
+        showToast("SQLite export failed.");
+      }
+    });
+  }
 
   if (els.importPick && els.importBackup) {
     els.importPick.addEventListener("click", () => {
@@ -5211,6 +5465,12 @@ function bindEvents() {
     });
   }
 
+  if (els.reviewExport) {
+    els.reviewExport.addEventListener("click", () => {
+      exportReviewCsv();
+    });
+  }
+
   els.categoryFilter.addEventListener("change", () => {
     state.filters.category = els.categoryFilter.value;
     renderDashboard();
@@ -5308,10 +5568,54 @@ function bindEvents() {
     });
   }
 
+  if (els.lanCopy) {
+    els.lanCopy.addEventListener("click", async () => {
+      const text = els.lanUrl?.textContent?.trim();
+      if (!text || text === "—") return;
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast("LAN URL copied.");
+      } catch (err) {
+        showToast("Unable to copy LAN URL.");
+      }
+    });
+  }
+
   window.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const isTyping =
+      target &&
+      (target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable);
+    if (isTyping) return;
+
     if (event.key === "/" && document.activeElement !== els.searchInput) {
       event.preventDefault();
       els.searchInput?.focus();
+      return;
+    }
+
+    const detailVisible = state.splitView
+      ? !!state.selectedInstanceId
+      : els.detailsDrawer && !els.detailsDrawer.classList.contains("hidden");
+
+    if (event.key.toLowerCase() === "d" && detailVisible && state.selectedInstanceId && !state.readOnly) {
+      event.preventDefault();
+      markPaid(state.selectedInstanceId);
+      return;
+    }
+
+    if (event.key.toLowerCase() === "e" && detailVisible && els.detailEditName) {
+      event.preventDefault();
+      els.detailEditName.focus();
+      return;
+    }
+
+    if (event.key.toLowerCase() === "l" && detailVisible && els.detailLogAmount && !state.readOnly) {
+      event.preventDefault();
+      els.detailLogAmount.focus();
+      return;
     }
   });
 
@@ -5642,6 +5946,7 @@ async function init() {
   }
   bindEvents();
   renderView();
+  loadLanInfo();
   if (AJL_WEB_MODE && state.webMeta?.readOnlyPreview) {
     applyReadOnlyPreview(true);
   }

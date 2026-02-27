@@ -117,6 +117,7 @@
                   <li>Fast mark-done workflow with full history</li>
                   <li>Local-first with export and backup control</li>
                 </ul>
+                <div id="first-visit-web-note" class="first-visit-note hidden">Web version stores data in your browser. Export backups regularly.</div>
                 <div class="first-visit-actions">
                   <button id="first-visit-import" class="primary-btn">Import your backup</button>
                   <button id="first-visit-template" class="ghost-btn">Create your first template</button>
@@ -132,7 +133,10 @@
                   <div class="queue-title">Action Queue</div>
                   <div id="queue-subtitle" class="queue-sub">Overdue: 0 items</div>
                 </div>
-                <button id="mark-all-overdue" class="btn-small btn-primary readonly-hide">Mark all overdue done</button>
+                <div class="queue-actions">
+                  <button id="mark-all-overdue" class="btn-small btn-primary readonly-hide">Mark all overdue done</button>
+                  <button id="mark-all-soon" class="btn-small ghost-btn readonly-hide">Mark all due soon done</button>
+                </div>
               </div>
 
               <div class="queue-section">
@@ -249,7 +253,10 @@
           <div id="review-activity-list" class="list"></div>
         </div>
         <div id="review-card" class="card">
-          <div class="card-title">Month review</div>
+          <div class="card-header">
+            <div class="card-title">Month review</div>
+            <button id="review-export" class="ghost-btn small">Export review CSV</button>
+          </div>
           <div id="review-summary" class="review-grid"></div>
           <div id="review-list" class="list"></div>
         </div>
@@ -285,6 +292,7 @@ cd AuJourLeJour
           <div class="backup-actions">
             <button id="export-backup" class="primary-btn">Export backup JSON</button>
             <button id="export-month" class="ghost-btn">Export month CSV</button>
+            <button id="export-sqlite" class="ghost-btn local-only">Export SQLite</button>
           </div>
           <div id="backup-last" class="meta">No backup saved yet.</div>
 
@@ -312,6 +320,16 @@ cd AuJourLeJour
             </div>
           </div>
           <div id="storage-health" class="meta"></div>
+        </section>
+
+        <section id="local-tools" class="setup-block local-only">
+          <div class="block-title">Local tools</div>
+          <div class="block-sub">LAN access and direct database download.</div>
+          <div class="lan-row">
+            <div class="meta">LAN access</div>
+            <div id="lan-url" class="mono">—</div>
+            <button id="lan-copy" class="ghost-btn">Copy</button>
+          </div>
         </section>
 
         <section class="setup-block">
@@ -437,6 +455,7 @@ cd AuJourLeJour
         <section class="setup-block">
           <div class="block-title">Data safety</div>
           <div class="block-sub">Reset local data or start in safe mode if something breaks.</div>
+          <div id="integrity-status" class="meta">Integrity: Unknown</div>
           <div class="safety-actions readonly-hide">
             <button id="clear-filters" class="ghost-btn">Clear filters</button>
             <button id="reset-local-inline" class="ghost-btn danger">Reset local data</button>
