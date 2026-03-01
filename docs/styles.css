@@ -761,11 +761,6 @@ body.scrolled .status-bar {
   color: var(--muted);
 }
 
-.item-sub {
-  font-size: 12px;
-  color: var(--muted);
-}
-
 .item-meta {
   display: flex;
   align-items: center;

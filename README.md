@@ -44,6 +44,14 @@ Alternative (auto‑install deps, defaults to `PORT=6709`):
 PORT=4567 ./start.sh
 ```
 
+By default `start.sh` will stop existing AJL server processes first (`KILL_EXISTING=1`).
+
+Stop local server:
+
+```sh
+PORT=4567 ./stop.sh
+```
+
 ## Web Version
 
 The web build is static and runs in your browser at [aujourlejour.xyz](https://aujourlejour.xyz).
@@ -56,10 +64,24 @@ Daily backup: `data/backups/au_jour_le_jour_YYYY-MM-DD.sqlite`
 
 Use **Backup/Export** to export/import JSON or CSV.
 
+## Recovery
+
+If browser storage gets corrupted:
+
+- Web reset page: [aujourlejour.xyz/reset](https://aujourlejour.xyz/reset)
+- Web safe mode: [aujourlejour.xyz/safe](https://aujourlejour.xyz/safe)
+
+Local app routes:
+
+- `http://localhost:PORT/reset`
+- `http://localhost:PORT/safe`
+
 ## Integration (MyCasaPro)
 
 AJL is a standalone ledger designed to integrate with the MyCasaPro Finance Agent later.
 Integration must use the contract endpoints (no direct DB access).
+
+Contract reference: `CONTRACT.md`
 
 V1 endpoints:
 - `GET /api/v1/summary?year=YYYY&month=MM&essentials_only=true`
@@ -75,7 +97,33 @@ Run the automated suite:
 npm run janitor
 ```
 
+Run full web/local consistency + QA checks:
+
+```sh
+npm run qa
+```
+
+`npm run qa` runs `sync:web` first, then `janitor`.
+
+Check web/docs sync without modifying files:
+
+```sh
+npm run sync:web:check
+```
+
+Strict CI-style checks (non-mutating):
+
+```sh
+npm run qa:strict
+```
+
 ## License
 
 MIT License. See `LICENSE` for the full text.
 This software is provided “as is”, without warranty of any kind.
+
+## Project Docs
+
+- Integration contract: `CONTRACT.md`
+- Contributing guide: `CONTRIBUTING.md`
+- Security policy: `SECURITY.md`

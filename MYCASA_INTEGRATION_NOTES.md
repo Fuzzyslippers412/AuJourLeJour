@@ -1,6 +1,6 @@
 # MyCasa Pro Integration Notes (Mamadou / Finance)
 
-These notes are based on a read-only review of `/Users/chefmbororo/Desktop/mycasa-pro`. No changes were made to MyCasa Pro.
+These notes are based on a read-only review of a local `mycasa-pro` workspace. No changes were made to MyCasa Pro.
 
 ## Observed Agent System (MyCasa Pro)
 

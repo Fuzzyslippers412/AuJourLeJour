@@ -7,6 +7,7 @@ cd "$DIR"
 PORT="${PORT:-6709}"
 export PORT
 export LLM_PROVIDER="${LLM_PROVIDER:-qwen-oauth}"
+KILL_EXISTING="${KILL_EXISTING:-1}"
 
 LOG_PATH="${LOG_PATH:-$DIR/data/server.log}"
 PID_FILE="$DIR/data/server.pid"
@@ -21,6 +22,10 @@ fi
 if [ ! -d "$DIR/node_modules" ]; then
   echo "Installing dependencies..."
   npm install
+fi
+
+if [ "$KILL_EXISTING" = "1" ]; then
+  PORT="$PORT" "$DIR/stop.sh" >/dev/null 2>&1 || true
 fi
 
 if [ -f "$PID_FILE" ]; then

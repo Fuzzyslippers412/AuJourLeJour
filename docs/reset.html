@@ -14,7 +14,7 @@
   <body>
     <div class="card">
       <h1>Reset local data</h1>
-      <p>This clears local storage for the web app.</p>
+      <p>This clears local browser storage for the tracker UI.</p>
       <button id="reset-btn">Reset now</button>
       <div id="status" class="meta"></div>
     </div>
@@ -22,13 +22,37 @@
       async function reset() {
         const status = document.getElementById('status');
         status.textContent = 'Clearing local data...';
+        try { localStorage.clear(); } catch (e) {}
+        try { sessionStorage.clear(); } catch (e) {}
         try {
-          localStorage.removeItem('AJL_WEB_DB_V1');
-          localStorage.removeItem('AJL_WEB_META_V1');
-        } catch (err) {
-          // ignore
-        }
-        status.textContent = 'Done. You can refresh the app.';
+          if (window.indexedDB && indexedDB.databases) {
+            const dbs = await indexedDB.databases();
+            await Promise.all((dbs || []).map((db) => new Promise((resolve) => {
+              if (!db || !db.name) return resolve();
+              const req = indexedDB.deleteDatabase(db.name);
+              req.onsuccess = () => resolve();
+              req.onerror = () => resolve();
+              req.onblocked = () => resolve();
+            })));
+          } else if (window.indexedDB) {
+            indexedDB.deleteDatabase('ajl_pwa');
+            indexedDB.deleteDatabase('ajl_web');
+          }
+        } catch (e) {}
+        try {
+          if ('caches' in window) {
+            const keys = await caches.keys();
+            await Promise.all(keys.map((k) => caches.delete(k)));
+          }
+        } catch (e) {}
+        try {
+          if ('serviceWorker' in navigator) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map((r) => r.unregister()));
+          }
+        } catch (e) {}
+        status.textContent = 'Done. Redirecting...';
+        setTimeout(() => location.replace('/'), 300);
       }
       document.getElementById('reset-btn').addEventListener('click', reset);
     </script>

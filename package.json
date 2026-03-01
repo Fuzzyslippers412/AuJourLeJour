@@ -7,7 +7,12 @@
     "start": "node server.js",
     "start:6709": "PORT=6709 node server.js",
     "seed": "node scripts/seed_templates.js",
-    "janitor": "node scripts/janitor.js"
+    "sync:web": "node scripts/sync_web_assets.js",
+    "sync:web:check": "node scripts/sync_web_assets.js --check",
+    "qa": "npm run sync:web && npm run janitor",
+    "qa:strict": "npm run sync:web:check && npm run janitor",
+    "janitor": "node scripts/janitor.js",
+    "ajl": "node scripts/ajl_cli.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.1",

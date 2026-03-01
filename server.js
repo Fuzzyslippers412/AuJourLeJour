@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const express = require("express");
 const Database = require("better-sqlite3");
 const { randomUUID } = require("crypto");
@@ -441,10 +442,24 @@ function generateShareToken() {
   return require("crypto").randomBytes(24).toString("base64url");
 }
 
+function isValidShareToken(token) {
+  return typeof token === "string" && /^[A-Za-z0-9_-]{24,128}$/.test(token);
+}
+
 const shareLookup = new Map();
+function pruneShareLookup(nowTs) {
+  if (shareLookup.size < 1000) return;
+  for (const [key, entry] of shareLookup.entries()) {
+    if (!entry || typeof entry.ts !== "number" || nowTs - entry.ts > 5 * 60 * 1000) {
+      shareLookup.delete(key);
+    }
+  }
+}
+
 function rateLimitShareLookup(req, res) {
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
   const now = Date.now();
+  pruneShareLookup(now);
   const entry = shareLookup.get(ip) || { count: 0, ts: now };
   if (now - entry.ts > 60000) {
     entry.count = 0;
@@ -643,6 +658,18 @@ ensureDailyBackup();
 
 app.use(express.json({ limit: "2mb" }));
 app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  next();
+});
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/") || req.path.startsWith("/internal/")) {
+    res.setHeader("Cache-Control", "no-store");
+  }
+  next();
+});
+app.use((req, res, next) => {
   if (req.path.startsWith("/s/")) return next();
   if (req.path.startsWith("/api/shares/") && req.method === "GET") return next();
   ensureOwnerCookie(req, res);
@@ -746,7 +773,14 @@ function normalizeInstance(row) {
 function parseYearMonth(req) {
   const year = Number(req.query.year);
   const month = Number(req.query.month);
-  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    year < 2000 ||
+    year > 2100 ||
+    month < 1 ||
+    month > 12
+  ) {
     return null;
   }
   return { year, month };
@@ -1267,420 +1301,6 @@ function computeBehaviorFeatures(year, month, windowSize) {
     },
     per_bill: perBill,
   };
-}
-function ensureMonthSettingsTable() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS month_settings (
-      year INTEGER NOT NULL,
-      month INTEGER NOT NULL,
-      cash_start REAL NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (year, month)
-    );
-  `);
-}
-
-function ensureMetaTable() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-  `);
-}
-
-function getTableInfo(name) {
-  return db.prepare(`PRAGMA table_info(${name})`).all();
-}
-
-function hasColumn(info, name) {
-  return info.some((col) => col.name === name);
-}
-
-function getMeta(key) {
-  const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(key);
-  return row ? row.value : null;
-}
-
-function setMeta(key, value) {
-  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(
-    key,
-    value
-  );
-}
-
-function initSchema() {
-  const hasTemplates = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='templates'")
-    .get();
-  const hasInstances = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='instances'")
-    .get();
-
-  if (!hasTemplates || !hasInstances) {
-    createSchemaV2();
-    ensureActionsTable();
-    ensurePaymentsTable();
-    ensureInstanceEventsTable();
-    ensureMonthSettingsTable();
-    ensureMetaTable();
-    ensureSinkingTables();
-    ensureSharesTable();
-    return;
-  }
-
-  const templateInfo = getTableInfo("templates");
-  const instanceInfo = getTableInfo("instances");
-  const templateId = templateInfo.find((col) => col.name === "id");
-  const instanceId = instanceInfo.find((col) => col.name === "id");
-  const instanceTemplate = instanceInfo.find((col) => col.name === "template_id");
-
-  const isV2 =
-    templateId &&
-    /TEXT/i.test(templateId.type || "") &&
-    instanceId &&
-    /TEXT/i.test(instanceId.type || "") &&
-    instanceTemplate &&
-    /TEXT/i.test(instanceTemplate.type || "");
-
-  if (!isV2) {
-    migrateLegacySchema();
-  }
-
-  const refreshedTemplateInfo = getTableInfo("templates");
-  if (!hasColumn(refreshedTemplateInfo, "match_payee_key")) {
-    db.exec("ALTER TABLE templates ADD COLUMN match_payee_key TEXT");
-  }
-  if (!hasColumn(refreshedTemplateInfo, "match_amount_tolerance")) {
-    db.exec(
-      "ALTER TABLE templates ADD COLUMN match_amount_tolerance REAL NOT NULL DEFAULT 0"
-    );
-  }
-
-  ensureActionsTable();
-  ensurePaymentsTable();
-  ensureInstanceEventsTable();
-  ensureMonthSettingsTable();
-  ensureMetaTable();
-  ensureSinkingTables();
-  ensureSharesTable();
-}
-
-function migrateLegacySchema() {
-  const suffix = Date.now();
-  const legacyTemplates = `templates_legacy_${suffix}`;
-  const legacyInstances = `instances_legacy_${suffix}`;
-
-  db.exec(`ALTER TABLE templates RENAME TO ${legacyTemplates};`);
-  db.exec(`ALTER TABLE instances RENAME TO ${legacyInstances};`);
-
-  createSchemaV2();
-  ensureActionsTable();
-  ensurePaymentsTable();
-  ensureInstanceEventsTable();
-  ensureMonthSettingsTable();
-  ensureMetaTable();
-
-  const legacyTemplateRows = db
-    .prepare(`SELECT * FROM ${legacyTemplates}`)
-    .all();
-  const legacyInstanceRows = db
-    .prepare(`SELECT * FROM ${legacyInstances}`)
-    .all();
-
-  const templateIdMap = new Map();
-  const insertTemplate = db.prepare(
-    `INSERT INTO templates (
-      id, name, category, amount_default, due_day, autopay, essential, active, default_note,
-      match_payee_key, match_amount_tolerance, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const insertInstance = db.prepare(
-    `INSERT INTO instances (
-      id, template_id, year, month, name_snapshot, category_snapshot, amount, due_date,
-      autopay_snapshot, essential_snapshot, status, paid_date, note, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-
-  const run = db.transaction(() => {
-    for (const tmpl of legacyTemplateRows) {
-      const newId = randomUUID();
-      templateIdMap.set(tmpl.id, newId);
-      insertTemplate.run(
-        newId,
-        tmpl.name,
-        tmpl.category || null,
-        tmpl.amount_default,
-        tmpl.due_day,
-        tmpl.autopay ? 1 : 0,
-        tmpl.essential ? 1 : 0,
-        tmpl.active ? 1 : 0,
-        tmpl.default_note || null,
-        null,
-        0,
-        tmpl.created_at || nowIso(),
-        tmpl.updated_at || nowIso()
-      );
-    }
-
-    for (const inst of legacyInstanceRows) {
-      const mappedTemplateId = templateIdMap.get(inst.template_id);
-      if (!mappedTemplateId) continue;
-      insertInstance.run(
-        randomUUID(),
-        mappedTemplateId,
-        inst.year,
-        inst.month,
-        inst.name_snapshot,
-        inst.category_snapshot || null,
-        inst.amount,
-        inst.due_date,
-        inst.autopay_snapshot ? 1 : 0,
-        inst.essential_snapshot ? 1 : 0,
-        inst.status,
-        inst.paid_date || null,
-        inst.note || null,
-        inst.created_at || nowIso(),
-        inst.updated_at || nowIso()
-      );
-    }
-  });
-
-  run();
-}
-
-function migrateLegacyPayments() {
-  ensurePaymentsTable();
-  ensureMetaTable();
-  const marker = getMeta("payments_migrated_v1");
-  if (marker) return;
-
-  const paidRows = db
-    .prepare("SELECT id, amount, paid_date, updated_at, status FROM instances WHERE status = 'paid'")
-    .all();
-
-  if (paidRows.length === 0) {
-    setMeta("payments_migrated_v1", nowIso());
-    return;
-  }
-
-  const insertPayment = db.prepare(
-    `INSERT INTO payment_events (id, instance_id, amount, paid_date, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  );
-
-  const run = db.transaction(() => {
-    for (const row of paidRows) {
-      const paidDate = row.paid_date || (row.updated_at || nowIso()).slice(0, 10);
-      insertPayment.run(
-        randomUUID(),
-        row.id,
-        Number(row.amount || 0),
-        paidDate,
-        row.updated_at || nowIso()
-      );
-    }
-    setMeta("payments_migrated_v1", nowIso());
-  });
-
-  run();
-}
-
-initSchema();
-migrateLegacyPayments();
-ensureDailyBackup();
-
-app.use(express.json({ limit: "2mb" }));
-app.use(express.static(path.join(__dirname, "public")));
-
-app.use("/api/v1", (req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
-
-app.use("/internal", (req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function ensureDailyBackup() {
-  const now = new Date();
-  const dateStr = `${now.getFullYear()}-${ledger.pad2(
-    now.getMonth() + 1
-  )}-${ledger.pad2(now.getDate())}`;
-  const backupFile = path.join(backupDir, `au_jour_le_jour_${dateStr}.sqlite`);
-  if (fs.existsSync(backupFile)) return;
-  if (!fs.existsSync(dbFile)) return;
-  fs.copyFileSync(dbFile, backupFile);
-}
-
-function nowIsoLocal() {
-  const now = new Date();
-  const offset = -now.getTimezoneOffset();
-  const sign = offset >= 0 ? "+" : "-";
-  const hours = ledger.pad2(Math.floor(Math.abs(offset) / 60));
-  const minutes = ledger.pad2(Math.abs(offset) % 60);
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
-    .toISOString()
-    .slice(0, 19);
-  return `${local}${sign}${hours}:${minutes}`;
-}
-
-function todayDate() {
-  const d = new Date();
-  return `${d.getFullYear()}-${ledger.pad2(d.getMonth() + 1)}-${ledger.pad2(
-    d.getDate()
-  )}`;
-}
-
-function normalizeTemplate(row) {
-  return {
-    ...row,
-    autopay: Boolean(row.autopay),
-    essential: Boolean(row.essential),
-    active: Boolean(row.active),
-    match_amount_tolerance: Number(row.match_amount_tolerance || 0),
-  };
-}
-
-function normalizeInstance(row) {
-  return {
-    ...row,
-    autopay_snapshot: Boolean(row.autopay_snapshot),
-    essential_snapshot: Boolean(row.essential_snapshot),
-  };
-}
-
-function parseYearMonth(req) {
-  const year = Number(req.query.year);
-  const month = Number(req.query.month);
-  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
-    return null;
-  }
-  return { year, month };
-}
-
-function parseEssentialsOnly(value) {
-  if (value === undefined || value === null) return true;
-  if (value === true || value === "true" || value === "1" || value === 1) return true;
-  if (value === false || value === "false" || value === "0" || value === 0) return false;
-  return true;
-}
-
-function toBoolean(value, defaultValue) {
-  if (value === undefined || value === null) return defaultValue;
-  if (value === true || value === "true" || value === 1 || value === "1") return true;
-  if (value === false || value === "false" || value === 0 || value === "0") return false;
-  return defaultValue;
-}
-
-function validateTemplateInput(body) {
-  const name = String(body?.name || "").trim();
-  if (!name) return { error: "Name is required" };
-
-  const amountDefault = Number(body?.amount_default);
-  if (!Number.isFinite(amountDefault) || amountDefault < 0) {
-    return { error: "Amount must be >= 0" };
-  }
-
-  const dueDay = Number(body?.due_day);
-  if (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) {
-    return { error: "Due day must be 1-31" };
-  }
-
-  const matchToleranceRaw = body?.match_amount_tolerance;
-  const matchTolerance =
-    matchToleranceRaw === undefined || matchToleranceRaw === null || matchToleranceRaw === ""
-      ? 0
-      : Number(matchToleranceRaw);
-  if (!Number.isFinite(matchTolerance) || matchTolerance < 0) {
-    return { error: "Match amount tolerance must be >= 0" };
-  }
-
-  return {
-    name,
-    category: String(body?.category || "").trim() || null,
-    amount_default: amountDefault,
-    due_day: dueDay,
-    autopay: toBoolean(body?.autopay, false) ? 1 : 0,
-    essential: toBoolean(body?.essential, true) ? 1 : 0,
-    active: toBoolean(body?.active, true) ? 1 : 0,
-    default_note: String(body?.default_note || "").trim() || null,
-    match_payee_key: String(body?.match_payee_key || "").trim() || null,
-    match_amount_tolerance: matchTolerance,
-  };
-}
-
-function validateDateString(value, label) {
-  if (value === null) return null;
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return `${label} must be YYYY-MM-DD`;
-  }
-  return null;
-}
-
-function deriveStatus(instance, amountPaid) {
-  if (instance.status === "skipped") return "skipped";
-  if (amountPaid <= 0) return "pending";
-  if (amountPaid < Number(instance.amount || 0)) return "partial";
-  return "paid";
-}
-
-function attachPayments(instances) {
-  if (instances.length === 0) return [];
-  const ids = instances.map((row) => row.id);
-  const placeholders = ids.map(() => "?").join(",");
-  const totals = db
-    .prepare(
-      `SELECT instance_id, SUM(amount) as total FROM payment_events WHERE instance_id IN (${placeholders}) GROUP BY instance_id`
-    )
-    .all(...ids);
-  const totalsMap = new Map(
-    totals.map((row) => [row.instance_id, Number(row.total || 0)])
-  );
-
-  return instances.map((row) => {
-    const normalized = normalizeInstance(row);
-    const amountPaid = Number(normalized.amount_paid ?? totalsMap.get(row.id) ?? 0);
-    const amountDue = Number(normalized.amount || 0);
-    const amountRemaining = Math.max(0, amountDue - amountPaid);
-    return {
-      ...normalized,
-      amount_paid: amountPaid,
-      amount_remaining: amountRemaining,
-      status_derived: deriveStatus(normalized, amountPaid),
-    };
-  });
-}
-
-function getPaymentsForMonth(year, month) {
-  return db
-    .prepare(
-      `SELECT p.id, p.instance_id, p.amount, p.paid_date, p.created_at,
-              i.name_snapshot, i.year, i.month
-       FROM payment_events p
-       JOIN instances i ON i.id = p.instance_id
-       WHERE i.year = ? AND i.month = ?
-       ORDER BY p.paid_date DESC, p.created_at DESC`
-    )
-    .all(year, month);
-}
-
-function getAmountPaid(instanceId) {
-  const row = db
-    .prepare("SELECT SUM(amount) as total FROM payment_events WHERE instance_id = ?")
-    .get(instanceId);
-  return Number(row?.total || 0);
 }
 
 function ensureMonth(year, month) {
@@ -2251,6 +1871,23 @@ app.post("/api/reset-local", (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/lan", (req, res) => {
+  const interfaces = os.networkInterfaces();
+  const addresses = [];
+  Object.values(interfaces).forEach((infos) => {
+    (infos || []).forEach((info) => {
+      if (info && info.family === "IPv4" && !info.internal) {
+        addresses.push(info.address);
+      }
+    });
+  });
+  const hostHeader = req.get("host") || "";
+  const headerPort = Number(hostHeader.split(":")[1]);
+  const port = Number.isFinite(headerPort) ? headerPort : PORT;
+  const urls = addresses.map((addr) => `http://${addr}:${port}`);
+  res.json({ ok: true, port, addresses, urls });
+});
+
 app.get("/s/:token", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
@@ -2289,7 +1926,7 @@ app.post("/api/shares", (req, res) => {
 app.patch("/api/shares/:token", (req, res) => {
   if (!requireOwner(req, res)) return;
   const token = String(req.params.token || "");
-  if (!token) return res.status(400).json({ error: "Invalid token" });
+  if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
   const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
   if (!row) return res.status(404).json({ error: "Share not found" });
   const updates = [];
@@ -2319,7 +1956,7 @@ app.patch("/api/shares/:token", (req, res) => {
 app.post("/api/shares/:token/regenerate", (req, res) => {
   if (!requireOwner(req, res)) return;
   const token = String(req.params.token || "");
-  if (!token) return res.status(400).json({ error: "Invalid token" });
+  if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
   const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
   if (!row) return res.status(404).json({ error: "Share not found" });
   const newToken = generateShareToken();
@@ -2346,7 +1983,7 @@ app.post("/api/shares/:token/regenerate", (req, res) => {
 app.post("/api/shares/:token/publish", (req, res) => {
   if (!requireOwner(req, res)) return;
   const token = String(req.params.token || "");
-  if (!token) return res.status(400).json({ error: "Invalid token" });
+  if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
   const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
   if (!row) return res.status(404).json({ error: "Share not found" });
   const payload = req.body?.payload;
@@ -2368,7 +2005,7 @@ app.post("/api/shares/:token/publish", (req, res) => {
 app.get("/api/shares/:token", (req, res) => {
   if (!rateLimitShareLookup(req, res)) return;
   const token = String(req.params.token || "");
-  if (!token) return res.status(400).json({ error: "Invalid token" });
+  if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
   const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
   if (!row) return res.status(404).json({ error: "This link is invalid or has been disabled." });
   if (!row.is_active) return res.status(410).json({ error: "This link has been disabled by the owner." });
@@ -2703,6 +2340,20 @@ app.get("/api/export/month.csv", (req, res) => {
     )}.csv"`
   );
   res.send(lines.join("\n"));
+});
+
+app.get("/api/export/sqlite", (req, res) => {
+  if (!fs.existsSync(dbFile)) {
+    return res.status(404).json({ error: "Database not found" });
+  }
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader(
+    "Content-Disposition",
+    "attachment; filename=\"au_jour_le_jour.sqlite\""
+  );
+  const stream = fs.createReadStream(dbFile);
+  stream.on("error", () => res.status(500).end());
+  stream.pipe(res);
 });
 
 app.get("/api/export/backup.json", (req, res) => {
@@ -3770,13 +3421,22 @@ app.get("/safe", (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    app: "au-jour-le-jour",
+    mode: "local",
+    app_version: APP_VERSION,
+    schema_version: SCHEMA_VERSION,
+  });
 });
 
 if (require.main === module) {
   if (!disableLock) {
     ensureSingleInstance();
   }
+  ensureDailyBackup();
+  const backupTimer = setInterval(ensureDailyBackup, 6 * 60 * 60 * 1000);
+  backupTimer.unref();
   app.listen(PORT, HOST, () => {
     console.log(`Au Jour Le Jour running on http://${HOST}:${PORT}`);
     if (PUBLIC_BASE_URL) {

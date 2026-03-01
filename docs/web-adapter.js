@@ -37,7 +37,10 @@
   function jsonResponse(status, payload) {
     return new Response(JSON.stringify(payload), {
       status,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      },
     });
   }
 
@@ -521,7 +524,14 @@
     const db = init.db;
 
     if (path === "/api/health" && req.method === "GET") {
-      return ok({ mode: "web", storage: "localStorage", schemaVersion: db.schemaVersion });
+      return ok({
+        app: "au-jour-le-jour",
+        mode: "web",
+        app_version: "web",
+        schema_version: String(db.schemaVersion),
+        storage: "localStorage",
+        schemaVersion: db.schemaVersion,
+      });
     }
 
     if (path.startsWith("/api/shares")) {
@@ -886,6 +896,30 @@
       if (!bodyRes.ok) return jsonResponse(400, { ok: false, error: bodyRes.error });
       const payload = bodyRes.body || {};
       if (!payload || typeof payload !== "object") return bad("INVALID_INPUT", "Invalid payload");
+      if (
+        payload.schema_version !== undefined &&
+        String(payload.schema_version) !== "1"
+      ) {
+        return bad(
+          "INVALID_INPUT",
+          "Unsupported schema_version",
+          { schema_version: payload.schema_version }
+        );
+      }
+      const listFields = [
+        "templates",
+        "instances",
+        "payment_events",
+        "instance_events",
+        "month_settings",
+        "sinking_funds",
+        "sinking_events",
+      ];
+      for (const field of listFields) {
+        if (payload[field] !== undefined && !Array.isArray(payload[field])) {
+          return bad("INVALID_INPUT", `Invalid ${field} payload`);
+        }
+      }
       const fresh = defaultDb();
       const data = getData(fresh);
       data.templates = Array.isArray(payload.templates) ? payload.templates : [];
@@ -1191,6 +1225,16 @@
   window.fetch = async (input, init) => {
     const req = input instanceof Request ? input : new Request(input, init);
     const url = new URL(req.url, window.location.origin);
+    if (url.pathname.startsWith("/internal/")) {
+      return jsonResponse(503, {
+        ok: false,
+        error: {
+          code: "UNAVAILABLE",
+          message: "Mamdou is available in the local app only.",
+          details: {},
+        },
+      });
+    }
     if (url.pathname.startsWith("/api/")) {
       try {
         return await handleApi(req);

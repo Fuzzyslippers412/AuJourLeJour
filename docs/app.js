@@ -26,7 +26,6 @@ const state = {
   view: "today",
   safeMode: false,
   safeReason: "",
-  integrityStatus: "unknown",
   queueLaterCollapsed: true,
   templateRows: new Map(),
   filters: {
@@ -49,6 +48,7 @@ const state = {
   shareToken: null,
   shareInfo: null,
   lanInfo: null,
+  integrityStatus: "unknown",
   dataVersion: 0,
   summaryCache: null,
 };
