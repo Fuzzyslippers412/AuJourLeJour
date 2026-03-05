@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Au Jour Le Jour — Essentials tracker</title>
     <meta name="description" content="Essentials bill tracker." />
+    <script>
+      window.AJL_SHARE_BASE_URL = window.AJL_SHARE_BASE_URL || "https://agent.aujourlejour.xyz";
+      window.AJL_SHARE_VIEWER_BASE_URL = window.AJL_SHARE_VIEWER_BASE_URL || "https://aujourlejour.xyz";
+    </script>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -25,7 +29,7 @@
       </div>
 
       <div class="top-actions">
-        <button id="share-open" class="ghost-btn local-only">Share</button>
+        <button id="share-open" class="ghost-btn">Share</button>
         <label class="toggle">
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
@@ -44,6 +48,7 @@
         <div class="shared-left">
           <div class="shared-title">Shared list</div>
           <div id="shared-owner" class="shared-owner"></div>
+          <div id="shared-updated" class="shared-updated"></div>
         </div>
         <div class="shared-badge">Read-only</div>
       </div>
@@ -126,6 +131,31 @@
                 <div class="first-visit-trust">No financial connections. Your data stays under your control.</div>
               </div>
             </div>
+
+            <section id="assistant-inline" class="card assistant-inline local-only">
+              <div class="assistant-inline-head">
+                <div>
+                  <div class="assistant-inline-title">Mamdou quick actions</div>
+                  <div id="agent-inline-connection" class="assistant-inline-sub">Connect Mamdou to run commands.</div>
+                </div>
+                <button id="agent-inline-open" class="ghost-btn small">Open full panel</button>
+              </div>
+              <div class="assistant-inline-input-row">
+                <input id="agent-inline-input" class="assistant-inline-input" type="text" placeholder='Try: "mark rent done", "skip internet", "add phone $170 monthly"' />
+                <button id="agent-inline-send" class="btn-small btn-primary">Run</button>
+              </div>
+              <div class="assistant-inline-chips">
+                <button class="chip" data-agent-shortcut="show overdue">Overdue</button>
+                <button class="chip" data-agent-shortcut="show due soon">Due soon</button>
+                <button class="chip" data-agent-shortcut="show templates">Templates</button>
+                <button class="chip" data-agent-shortcut="show summary">Summary</button>
+              </div>
+              <div id="agent-inline-status" class="assistant-inline-status meta"></div>
+              <div id="agent-inline-actions" class="assistant-actions-row hidden">
+                <button id="agent-inline-confirm" class="btn-pill primary">Confirm</button>
+                <button id="agent-inline-cancel" class="btn-pill">Cancel</button>
+              </div>
+            </section>
 
             <section class="card action-queue" id="action-queue">
               <div class="queue-header">
@@ -332,6 +362,17 @@ cd AuJourLeJour
           </div>
         </section>
 
+        <section id="diagnostics-section" class="setup-block local-only">
+          <div class="block-title">Diagnostics</div>
+          <div class="block-sub">Run a local runtime and Mamdou health snapshot.</div>
+          <div class="backup-actions">
+            <button id="diagnostics-run" class="ghost-btn">Run diagnostics</button>
+            <button id="diagnostics-clear-cache" class="ghost-btn">Clear Mamdou cache</button>
+            <button id="diagnostics-copy" class="ghost-btn">Copy JSON</button>
+          </div>
+          <pre id="diagnostics-output" class="diagnostics-output">No diagnostics run yet.</pre>
+        </section>
+
         <section class="setup-block">
           <div class="block-title">Defaults</div>
           <div class="block-sub">Period view, sort order, and due-soon window.</div>
@@ -465,7 +506,7 @@ cd AuJourLeJour
       </section>
     </main>
 
-    <div id="share-modal" class="modal hidden local-only">
+    <div id="share-modal" class="modal hidden">
       <div class="modal-content">
         <div class="modal-header">
           <div>
@@ -483,11 +524,46 @@ cd AuJourLeJour
             <input id="share-live" type="checkbox" checked />
             <span>Live updates</span>
           </label>
+          <label class="share-owner">
+            <span class="modal-sub">Link expiry</span>
+            <select id="share-expiry" class="select">
+              <option value="never">Never</option>
+              <option value="24h">24 hours</option>
+              <option value="7d">7 days</option>
+              <option value="30d">30 days</option>
+              <option value="custom">Custom (existing)</option>
+            </select>
+          </label>
+          <label id="share-expiry-custom-wrap" class="share-owner hidden">
+            <span class="modal-sub">Custom expiry date/time</span>
+            <input id="share-expiry-custom" class="share-link" type="datetime-local" />
+          </label>
+          <label class="share-owner">
+            <span class="modal-sub">Display name (optional)</span>
+            <input id="share-owner-label" class="share-link" type="text" maxlength="120" placeholder="Household" />
+          </label>
+          <div class="share-privacy">
+            <div class="modal-sub">Privacy options</div>
+            <label class="toggle">
+              <input id="share-include-amounts" type="checkbox" checked />
+              <span>Include amounts</span>
+            </label>
+            <label class="toggle">
+              <input id="share-include-notes" type="checkbox" checked />
+              <span>Include notes</span>
+            </label>
+            <label class="toggle">
+              <input id="share-include-categories" type="checkbox" checked />
+              <span>Include categories</span>
+            </label>
+          </div>
           <div class="share-actions">
             <button id="share-create" class="ghost-btn">Create link</button>
+            <button id="share-refresh" class="ghost-btn">Update now</button>
             <button id="share-regenerate" class="ghost-btn">Regenerate link</button>
             <button id="share-disable" class="ghost-btn danger">Disable link</button>
           </div>
+          <div id="share-relay-status" class="modal-sub share-status"></div>
           <div class="modal-footer-hint">
             This link is read-only.
           </div>

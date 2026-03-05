@@ -31,6 +31,10 @@ body.web .local-only {
   display: none !important;
 }
 
+body.read-only .assistant-inline {
+  display: none !important;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
@@ -255,6 +259,11 @@ body.split-view #details-drawer {
   color: var(--muted);
 }
 
+.shared-updated {
+  font-size: 12px;
+  color: #64748b;
+}
+
 .shared-badge {
   font-size: 12px;
   padding: 4px 10px;
@@ -296,11 +305,37 @@ body.read-only .shared-header {
   font-size: 13px;
 }
 
+.share-owner {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+}
+
 .share-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 8px;
+}
+
+.share-status {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.share-status.ok {
+  color: #166534;
+}
+
+.share-status.warn {
+  color: #9a3412;
+}
+
+.share-privacy {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 .backup-actions {
@@ -586,6 +621,21 @@ body.scrolled .status-bar {
 .lan-row .mono {
   font-size: 13px;
   color: var(--text);
+}
+
+.diagnostics-output {
+  margin: 12px 0 0;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .queue-title {
@@ -1270,6 +1320,58 @@ body.landing #zero-state {
   color: var(--muted-2);
 }
 
+.assistant-inline {
+  margin-top: 12px;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.assistant-inline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.assistant-inline-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.assistant-inline-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.assistant-inline-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.assistant-inline-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+
+.assistant-inline-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assistant-inline-chips .chip {
+  font-size: 12px;
+}
+
+.assistant-inline-status {
+  min-height: 18px;
+}
+
 .fab {
   position: fixed;
   bottom: 20px;
@@ -1372,6 +1474,12 @@ body.landing #zero-state {
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .assistant-inline-input-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .template-form {

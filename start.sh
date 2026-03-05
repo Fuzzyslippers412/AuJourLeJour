@@ -39,5 +39,30 @@ fi
 nohup node server.js > "$LOG_PATH" 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
-echo "Started Au Jour Le Jour on port ${PORT} (PID ${NEW_PID})."
+
+READY=0
+for _ in {1..50}; do
+  if ! kill -0 "$NEW_PID" 2>/dev/null; then
+    break
+  fi
+  HEALTH_JSON="$(curl -fsS "http://127.0.0.1:${PORT}/api/health" 2>/dev/null || true)"
+  if [ -n "${HEALTH_JSON}" ]; then
+    HEALTH_PID="$(printf '%s' "${HEALTH_JSON}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);process.stdout.write(String(j.pid||''));}catch(e){}})" 2>/dev/null || true)"
+    if [ "${HEALTH_PID}" = "${NEW_PID}" ]; then
+      READY=1
+      break
+    fi
+  fi
+  sleep 0.1
+done
+
+if [ "$READY" = "1" ]; then
+  echo "Started Au Jour Le Jour on port ${PORT} (PID ${NEW_PID})."
+  echo "Log: ${LOG_PATH}"
+  exit 0
+fi
+
+echo "Failed to start Au Jour Le Jour on port ${PORT}."
 echo "Log: ${LOG_PATH}"
+tail -n 60 "$LOG_PATH" || true
+exit 1

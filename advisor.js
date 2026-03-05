@@ -2,15 +2,75 @@ const PROVIDER = (process.env.LLM_PROVIDER || "qwen-oauth").toLowerCase();
 
 const DEFAULT_MODEL = process.env.LLM_MODEL || "qwen2.5-coder:7b-instruct";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
-const REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 15000;
-const MAX_RETRIES = Number(process.env.LLM_MAX_RETRIES) || 1;
-const LLM_MAX_TOKENS = Number(process.env.LLM_MAX_TOKENS) || 512;
-const LLM_TEMPERATURE = Number(process.env.LLM_TEMPERATURE) || 0.2;
+const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 15000;
+const DEFAULT_MAX_RETRIES = Number(process.env.LLM_MAX_RETRIES) || 1;
+const DEFAULT_LLM_MAX_TOKENS = Number(process.env.LLM_MAX_TOKENS) || 512;
+const DEFAULT_LLM_TEMPERATURE = Number(process.env.LLM_TEMPERATURE) || 0.2;
 
 const { execFile } = require("child_process");
 const QWEN_CLI_BIN = process.env.QWEN_CLI_BIN || "qwen";
 const QWEN_CLI_MODEL = process.env.QWEN_CLI_MODEL || "";
 const QWEN_OAUTH_MODEL = process.env.QWEN_OAUTH_MODEL || "qwen3-coder-plus";
+const ADVISOR_CACHE = new Map();
+
+const TASK_PROFILES = {
+  default: {
+    timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
+    retries: DEFAULT_MAX_RETRIES,
+    max_tokens: DEFAULT_LLM_MAX_TOKENS,
+    temperature: DEFAULT_LLM_TEMPERATURE,
+    cache_ttl_ms: 0,
+  },
+  nudges: {
+    timeout_ms: 6000,
+    retries: 0,
+    max_tokens: 220,
+    temperature: 0.15,
+    cache_ttl_ms: 45000,
+  },
+  command: {
+    timeout_ms: 9000,
+    retries: 0,
+    max_tokens: 280,
+    temperature: 0.1,
+    cache_ttl_ms: 0,
+  },
+  intake: {
+    timeout_ms: 12000,
+    retries: 1,
+    max_tokens: 520,
+    temperature: 0.15,
+    cache_ttl_ms: 0,
+  },
+  habit: {
+    timeout_ms: 9000,
+    retries: 0,
+    max_tokens: 300,
+    temperature: 0.15,
+    cache_ttl_ms: 60000,
+  },
+  ask: {
+    timeout_ms: 9000,
+    retries: 0,
+    max_tokens: 260,
+    temperature: 0.2,
+    cache_ttl_ms: 20000,
+  },
+  assist: {
+    timeout_ms: 9000,
+    retries: 0,
+    max_tokens: 260,
+    temperature: 0.2,
+    cache_ttl_ms: 15000,
+  },
+  agent: {
+    timeout_ms: 10000,
+    retries: 0,
+    max_tokens: 360,
+    temperature: 0.15,
+    cache_ttl_ms: 0,
+  },
+};
 
 const QWEN_OAUTH_MODEL_ALIASES = new Map([
   ["qwen3.5", "qwen3-coder-plus"],
@@ -183,10 +243,10 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-async function withRetries(fn) {
+async function withRetries(fn, retries) {
   let attempt = 0;
   let lastErr = null;
-  const max = Math.max(0, MAX_RETRIES);
+  const max = Math.max(0, Number.isFinite(retries) ? retries : DEFAULT_MAX_RETRIES);
   while (attempt <= max) {
     try {
       return await fn(attempt);
@@ -200,7 +260,38 @@ async function withRetries(fn) {
   throw lastErr;
 }
 
-async function callOllama(prompt, systemPrompt) {
+function getTaskProfile(task) {
+  return { ...TASK_PROFILES.default, ...(TASK_PROFILES[task] || {}) };
+}
+
+function buildCacheKey(provider, task, payload) {
+  try {
+    return `${provider}::${task}::${JSON.stringify(payload || {})}`;
+  } catch (err) {
+    return null;
+  }
+}
+
+function readCachedResult(cacheKey, profile) {
+  if (!cacheKey || !profile?.cache_ttl_ms) return null;
+  const hit = ADVISOR_CACHE.get(cacheKey);
+  if (!hit) return null;
+  if (Date.now() - hit.at > profile.cache_ttl_ms) {
+    ADVISOR_CACHE.delete(cacheKey);
+    return null;
+  }
+  return hit.value;
+}
+
+function writeCachedResult(cacheKey, profile, value) {
+  if (!cacheKey || !profile?.cache_ttl_ms || !value?.ok) return;
+  ADVISOR_CACHE.set(cacheKey, { at: Date.now(), value });
+  if (ADVISOR_CACHE.size <= 120) return;
+  const oldest = ADVISOR_CACHE.keys().next().value;
+  if (oldest) ADVISOR_CACHE.delete(oldest);
+}
+
+async function callOllama(prompt, systemPrompt, profile) {
   if (process.env.LLM_DISABLED === "1") {
     return { ok: false, error: "LLM disabled" };
   }
@@ -220,12 +311,12 @@ async function callOllama(prompt, systemPrompt) {
               { role: "system", content: systemPrompt },
               { role: "user", content: prompt },
             ],
-            options: { num_predict: LLM_MAX_TOKENS, temperature: LLM_TEMPERATURE },
+            options: { num_predict: profile.max_tokens, temperature: profile.temperature },
           }),
         },
-        REQUEST_TIMEOUT_MS
+        profile.timeout_ms
       )
-    );
+    , profile.retries);
   } catch (err) {
     return { ok: false, error: `LLM request failed: ${err.message}` };
   }
@@ -279,7 +370,7 @@ function extractQwenCliContent(output) {
   return String(output).trim();
 }
 
-async function callQwenCli(prompt, systemPrompt) {
+async function callQwenCli(prompt, systemPrompt, profile) {
   if (process.env.LLM_DISABLED === "1") {
     return { ok: false, error: "LLM disabled" };
   }
@@ -291,7 +382,10 @@ async function callQwenCli(prompt, systemPrompt) {
 
   let result;
   try {
-    result = await withRetries(() => execFileAsync(QWEN_CLI_BIN, args, REQUEST_TIMEOUT_MS));
+    result = await withRetries(
+      () => execFileAsync(QWEN_CLI_BIN, args, profile.timeout_ms),
+      profile.retries
+    );
   } catch (err) {
     if (err.code === "ENOENT") {
       return {
@@ -325,7 +419,7 @@ function extractJson(text) {
   }
 }
 
-async function callQwenOAuth(prompt, oauth, systemPrompt) {
+async function callQwenOAuth(prompt, oauth, systemPrompt, profile) {
   if (process.env.LLM_DISABLED === "1") {
     return { ok: false, error: "LLM disabled" };
   }
@@ -349,17 +443,17 @@ async function callQwenOAuth(prompt, oauth, systemPrompt) {
           body: JSON.stringify({
             model: modelName,
             stream: false,
-            max_tokens: LLM_MAX_TOKENS,
-            temperature: LLM_TEMPERATURE,
+            max_tokens: profile.max_tokens,
+            temperature: profile.temperature,
             messages: [
               { role: "system", content: systemPrompt },
               { role: "user", content: prompt },
             ],
           }),
         },
-        REQUEST_TIMEOUT_MS
+        profile.timeout_ms
       )
-    );
+    , profile.retries);
   };
 
   const requestedModel = resolveQwenOAuthModel(QWEN_OAUTH_MODEL);
@@ -395,14 +489,18 @@ async function callQwenOAuth(prompt, oauth, systemPrompt) {
 async function query(task, payload, options = {}) {
   const prompt = buildPrompt(task, payload);
   const systemPrompt = task === "agent" ? SYSTEM_PROMPT_AGENT : SYSTEM_PROMPT;
+  const profile = getTaskProfile(task);
   let response;
   const provider = (options.provider || PROVIDER).toLowerCase();
+  const cacheKey = buildCacheKey(provider, task, payload);
+  const cached = readCachedResult(cacheKey, profile);
+  if (cached) return cached;
   if (provider === "ollama") {
-    response = await callOllama(prompt, systemPrompt);
+    response = await callOllama(prompt, systemPrompt, profile);
   } else if (provider === "qwen-cli" || provider === "qwen") {
-    response = await callQwenCli(prompt, systemPrompt);
+    response = await callQwenCli(prompt, systemPrompt, profile);
   } else if (provider === "qwen-oauth") {
-    response = await callQwenOAuth(prompt, options.oauth, systemPrompt);
+    response = await callQwenOAuth(prompt, options.oauth, systemPrompt, profile);
   } else {
     return { ok: false, error: `Unknown LLM provider: ${provider}` };
   }
@@ -411,7 +509,9 @@ async function query(task, payload, options = {}) {
   }
   try {
     const parsed = extractJson(response.content);
-    return { ok: true, data: parsed };
+    const result = { ok: true, data: parsed };
+    writeCachedResult(cacheKey, profile, result);
+    return result;
   } catch (err) {
     const authUrl = extractAuthUrl(response.content);
     if (authUrl) {

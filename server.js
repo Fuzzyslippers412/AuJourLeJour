@@ -1,12 +1,13 @@
 const path = require("path");
 const fs = require("fs");
-const os = require("os");
 const express = require("express");
 const Database = require("better-sqlite3");
-const { randomUUID } = require("crypto");
+const { randomUUID, createHash } = require("crypto");
 const ledger = require("./ledger");
 const advisor = require("./advisor");
 const qwenOauth = require("./qwen_oauth");
+const { runMigrations } = require("./migrations");
+const { createShareRuntime } = require("./modules/share_runtime");
 
 const APP_VERSION = "1.1.0";
 const SCHEMA_VERSION = "2";
@@ -15,6 +16,13 @@ const app = express();
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT) || 4567;
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
+const SHARE_RELAY_BASE_URL = String(process.env.SHARE_RELAY_BASE_URL || "").trim().replace(/\/+$/, "");
+const SHARE_VIEWER_BASE_URL = String(process.env.SHARE_VIEWER_BASE_URL || "").trim().replace(/\/+$/, "");
+const BACKUP_RETENTION_DAYS = Math.max(3, Number(process.env.AJL_BACKUP_RETENTION_DAYS || 30));
+const MUTATION_RATE_PER_MIN = Math.max(20, Number(process.env.AJL_MUTATION_RATE_PER_MIN || 240));
+const LOCAL_API_KEY = String(process.env.AJL_LOCAL_API_KEY || "").trim();
+const LLM_CACHE_TTL_MS = Math.max(0, Number(process.env.AJL_LLM_CACHE_TTL_MS || 15000));
+const LLM_ROUTE_TIMEOUT_MS = Math.max(3000, Number(process.env.AJL_LLM_ROUTE_TIMEOUT_MS || 22000));
 
 const dataDir = process.env.AJL_DATA_DIR || path.join(__dirname, "data");
 const dbFile = process.env.AJL_DB_PATH || path.join(dataDir, "au_jour_le_jour.sqlite");
@@ -26,6 +34,30 @@ fs.mkdirSync(backupDir, { recursive: true });
 
 const db = new Database(dbFile);
 db.pragma("journal_mode = WAL");
+
+const shareRuntime = createShareRuntime({
+  shareViewerBaseUrl: SHARE_VIEWER_BASE_URL,
+  publicBaseUrl: PUBLIC_BASE_URL,
+  port: PORT,
+});
+
+const metrics = {
+  started_at: nowIsoLocal(),
+  requests_total: 0,
+  request_errors: 0,
+  mutation_requests: 0,
+  mutation_limited: 0,
+  actions_replayed: 0,
+  actions_conflicted: 0,
+  llm_requests: 0,
+  llm_errors: 0,
+  llm_cache_hits: 0,
+  llm_timeouts: 0,
+  last_llm_latency_ms: null,
+  avg_llm_latency_ms: null,
+};
+let llmLatencySamples = 0;
+const llmCache = new Map();
 
 function ensureSingleInstance() {
   try {
@@ -364,6 +396,33 @@ function ensureSharesTable() {
   `);
 }
 
+function ensureAssistantTables() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_command_log (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      user_text TEXT,
+      kind TEXT NOT NULL,
+      summary TEXT,
+      payload TEXT,
+      result TEXT,
+      status TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_log_created ON agent_command_log (created_at);
+
+    CREATE TABLE IF NOT EXISTS assistant_chat (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      role TEXT NOT NULL,
+      text TEXT NOT NULL,
+      meta TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assistant_chat_created ON assistant_chat (created_at);
+  `);
+}
+
 function getTableInfo(name) {
   return db.prepare(`PRAGMA table_info(${name})`).all();
 }
@@ -429,8 +488,12 @@ function ensureOwnerCookie(req, res) {
 }
 
 function requireOwner(req, res) {
-  const cookies = parseCookies(req);
   const secret = getOwnerSecret();
+  const headerSecret = String(req.headers["x-ajl-share-owner"] || "").trim();
+  if (headerSecret && headerSecret === secret) {
+    return true;
+  }
+  const cookies = parseCookies(req);
   if (!cookies.ajl_owner || cookies.ajl_owner !== secret) {
     res.status(401).json({ error: "Unauthorized" });
     return false;
@@ -444,6 +507,165 @@ function generateShareToken() {
 
 function isValidShareToken(token) {
   return typeof token === "string" && /^[A-Za-z0-9_-]{24,128}$/.test(token);
+}
+
+const MAX_SHARE_ITEMS = 3000;
+const MAX_SHARE_PAYLOAD_BYTES = 2_000_000;
+const SHARE_STATUS_VALUES = new Set(["pending", "partial", "paid", "skipped"]);
+
+function sanitizeOwnerLabel(value) {
+  if (value === undefined || value === null) return null;
+  const clean = String(value).trim();
+  if (!clean) return null;
+  return clean.slice(0, 120);
+}
+
+function parseShareExpiresAt(value) {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (value === null || value === "") return { ok: true, value: null };
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) {
+    return { ok: false, error: "Invalid expires_at" };
+  }
+  if (parsed.getTime() <= Date.now()) {
+    return { ok: false, error: "expires_at must be in the future" };
+  }
+  return { ok: true, value: parsed.toISOString() };
+}
+
+function isExpiredIso(iso) {
+  if (!iso) return false;
+  const ts = new Date(String(iso)).getTime();
+  if (!Number.isFinite(ts)) return false;
+  return ts <= Date.now();
+}
+
+function expireStaleShares() {
+  const now = nowIso();
+  db.prepare(
+    "UPDATE shares SET is_active = 0, updated_at = ? WHERE is_active = 1 AND expires_at IS NOT NULL AND expires_at <= ?"
+  ).run(now, now);
+}
+
+function pruneOauthDeviceSessions() {
+  const cutoffIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare(
+    `DELETE FROM oauth_device_sessions
+     WHERE status IN ('approved','expired','error','superseded')
+       AND created_at < ?`
+  ).run(cutoffIso);
+}
+
+function validateSharePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, error: "Invalid payload" };
+  }
+  if (!Array.isArray(payload.items)) {
+    return { ok: false, error: "Invalid payload" };
+  }
+  if (payload.items.length > MAX_SHARE_ITEMS) {
+    return { ok: false, error: `Too many items (max ${MAX_SHARE_ITEMS})` };
+  }
+  if (payload.period && !/^\d{4}-\d{2}$/.test(String(payload.period))) {
+    return { ok: false, error: "Invalid period format" };
+  }
+  if (payload.schema_version !== undefined) {
+    const sv = String(payload.schema_version);
+    if (sv !== "1") {
+      return { ok: false, error: "Unsupported payload schema_version" };
+    }
+  }
+  for (const item of payload.items) {
+    if (!item || typeof item !== "object") {
+      return { ok: false, error: "Invalid payload item" };
+    }
+    if (!item.id || typeof item.id !== "string") {
+      return { ok: false, error: "Invalid payload item id" };
+    }
+    if (!item.name_snapshot || typeof item.name_snapshot !== "string") {
+      return { ok: false, error: "Invalid payload item name" };
+    }
+    if (!item.due_date || !/^\d{4}-\d{2}-\d{2}$/.test(String(item.due_date))) {
+      return { ok: false, error: "Invalid payload item due_date" };
+    }
+    if (item.status && !SHARE_STATUS_VALUES.has(String(item.status))) {
+      return { ok: false, error: "Invalid payload item status" };
+    }
+  }
+  return { ok: true };
+}
+
+function parseSharePublishYearMonth(body) {
+  const now = new Date();
+  const fallback = { year: now.getFullYear(), month: now.getMonth() + 1 };
+  if (!body || typeof body !== "object") return fallback;
+  if (body.year === undefined && body.month === undefined) return fallback;
+  const year = Number(body.year);
+  const month = Number(body.month);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  return { year, month };
+}
+
+function buildSharePayloadFromMonth(year, month, options = {}) {
+  ensureMonth(year, month);
+  const includeAmounts = options.includeAmounts !== false;
+  const includeNotes = options.includeNotes !== false;
+  const includeCategories = options.includeCategories !== false;
+  const ownerLabel = sanitizeOwnerLabel(options.ownerLabel);
+  const settings = getMetaJson("settings") || {};
+  const categories = includeCategories && Array.isArray(settings.categories) ? settings.categories : [];
+  const items = getInstances(year, month);
+  return {
+    schema_version: "1",
+    period: `${year}-${ledger.pad2(month)}`,
+    owner_label: ownerLabel,
+    generated_at: nowIso(),
+    privacy: {
+      include_amounts: includeAmounts,
+      include_notes: includeNotes,
+      include_categories: includeCategories,
+    },
+    items: items.map((item) => ({
+      id: item.id,
+      template_id: item.template_id,
+      year: item.year,
+      month: item.month,
+      name_snapshot: item.name_snapshot,
+      category_snapshot: includeCategories ? item.category_snapshot || null : null,
+      amount: includeAmounts ? Number(item.amount || 0) : null,
+      due_date: item.due_date,
+      status: item.status_derived || item.status || "pending",
+      paid_date: item.paid_date || null,
+      amount_paid: includeAmounts ? Number(item.amount_paid || 0) : null,
+      amount_remaining: includeAmounts ? Number(item.amount_remaining || 0) : null,
+      essential_snapshot: !!item.essential_snapshot,
+      autopay_snapshot: !!item.autopay_snapshot,
+      note: includeNotes ? item.note || null : null,
+    })),
+    categories,
+  };
+}
+
+function computeShareEtag(row) {
+  const raw = [
+    String(row?.token || ""),
+    String(row?.updated_at || ""),
+    String(row?.payload_version || ""),
+    String(row?.last_published_at || ""),
+    String(row?.mode || ""),
+    String(row?.is_active || 0),
+  ].join("|");
+  const hash = createHash("sha1").update(raw).digest("hex");
+  return `"${hash}"`;
+}
+
+function buildViewerShareUrl(req, token) {
+  return shareRuntime.buildViewerShareUrl(req, token);
+}
+
+function getViewerBaseUrl(req) {
+  return shareRuntime.getViewerBaseUrl(req);
 }
 
 const shareLookup = new Map();
@@ -491,6 +713,7 @@ function initSchema() {
     ensureMetaTable();
     ensureSinkingTables();
     ensureSharesTable();
+    ensureAssistantTables();
     return;
   }
 
@@ -529,6 +752,7 @@ function initSchema() {
   ensureMetaTable();
   ensureSinkingTables();
   ensureSharesTable();
+  ensureAssistantTables();
 }
 
 function migrateLegacySchema() {
@@ -545,6 +769,9 @@ function migrateLegacySchema() {
   ensureInstanceEventsTable();
   ensureMonthSettingsTable();
   ensureMetaTable();
+  ensureSinkingTables();
+  ensureSharesTable();
+  ensureAssistantTables();
 
   const legacyTemplateRows = db
     .prepare(`SELECT * FROM ${legacyTemplates}`)
@@ -653,10 +880,19 @@ function migrateLegacyPayments() {
 }
 
 initSchema();
+runMigrations(db, nowIso);
 migrateLegacyPayments();
 ensureDailyBackup();
+pruneOauthDeviceSessions();
 
 app.use(express.json({ limit: "2mb" }));
+app.use((req, res, next) => {
+  const incoming = String(req.headers["x-request-id"] || "").trim();
+  const requestId = incoming || randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  next();
+});
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
@@ -667,6 +903,25 @@ app.use((req, res, next) => {
   if (req.path.startsWith("/api/") || req.path.startsWith("/internal/")) {
     res.setHeader("Cache-Control", "no-store");
   }
+  next();
+});
+app.use((req, res, next) => {
+  metrics.requests_total += 1;
+  res.on("finish", () => {
+    if (res.statusCode >= 500) metrics.request_errors += 1;
+  });
+  next();
+});
+app.use((req, res, next) => {
+  if (!isMutationRequest(req)) return next();
+  metrics.mutation_requests += 1;
+  if (LOCAL_API_KEY) {
+    const headerKey = String(req.headers["x-ajl-local-key"] || "").trim();
+    if (headerKey !== LOCAL_API_KEY) {
+      return res.status(401).json({ error: "Missing or invalid local API key." });
+    }
+  }
+  if (!allowMutationRequest(req, res)) return;
   next();
 });
 app.use((req, res, next) => {
@@ -697,6 +952,134 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+const mutationRate = new Map();
+
+function extractClientIp(req) {
+  return (
+    String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+    req.socket.remoteAddress ||
+    "unknown"
+  );
+}
+
+function pruneMutationRate(nowMs) {
+  if (mutationRate.size < 2000) return;
+  for (const [ip, entry] of mutationRate.entries()) {
+    if (!entry || nowMs - entry.ts > 5 * 60 * 1000) mutationRate.delete(ip);
+  }
+}
+
+function isMutationRequest(req) {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return false;
+  if (req.path.startsWith("/api/health")) return false;
+  if (req.path.startsWith("/api/lan")) return false;
+  if (req.path.startsWith("/api/metrics")) return false;
+  return req.path.startsWith("/api/") || req.path.startsWith("/internal/");
+}
+
+function allowMutationRequest(req, res) {
+  const ip = extractClientIp(req);
+  const nowMs = Date.now();
+  pruneMutationRate(nowMs);
+  const entry = mutationRate.get(ip) || { count: 0, ts: nowMs };
+  if (nowMs - entry.ts > 60_000) {
+    entry.count = 0;
+    entry.ts = nowMs;
+  }
+  entry.count += 1;
+  mutationRate.set(ip, entry);
+  if (entry.count > MUTATION_RATE_PER_MIN) {
+    metrics.mutation_limited += 1;
+    res.status(429).json({ error: "Too many mutation requests. Please retry shortly." });
+    return false;
+  }
+  return true;
+}
+
+function recordLlmLatency(ms, ok) {
+  metrics.llm_requests += 1;
+  if (!ok) metrics.llm_errors += 1;
+  metrics.last_llm_latency_ms = Math.round(ms);
+  llmLatencySamples += 1;
+  const prev = Number(metrics.avg_llm_latency_ms || 0);
+  const next = llmLatencySamples <= 1 ? ms : prev + (ms - prev) / llmLatencySamples;
+  metrics.avg_llm_latency_ms = Math.round(next);
+}
+
+function stableStringify(value) {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  const parts = keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
+  return `{${parts.join(",")}}`;
+}
+
+function pruneLlmCache(nowMs) {
+  if (llmCache.size === 0) return;
+  for (const [key, entry] of llmCache.entries()) {
+    if (!entry || !Number.isFinite(entry.expiresAt) || entry.expiresAt <= nowMs) {
+      llmCache.delete(key);
+    }
+  }
+}
+
+function buildLlmCacheKey(task, payload, provider) {
+  return `${String(provider || "")}|${String(task || "")}|${stableStringify(payload || {})}`;
+}
+
+function getCachedLlmResult(task, payload, provider) {
+  if (LLM_CACHE_TTL_MS <= 0) return null;
+  const nowMs = Date.now();
+  pruneLlmCache(nowMs);
+  const key = buildLlmCacheKey(task, payload, provider);
+  const entry = llmCache.get(key);
+  if (!entry || entry.expiresAt <= nowMs) {
+    if (entry) llmCache.delete(key);
+    return null;
+  }
+  metrics.llm_cache_hits += 1;
+  return entry.value;
+}
+
+function setCachedLlmResult(task, payload, provider, value) {
+  if (LLM_CACHE_TTL_MS <= 0 || !value) return;
+  if (llmCache.size > 300) {
+    pruneLlmCache(Date.now());
+    if (llmCache.size > 300) {
+      const firstKey = llmCache.keys().next().value;
+      if (firstKey) llmCache.delete(firstKey);
+    }
+  }
+  const key = buildLlmCacheKey(task, payload, provider);
+  llmCache.set(key, {
+    value,
+    expiresAt: Date.now() + LLM_CACHE_TTL_MS,
+  });
+}
+
+function clearLlmCache() {
+  const size = llmCache.size;
+  llmCache.clear();
+  return size;
+}
+
+async function runWithTimeout(promise, timeoutMs) {
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error("LLM request timed out.");
+      err.code = "LLM_TIMEOUT";
+      reject(err);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function logInstanceEvent(instanceId, type, detail = null) {
   if (!instanceId || !type) return;
   const payload = detail ? JSON.stringify(detail) : null;
@@ -714,6 +1097,21 @@ function ensureDailyBackup() {
   if (fs.existsSync(backupFile)) return;
   if (!fs.existsSync(dbFile)) return;
   fs.copyFileSync(dbFile, backupFile);
+
+  const cutoff = Date.now() - BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const files = fs.readdirSync(backupDir);
+  for (const name of files) {
+    if (!/^au_jour_le_jour_\d{4}-\d{2}-\d{2}\.sqlite$/.test(name)) continue;
+    const full = path.join(backupDir, name);
+    try {
+      const stats = fs.statSync(full);
+      if (stats.mtimeMs < cutoff) {
+        fs.unlinkSync(full);
+      }
+    } catch (err) {
+      // ignore stale file cleanup errors
+    }
+  }
 }
 
 function nowIsoLocal() {
@@ -743,6 +1141,43 @@ function safeJsonParse(value) {
   } catch (err) {
     return null;
   }
+}
+
+function parseStoredActionResult(row) {
+  if (!row) return null;
+  if (!row.result) {
+    if (row.status === "pending") {
+      return { ok: false, error: "Action is already in progress", action_id: row.id, status: "pending" };
+    }
+    if (row.status === "error") {
+      return { ok: false, error: "Action failed", action_id: row.id };
+    }
+    return { ok: true, action_id: row.id };
+  }
+  try {
+    const parsed = JSON.parse(row.result);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (!parsed.action_id) parsed.action_id = row.id;
+      return parsed;
+    }
+    return { ok: row.status !== "error", data: parsed, action_id: row.id };
+  } catch (err) {
+    if (row.status === "error") {
+      return { ok: false, error: "Action failed", action_id: row.id };
+    }
+    return { ok: true, action_id: row.id };
+  }
+}
+
+function sendStoredActionResponse(res, row) {
+  const payload = parseStoredActionResult(row);
+  if (row.status === "pending") {
+    metrics.actions_conflicted += 1;
+    return res.status(409).json(payload);
+  }
+  metrics.actions_replayed += 1;
+  res.setHeader("X-Action-Replayed", "1");
+  return res.status(row.status === "error" ? 400 : 200).json(payload);
 }
 
 function todayDate() {
@@ -1819,6 +2254,8 @@ app.get("/api/settings", (req, res) => {
   const settings = {
     defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
     categories: [],
+    share_base_url: SHARE_RELAY_BASE_URL,
+    share_viewer_base_url: getViewerBaseUrl(req),
     firstRunCompleted: !!stored.firstRunCompleted,
     hasCompletedOnboarding: !!(stored.hasCompletedOnboarding ?? stored.firstRunCompleted),
   };
@@ -1846,6 +2283,8 @@ app.post("/api/settings", (req, res) => {
   const payload = {
     defaults: { sort, dueSoonDays, defaultPeriod },
     categories,
+    share_base_url: SHARE_RELAY_BASE_URL,
+    share_viewer_base_url: getViewerBaseUrl(req),
     firstRunCompleted,
     hasCompletedOnboarding,
   };
@@ -1872,15 +2311,7 @@ app.post("/api/reset-local", (req, res) => {
 });
 
 app.get("/api/lan", (req, res) => {
-  const interfaces = os.networkInterfaces();
-  const addresses = [];
-  Object.values(interfaces).forEach((infos) => {
-    (infos || []).forEach((info) => {
-      if (info && info.family === "IPv4" && !info.internal) {
-        addresses.push(info.address);
-      }
-    });
-  });
+  const addresses = shareRuntime.getLanIPv4List();
   const hostHeader = req.get("host") || "";
   const headerPort = Number(hostHeader.split(":")[1]);
   const port = Number.isFinite(headerPort) ? headerPort : PORT;
@@ -1889,22 +2320,31 @@ app.get("/api/lan", (req, res) => {
 });
 
 app.get("/s/:token", (req, res) => {
+  const token = String(req.params.token || "");
+  if (!isValidShareToken(token)) {
+    return res.status(404).send("Not found");
+  }
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 app.get("/api/shares", (req, res) => {
   if (!requireOwner(req, res)) return;
+  expireStaleShares();
   const row = db
     .prepare("SELECT * FROM shares WHERE is_active = 1 ORDER BY datetime(updated_at) DESC LIMIT 1")
     .get();
   if (!row) return res.json({ share: null });
+  const ownerSecret = getOwnerSecret();
   res.json({
     share: {
       token: row.token,
       mode: row.mode,
       is_active: !!row.is_active,
       owner_label: row.owner_label || null,
+      expires_at: row.expires_at || null,
       last_published_at: row.last_published_at || null,
+      shareUrl: buildViewerShareUrl(req, row.token),
+      ownerKey: ownerSecret,
     },
   });
 });
@@ -1912,19 +2352,29 @@ app.get("/api/shares", (req, res) => {
 app.post("/api/shares", (req, res) => {
   if (!requireOwner(req, res)) return;
   const mode = req.body?.mode === "snapshot" ? "snapshot" : "live";
-  const ownerLabel = req.body?.owner_label || null;
+  const ownerLabel = sanitizeOwnerLabel(req.body?.owner_label);
+  const expires = parseShareExpiresAt(req.body?.expires_at);
+  if (!expires.ok) return res.status(400).json({ error: expires.error });
   const token = generateShareToken();
   const now = nowIso();
+  db.prepare("UPDATE shares SET is_active = 0, updated_at = ? WHERE is_active = 1").run(now);
   db.prepare(
-    `INSERT INTO shares (token, mode, is_active, payload, payload_version, owner_label, created_at, updated_at)
-     VALUES (?, ?, 1, NULL, NULL, ?, ?, ?)`
-  ).run(token, mode, ownerLabel, now, now);
-  const base = PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-  res.json({ shareUrl: `${base}/s/${token}`, shareToken: token, mode });
+    `INSERT INTO shares (token, mode, is_active, payload, payload_version, owner_label, expires_at, created_at, updated_at)
+     VALUES (?, ?, 1, NULL, NULL, ?, ?, ?, ?)`
+  ).run(token, mode, ownerLabel, expires.value === undefined ? null : expires.value, now, now);
+  const ownerSecret = getOwnerSecret();
+  res.json({
+    shareUrl: buildViewerShareUrl(req, token),
+    shareToken: token,
+    mode,
+    expires_at: expires.value === undefined ? null : expires.value,
+    ownerKey: ownerSecret,
+  });
 });
 
 app.patch("/api/shares/:token", (req, res) => {
   if (!requireOwner(req, res)) return;
+  expireStaleShares();
   const token = String(req.params.token || "");
   if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
   const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
@@ -1941,7 +2391,16 @@ app.patch("/api/shares/:token", (req, res) => {
   }
   if (req.body?.owner_label !== undefined) {
     updates.push("owner_label = ?");
-    values.push(req.body.owner_label || null);
+    values.push(sanitizeOwnerLabel(req.body.owner_label));
+  }
+  const expires = parseShareExpiresAt(req.body?.expires_at);
+  if (!expires.ok) return res.status(400).json({ error: expires.error });
+  if (isExpiredIso(row.expires_at) && expires.value === undefined) {
+    return res.status(410).json({ error: "This link has expired." });
+  }
+  if (expires.value !== undefined) {
+    updates.push("expires_at = ?");
+    values.push(expires.value);
   }
   if (updates.length === 0) {
     return res.json({ ok: true });
@@ -1955,12 +2414,14 @@ app.patch("/api/shares/:token", (req, res) => {
 
 app.post("/api/shares/:token/regenerate", (req, res) => {
   if (!requireOwner(req, res)) return;
+  expireStaleShares();
   const token = String(req.params.token || "");
   if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
   const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
   if (!row) return res.status(404).json({ error: "Share not found" });
   const newToken = generateShareToken();
   const now = nowIso();
+  const nextExpiry = row.expires_at && !isExpiredIso(row.expires_at) ? row.expires_at : null;
   db.prepare("UPDATE shares SET is_active = 0, updated_at = ? WHERE token = ?").run(now, token);
   db.prepare(
     `INSERT INTO shares (token, mode, is_active, payload, payload_version, owner_label, expires_at, last_published_at, created_at, updated_at)
@@ -1971,38 +2432,91 @@ app.post("/api/shares/:token/regenerate", (req, res) => {
     row.payload,
     row.payload_version,
     row.owner_label,
-    row.expires_at,
+    nextExpiry,
     row.last_published_at,
     now,
     now
   );
-  const base = PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-  res.json({ shareUrl: `${base}/s/${newToken}`, shareToken: newToken });
+  const ownerSecret = getOwnerSecret();
+  res.json({
+    shareUrl: buildViewerShareUrl(req, newToken),
+    shareToken: newToken,
+    expires_at: nextExpiry,
+    ownerKey: ownerSecret,
+  });
 });
 
 app.post("/api/shares/:token/publish", (req, res) => {
   if (!requireOwner(req, res)) return;
+  expireStaleShares();
   const token = String(req.params.token || "");
   if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
   const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
   if (!row) return res.status(404).json({ error: "Share not found" });
-  const payload = req.body?.payload;
-  if (!payload || !Array.isArray(payload.items)) {
-    return res.status(400).json({ error: "Invalid payload" });
+  if (isExpiredIso(row.expires_at)) {
+    db.prepare("UPDATE shares SET is_active = 0, updated_at = ? WHERE token = ?").run(nowIso(), token);
+    return res.status(410).json({ error: "This link has expired." });
   }
+  const payload = req.body?.payload;
+  const payloadCheck = validateSharePayload(payload);
+  if (!payloadCheck.ok) return res.status(400).json({ error: payloadCheck.error });
   const payloadString = safeJsonStringify(payload);
   if (!payloadString) {
     return res.status(400).json({ error: "Invalid payload" });
   }
+  if (Buffer.byteLength(payloadString, "utf8") > MAX_SHARE_PAYLOAD_BYTES) {
+    return res.status(400).json({ error: "Payload too large" });
+  }
   const version = req.body?.schema_version || payload.schema_version || null;
-  const ownerLabel = req.body?.owner_label || row.owner_label || null;
+  const ownerLabel = sanitizeOwnerLabel(req.body?.owner_label) || row.owner_label || null;
   db.prepare(
     "UPDATE shares SET payload = ?, payload_version = ?, owner_label = ?, last_published_at = ?, updated_at = ? WHERE token = ?"
   ).run(payloadString, version, ownerLabel, nowIso(), nowIso(), token);
   res.json({ ok: true });
 });
 
+app.post("/api/shares/:token/publish-current", (req, res) => {
+  if (!requireOwner(req, res)) return;
+  expireStaleShares();
+  const token = String(req.params.token || "");
+  if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
+  const row = db.prepare("SELECT * FROM shares WHERE token = ?").get(token);
+  if (!row) return res.status(404).json({ error: "Share not found" });
+  if (isExpiredIso(row.expires_at)) {
+    db.prepare("UPDATE shares SET is_active = 0, updated_at = ? WHERE token = ?").run(nowIso(), token);
+    return res.status(410).json({ error: "This link has expired." });
+  }
+  const parsed = parseSharePublishYearMonth(req.body || {});
+  if (!parsed) {
+    return res.status(400).json({ error: "Invalid year/month" });
+  }
+  const ownerLabel = sanitizeOwnerLabel(req.body?.owner_label) || row.owner_label || null;
+  const payload = buildSharePayloadFromMonth(parsed.year, parsed.month, {
+    ownerLabel,
+    includeAmounts: req.body?.include_amounts,
+    includeNotes: req.body?.include_notes,
+    includeCategories: req.body?.include_categories,
+  });
+  const payloadCheck = validateSharePayload(payload);
+  if (!payloadCheck.ok) return res.status(400).json({ error: payloadCheck.error });
+  const payloadString = safeJsonStringify(payload);
+  if (!payloadString) return res.status(400).json({ error: "Invalid payload" });
+  if (Buffer.byteLength(payloadString, "utf8") > MAX_SHARE_PAYLOAD_BYTES) {
+    return res.status(400).json({ error: "Payload too large" });
+  }
+  db.prepare(
+    "UPDATE shares SET payload = ?, payload_version = ?, owner_label = ?, last_published_at = ?, updated_at = ? WHERE token = ?"
+  ).run(payloadString, payload.schema_version || "1", ownerLabel, nowIso(), nowIso(), token);
+  res.json({
+    ok: true,
+    period: payload.period,
+    items: payload.items.length,
+    shareToken: token,
+  });
+});
+
 app.get("/api/shares/:token", (req, res) => {
+  expireStaleShares();
   if (!rateLimitShareLookup(req, res)) return;
   const token = String(req.params.token || "");
   if (!isValidShareToken(token)) return res.status(400).json({ error: "Invalid token" });
@@ -2012,11 +2526,24 @@ app.get("/api/shares/:token", (req, res) => {
   if (row.expires_at && row.expires_at < nowIso()) {
     return res.status(410).json({ error: "This link has expired." });
   }
+  const etag = computeShareEtag(row);
+  res.setHeader("ETag", etag);
+  if (row.updated_at) {
+    const modified = new Date(row.updated_at);
+    if (!Number.isNaN(modified.valueOf())) {
+      res.setHeader("Last-Modified", modified.toUTCString());
+    }
+  }
+  const ifNoneMatch = String(req.headers["if-none-match"] || "").trim();
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    return res.status(304).end();
+  }
   const payload = safeJsonParse(row.payload);
   if (!payload) return res.status(404).json({ error: "No shared data available yet." });
   res.json({
     payload,
     mode: row.mode,
+    expiresAt: row.expires_at || null,
     ownerLabel: row.owner_label || null,
     lastPublishedAt: row.last_published_at || null,
   });
@@ -2774,6 +3301,59 @@ app.get("/api/v1/sinking-events", (req, res) => {
   });
 });
 
+app.get("/api/v1/actions/:id", (req, res) => {
+  const actionId = String(req.params.id || "").trim();
+  if (!actionId) return res.status(400).json({ ok: false, error: "action id is required" });
+  const row = db.prepare("SELECT * FROM actions WHERE id = ?").get(actionId);
+  if (!row) return res.status(404).json({ ok: false, error: "Action not found" });
+  res.json({
+    ok: true,
+    action: {
+      action_id: row.id,
+      type: row.type,
+      status: row.status,
+      created_at: row.created_at,
+      payload: safeJsonParse(row.payload),
+      result: parseStoredActionResult(row),
+    },
+  });
+});
+
+app.get("/api/v1/actions", (req, res) => {
+  const limitRaw = Number(req.query.limit || 50);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, limitRaw)) : 50;
+  const statusFilter = String(req.query.status || "").trim().toLowerCase();
+  const validStatuses = new Set(["pending", "ok", "error"]);
+  let rows;
+  if (statusFilter && validStatuses.has(statusFilter)) {
+    rows = db
+      .prepare(
+        "SELECT id, type, status, created_at, payload, result FROM actions WHERE status = ? ORDER BY datetime(created_at) DESC LIMIT ?"
+      )
+      .all(statusFilter, limit);
+  } else {
+    rows = db
+      .prepare(
+        "SELECT id, type, status, created_at, payload, result FROM actions ORDER BY datetime(created_at) DESC LIMIT ?"
+      )
+      .all(limit);
+  }
+  const actions = rows.map((row) => ({
+    action_id: row.id,
+    type: row.type,
+    status: row.status,
+    created_at: row.created_at,
+    payload: safeJsonParse(row.payload),
+    result: parseStoredActionResult(row),
+  }));
+  res.json({
+    ok: true,
+    actions,
+    count: actions.length,
+    filter: statusFilter && validStatuses.has(statusFilter) ? { status: statusFilter } : null,
+  });
+});
+
 app.post("/api/v1/actions", (req, res) => {
   const action = req.body || {};
   const actionId = String(action.action_id || "").trim();
@@ -2783,12 +3363,20 @@ app.post("/api/v1/actions", (req, res) => {
   if (!type) return res.status(400).json({ ok: false, error: "type is required" });
 
   const existing = db.prepare("SELECT * FROM actions WHERE id = ?").get(actionId);
-  if (existing && existing.result) {
-    try {
-      return res.json(JSON.parse(existing.result));
-    } catch (err) {
-      return res.json({ ok: true });
+  if (existing) {
+    return sendStoredActionResponse(res, existing);
+  }
+
+  try {
+    db.prepare(
+      "INSERT INTO actions (id, type, payload, created_at, status, result) VALUES (?, ?, ?, ?, 'pending', NULL)"
+    ).run(actionId, type, JSON.stringify(action), nowIso());
+  } catch (err) {
+    const raced = db.prepare("SELECT * FROM actions WHERE id = ?").get(actionId);
+    if (raced) {
+      return sendStoredActionResponse(res, raced);
     }
+    return res.status(409).json({ ok: false, error: "Action is already in progress" });
   }
 
   let result;
@@ -3247,9 +3835,12 @@ app.post("/api/v1/actions", (req, res) => {
   }
 
   db.prepare(
-    "INSERT INTO actions (id, type, payload, created_at, status, result) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(actionId, type, JSON.stringify(action), nowIso(), status, JSON.stringify(result));
+    "UPDATE actions SET type = ?, payload = ?, status = ?, result = ? WHERE id = ?"
+  ).run(type, JSON.stringify(action), status, JSON.stringify(result), actionId);
 
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    result.action_id = actionId;
+  }
   if (status === "error") {
     return res.status(400).json(result);
   }
@@ -3257,9 +3848,13 @@ app.post("/api/v1/actions", (req, res) => {
 });
 
 app.post("/internal/advisor/query", async (req, res) => {
+  const startedAt = Date.now();
   const task = String(req.body?.task || "").trim();
   const payload = req.body?.payload || {};
-  if (!task) return res.status(400).json({ ok: false, error: "task required" });
+  if (!task) {
+    recordLlmLatency(Date.now() - startedAt, false);
+    return res.status(400).json({ ok: false, error: "task required" });
+  }
   try {
     let provider = (process.env.LLM_PROVIDER || "qwen-oauth").toLowerCase();
     let oauth = null;
@@ -3272,14 +3867,40 @@ app.post("/internal/advisor/query", async (req, res) => {
       }
     }
     if (provider === "qwen-oauth" && !oauth) {
+      recordLlmLatency(Date.now() - startedAt, false);
       return res.status(503).json({ ok: false, error: "Agent not connected" });
     }
-    const result = await advisor.query(task, payload, { oauth, provider });
+    const cacheProviderKey = `${provider}:${oauth ? "connected" : "anon"}`;
+    const cached = getCachedLlmResult(task, payload, cacheProviderKey);
+    if (cached) {
+      recordLlmLatency(Date.now() - startedAt, true);
+      return res.json({
+        ...cached,
+        cached: true,
+      });
+    }
+
+    const result = await runWithTimeout(
+      advisor.query(task, payload, { oauth, provider }),
+      LLM_ROUTE_TIMEOUT_MS
+    );
     if (!result.ok) {
+      recordLlmLatency(Date.now() - startedAt, false);
       return res.status(503).json(result);
     }
-    return res.json(result);
+    setCachedLlmResult(task, payload, cacheProviderKey, result);
+    recordLlmLatency(Date.now() - startedAt, true);
+    return res.json({
+      ...result,
+      cached: false,
+    });
   } catch (err) {
+    if (err && err.code === "LLM_TIMEOUT") {
+      metrics.llm_timeouts += 1;
+      recordLlmLatency(Date.now() - startedAt, false);
+      return res.status(504).json({ ok: false, error: "Mamdou timed out. Try again." });
+    }
+    recordLlmLatency(Date.now() - startedAt, false);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -3421,12 +4042,116 @@ app.get("/safe", (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
+  const uptimeSec = Math.max(0, Math.round(process.uptime()));
+  const startedAt = new Date(Date.now() - uptimeSec * 1000).toISOString();
   res.json({
     ok: true,
     app: "au-jour-le-jour",
     mode: "local",
     app_version: APP_VERSION,
     schema_version: SCHEMA_VERSION,
+    pid: process.pid,
+    uptime_sec: uptimeSec,
+    started_at: startedAt,
+  });
+});
+
+app.get("/api/metrics", (req, res) => {
+  const uptimeSec = Math.max(0, Math.round(process.uptime()));
+  res.json({
+    ok: true,
+    app: "au-jour-le-jour",
+    mode: "local",
+    app_version: APP_VERSION,
+    schema_version: SCHEMA_VERSION,
+    uptime_sec: uptimeSec,
+    metrics: {
+      ...metrics,
+      llm_cache_entries: llmCache.size,
+      avg_llm_latency_ms:
+        metrics.avg_llm_latency_ms === null ? null : Number(metrics.avg_llm_latency_ms),
+      last_llm_latency_ms:
+        metrics.last_llm_latency_ms === null ? null : Number(metrics.last_llm_latency_ms),
+    },
+  });
+});
+
+app.post("/api/system/diagnostics/clear-llm-cache", (req, res) => {
+  const cleared = clearLlmCache();
+  res.json({
+    ok: true,
+    cleared,
+    request_id: req.requestId || null,
+    message: "Mamdou cache cleared.",
+  });
+});
+
+app.get("/api/system/diagnostics", (req, res) => {
+  expireStaleShares();
+  const oauth = getQwenOauthSettings();
+  const oauthConnected = !!(oauth && !qwenOauth.isTokenExpired(oauth));
+  const activeShare = db
+    .prepare(
+      "SELECT token, mode, owner_label, expires_at, last_published_at, updated_at FROM shares WHERE is_active = 1 ORDER BY datetime(updated_at) DESC LIMIT 1"
+    )
+    .get();
+  const backupCount = fs
+    .readdirSync(backupDir)
+    .filter((name) => /^au_jour_le_jour_\d{4}-\d{2}-\d{2}\.sqlite$/.test(name)).length;
+
+  res.json({
+    ok: true,
+    request_id: req.requestId || null,
+    app: "au-jour-le-jour",
+    mode: "local",
+    app_version: APP_VERSION,
+    schema_version: SCHEMA_VERSION,
+    runtime: {
+      pid: process.pid,
+      uptime_sec: Math.max(0, Math.round(process.uptime())),
+      node: process.version,
+      host: HOST,
+      port: PORT,
+    },
+    limits: {
+      mutation_rate_per_min: MUTATION_RATE_PER_MIN,
+      llm_cache_ttl_ms: LLM_CACHE_TTL_MS,
+      llm_route_timeout_ms: LLM_ROUTE_TIMEOUT_MS,
+      backup_retention_days: BACKUP_RETENTION_DAYS,
+      local_api_key_enabled: LOCAL_API_KEY.length > 0,
+    },
+    llm: {
+      provider: String(process.env.LLM_PROVIDER || "qwen-oauth").toLowerCase(),
+      connected: oauthConnected,
+      token_expires_at: oauth?.expires_at || null,
+      cache_entries: llmCache.size,
+      metrics: {
+        requests: metrics.llm_requests,
+        errors: metrics.llm_errors,
+        cache_hits: metrics.llm_cache_hits,
+        timeouts: metrics.llm_timeouts,
+        avg_latency_ms: metrics.avg_llm_latency_ms,
+        last_latency_ms: metrics.last_llm_latency_ms,
+      },
+    },
+    share: {
+      relay_base_url: SHARE_RELAY_BASE_URL || null,
+      viewer_base_url: getViewerBaseUrl(req),
+      active: activeShare
+        ? {
+            token_preview: `${String(activeShare.token).slice(0, 8)}…`,
+            mode: activeShare.mode,
+            owner_label: activeShare.owner_label || null,
+            expires_at: activeShare.expires_at || null,
+            last_published_at: activeShare.last_published_at || null,
+            updated_at: activeShare.updated_at,
+          }
+        : null,
+    },
+    storage: {
+      db_file: path.basename(dbFile),
+      backup_files: backupCount,
+    },
   });
 });
 
@@ -3437,6 +4162,8 @@ if (require.main === module) {
   ensureDailyBackup();
   const backupTimer = setInterval(ensureDailyBackup, 6 * 60 * 60 * 1000);
   backupTimer.unref();
+  const oauthPruneTimer = setInterval(pruneOauthDeviceSessions, 6 * 60 * 60 * 1000);
+  oauthPruneTimer.unref();
   app.listen(PORT, HOST, () => {
     console.log(`Au Jour Le Jour running on http://${HOST}:${PORT}`);
     if (PUBLIC_BASE_URL) {

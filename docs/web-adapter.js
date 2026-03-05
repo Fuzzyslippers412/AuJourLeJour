@@ -3,6 +3,11 @@
   const DB_KEY = "AJL_WEB_DB_V1";
   const META_KEY = "AJL_WEB_META_V1";
   const MAX_BYTES = 4_500_000;
+  const SHARE_BASE_URL = String(window.AJL_SHARE_BASE_URL || "").trim().replace(/\/+$/, "");
+  const SHARE_VIEWER_BASE_URL = String(window.AJL_SHARE_VIEWER_BASE_URL || window.location.origin || "")
+    .trim()
+    .replace(/\/+$/, "");
+  const SHARE_OWNER_KEY = "ajl_share_owner_key";
 
   const realFetch = window.fetch.bind(window);
 
@@ -50,6 +55,23 @@
 
   function bad(code, message, details = {}, status = 400) {
     return jsonResponse(status, { ok: false, error: { code, message, details } });
+  }
+
+  function loadShareOwnerKey() {
+    try {
+      return localStorage.getItem(SHARE_OWNER_KEY) || "";
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function saveShareOwnerKey(key) {
+    try {
+      if (!key) localStorage.removeItem(SHARE_OWNER_KEY);
+      else localStorage.setItem(SHARE_OWNER_KEY, String(key));
+    } catch (err) {
+      // ignore
+    }
   }
 
   function safeParse(str) {
@@ -305,7 +327,12 @@
   function getSettings(db) {
     const settings = getData(db).settings;
     if (!settings || typeof settings !== "object") {
-      return { defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" }, categories: [] };
+      return {
+        defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
+        categories: [],
+        share_base_url: SHARE_BASE_URL,
+        share_viewer_base_url: SHARE_VIEWER_BASE_URL,
+      };
     }
     const defaults = settings.defaults || {};
     return {
@@ -315,6 +342,8 @@
         defaultPeriod: defaults.defaultPeriod || "month",
       },
       categories: Array.isArray(settings.categories) ? settings.categories.filter(Boolean) : [],
+      share_base_url: SHARE_BASE_URL,
+      share_viewer_base_url: SHARE_VIEWER_BASE_URL,
     };
   }
 
@@ -535,7 +564,64 @@
     }
 
     if (path.startsWith("/api/shares")) {
-      return jsonResponse(503, { ok: false, error: { code: "UNAVAILABLE", message: "Sharing is available in the local app only.", details: {} } });
+      if (!SHARE_BASE_URL) {
+        return jsonResponse(503, {
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "Sharing service is not configured.",
+            details: {},
+          },
+        });
+      }
+      try {
+        const target = new URL(`${path}${url.search}`, SHARE_BASE_URL);
+        const headers = new Headers();
+        const incomingOwner = req.headers.get("x-ajl-share-owner");
+        const isPublicLookup = /^\/api\/shares\/[A-Za-z0-9_-]{24,128}$/.test(path);
+        const ownerKey = isPublicLookup ? null : incomingOwner || loadShareOwnerKey();
+        if (ownerKey) headers.set("X-AJL-Share-Owner", ownerKey);
+        const contentType = req.headers.get("content-type");
+        if (contentType) headers.set("Content-Type", contentType);
+        const bodyText = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
+        const relayRes = await realFetch(target.toString(), {
+          method: req.method,
+          headers,
+          body: bodyText,
+        });
+        const relayContentType = relayRes.headers.get("content-type") || "";
+        const relayBodyText = await relayRes.text();
+        if (relayContentType.includes("application/json")) {
+          const parsed = safeParse(relayBodyText);
+          if (parsed.ok && parsed.value && typeof parsed.value === "object") {
+            const ownerFromResponse =
+              parsed.value.ownerKey ||
+              parsed.value.manageKey ||
+              parsed.value.owner_key ||
+              parsed.value?.share?.ownerKey ||
+              parsed.value?.share?.manageKey ||
+              parsed.value?.share?.owner_key ||
+              null;
+            if (ownerFromResponse) saveShareOwnerKey(ownerFromResponse);
+          }
+        }
+        return new Response(relayBodyText, {
+          status: relayRes.status,
+          headers: {
+            "Content-Type": relayContentType || "application/json",
+            "Cache-Control": "no-store",
+          },
+        });
+      } catch (err) {
+        return jsonResponse(503, {
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "Share relay is unavailable.",
+            details: {},
+          },
+        });
+      }
     }
 
     if (path === "/api/reset" && req.method === "POST") {

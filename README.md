@@ -1,32 +1,58 @@
-# Au Jour Le Jour
+# Au Jour Le Jour (Beta 1)
 
-Private bill tracker. Generates a clear monthly checklist and lets you mark items done. No bank connections.
+Private bill tracker for recurring essentials.  
+No bank connections. No payment execution. Tracker only.
 
 Web app: [aujourlejour.xyz](https://aujourlejour.xyz)  
 Repo: [github.com/Fuzzyslippers412/AuJourLeJour](https://github.com/Fuzzyslippers412/AuJourLeJour)
 
-Tracker only: you pay outside the app.
+## Core Features
 
-## What It Does
+- First-visit onboarding hero with guided setup
+- Monthly template generation with persistent history snapshots
+- Status workflow: `pending`, `partial`, `done`, `skipped`
+- Partial updates reflected in monthly totals and summary math
+- Action Queue (`Overdue`, `Due next 7 days`, `Later`)
+- Sticky mini-summary + inline expanded summary panel (no modal required)
+- Sinking funds (“Piggy Banks”) for non-monthly obligations
+- Backup/export/import (`JSON` + month `CSV`)
+- Cross-platform read-only sharing (web/local) with relay
+- Fast-path local command parser for common Mamdou actions (low-latency fallback before LLM)
 
-- Generates monthly instances from templates
-- Tracks status: pending, partial, done, skipped
-- Due soon / overdue queues + monthly summary
-- Sinking funds (non‑monthly obligations)
-- Export/import (JSON + CSV)
+## Today / Review / Setup
+
+- `Today`: action-first workflow, queue + list + sticky summary
+- `Review`: activity and month-level review context
+- `Setup`: templates, backups, storage controls, read-only preview mode
+
+## Sharing (Web <-> Local)
+
+Read-only share links work across both builds through the relay in `bridge/`.
+
+Share controls include:
+- live vs snapshot mode
+- privacy toggles (amounts, notes, categories)
+- optional owner display label
+- optional expiry
+- regenerate / disable link
+- manual “Update now” publish
+
+Viewer routes support both:
+- `/?share=<token>`
+- `/s/<token>` (rewritten via `404.html`)
 
 ## Web vs Local
 
 | Capability | Web (static) | Local (SQLite) |
 |---|---|---|
-| Storage | Browser storage (device‑specific) | SQLite file |
+| Storage | Browser storage (device-specific) | SQLite file |
 | Assistant (Mamdou) | Not available | Available |
-| Offline | Browser‑dependent | Always |
-| Backups | Export/import | Export/import + SQLite file |
-| Sharing | Read‑only preview only | Full local share flow |
+| Offline | Browser-dependent | Full local operation |
+| Backups | Export/import | Export/import + SQLite file backups |
+| Sharing | Read-only relay links | Read-only relay links |
 | Reliability | Depends on browser storage | Highest |
 
-## Install (Local CLI)
+## Run Local (CLI)
 
 ```sh
 git clone https://github.com/Fuzzyslippers412/AuJourLeJour.git
@@ -35,92 +61,142 @@ npm install
 PORT=4567 npm start
 ```
 
-You can use any port via `PORT=XXXX`.  
-Open `http://localhost:PORT` or `http://<your-ip>:PORT` on your LAN.
+Use any port with `PORT=XXXX`.  
+Open `http://localhost:PORT` or `http://<your-lan-ip>:PORT`.
 
-Alternative (auto‑install deps, defaults to `PORT=6709`):
+Helper scripts:
 
 ```sh
 PORT=4567 ./start.sh
+PORT=4567 ./stop.sh
+npm run ajl -- health --port 4567
+npm run ajl -- doctor --port 4567
+npm run ajl -- lan --port 4567
+npm run ajl -- diagnostics --port 4567
+npm run ajl -- mamdou-status --port 4567
+npm run ajl -- clear-llm-cache --port 4567
+npm run ajl -- mamdou-login --port 4567 --open
+npm run ajl -- mamdou-logout --port 4567
+npm run ajl -- share-link --port 4567 --create --publish --copy --open
+npm run ajl -- share-link --port 4567 --publish --year 2026 --month 3
+npm run ajl -- share-link --port 4567 --regenerate
+npm run ajl -- share-link --port 4567 --disable
+npm run ajl -- actions --limit 20 --status ok
 ```
 
-By default `start.sh` will stop existing AJL server processes first (`KILL_EXISTING=1`).
+By default `start.sh` kills existing AJL server processes first (`KILL_EXISTING=1`).
 
-Stop local server:
+## Mamdou Fast Commands (Local)
+
+These commands are parsed locally first (before LLM) for faster response:
+
+- `next month` / `previous month` / `march 2026`
+- `show overdue` / `show due soon` / `show templates`
+- `essentials on` / `essentials off`
+- `export month` / `export backup`
+- `mark all overdue done` / `mark all due soon done`
+- `mark done internet, electric, trash`
+- `mark pending internet, electric`
+- `skip internet, subscriptions`
+- `add cellphone for $170 monthly`
+- `set template internet to 95 due 12`
+- `archive template youtube tv` / `delete template subscriptions`
+- multi-line bill list paste (e.g. `Name — $Amount` per line) to create templates in one confirmation
+- `delete templates a, b, c` / `archive templates a, b, c`
+- `open share` / `create share` / `refresh share` / `disable share`
+- `open mamdou` / `connect mamdou`
+- `remaining this month` / `overdue` / `due soon`
+- `set bill internet amount to 95` / `set bill internet due to 2026-03-12`
+- `set bill internet note to autopay pending`
+
+All mutating commands remain two-step (proposal + explicit confirmation).
+Read-only/navigation commands run immediately for lower latency.
+If a name is ambiguous (multiple matches), Mamdou now returns a clarification prompt instead of applying to the wrong bill/template.
+
+Optional relay env:
 
 ```sh
-PORT=4567 ./stop.sh
+SHARE_RELAY_BASE_URL=https://agent.aujourlejour.xyz
+SHARE_VIEWER_BASE_URL=https://aujourlejour.xyz
 ```
 
-## Web Version
+Optional local hardening env:
 
-The web build is static and runs in your browser at [aujourlejour.xyz](https://aujourlejour.xyz).
-Data lives only in your browser storage, so export backups regularly.
+```sh
+AJL_LOCAL_API_KEY=change_me
+AJL_MUTATION_RATE_PER_MIN=240
+AJL_BACKUP_RETENTION_DAYS=30
+AJL_LLM_CACHE_TTL_MS=15000
+AJL_LLM_ROUTE_TIMEOUT_MS=22000
+```
 
-## Data & Backups
+## Web Build
 
-Local SQLite path: `data/au_jour_le_jour.sqlite`  
-Daily backup: `data/backups/au_jour_le_jour_YYYY-MM-DD.sqlite`
+The web build is served statically from `docs/` on GitHub Pages at [aujourlejour.xyz](https://aujourlejour.xyz).  
+Data is stored in your browser, so regular export is strongly recommended.
 
-Use **Backup/Export** to export/import JSON or CSV.
+## Data, Backup, and Recovery
 
-## Recovery
+Local SQLite:
+- `data/au_jour_le_jour.sqlite`
+- daily backup: `data/backups/au_jour_le_jour_YYYY-MM-DD.sqlite`
 
-If browser storage gets corrupted:
-
-- Web reset page: [aujourlejour.xyz/reset](https://aujourlejour.xyz/reset)
+Recovery routes:
+- Web reset: [aujourlejour.xyz/reset](https://aujourlejour.xyz/reset)
 - Web safe mode: [aujourlejour.xyz/safe](https://aujourlejour.xyz/safe)
+- Local reset: `http://localhost:PORT/reset`
+- Local safe mode: `http://localhost:PORT/safe`
 
-Local app routes:
+Diagnostics:
+- `GET /api/metrics`
+- `GET /api/system/diagnostics`
 
-- `http://localhost:PORT/reset`
-- `http://localhost:PORT/safe`
+## Integration Contract (MyCasaPro-ready)
 
-## Integration (MyCasaPro)
+AJL is a standalone ledger service intended to plug into MyCasaPro Finance Agent via explicit contracts (no direct DB access).
 
-AJL is a standalone ledger designed to integrate with the MyCasaPro Finance Agent later.
-Integration must use the contract endpoints (no direct DB access).
+See `CONTRACT.md`.
 
-Contract reference: `CONTRACT.md`
-
-V1 endpoints:
+Core endpoints:
 - `GET /api/v1/summary?year=YYYY&month=MM&essentials_only=true`
 - `GET /api/v1/month?year=YYYY&month=MM&essentials_only=true`
 - `GET /api/v1/templates`
+- `GET /api/v1/actions?limit=50&status=pending|ok|error`
+- `GET /api/v1/actions/:id`
 - `POST /api/v1/actions`
 
 ## QA (Janitor)
 
-Run the automated suite:
+Automated suite:
 
 ```sh
 npm run janitor
 ```
 
-Run full web/local consistency + QA checks:
+Full consistency + QA:
 
 ```sh
 npm run qa
 ```
 
-`npm run qa` runs `sync:web` first, then `janitor`.
-
-Check web/docs sync without modifying files:
-
-```sh
-npm run sync:web:check
-```
-
-Strict CI-style checks (non-mutating):
+Strict non-mutating checks:
 
 ```sh
 npm run qa:strict
 ```
 
+Web/docs sync check:
+
+```sh
+npm run sync:web:check
+```
+
+Janitor covers local API contracts, web adapter behavior, UI spec assertions, share relay lifecycle, and security/route regression checks.
+
 ## License
 
-MIT License. See `LICENSE` for the full text.
-This software is provided “as is”, without warranty of any kind.
+MIT License. See `LICENSE`.
+Provided “as is”, without warranty of any kind.
 
 ## Project Docs
 

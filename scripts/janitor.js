@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const { spawnSync, spawn } = require("child_process");
 const vm = require("vm");
 
 const ledger = require("../ledger");
@@ -23,7 +23,7 @@ function assertApprox(actual, expected, epsilon = 0.01) {
   );
 }
 
-function createWebAdapterSandbox() {
+function createWebAdapterSandbox(options = {}) {
   const storage = new Map();
   const localStorage = {
     getItem(key) {
@@ -41,18 +41,36 @@ function createWebAdapterSandbox() {
   };
 
   const upstreamCalls = [];
-  const upstreamFetch = async (input) => {
-    upstreamCalls.push(input);
+  const upstreamFetch = async (input, init) => {
+    upstreamCalls.push({ input, init: init || {} });
+    const url = String(input || "");
+    if (url.includes("/api/shares")) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          shareToken: "relay_share_token_abcdefghijklmnopqrstuvwxyz",
+          shareUrl: "https://aujourlejour.xyz/?share=relay_share_token_abcdefghijklmnopqrstuvwxyz",
+          ownerKey: "relay_owner_key_abcdefghijklmnopqrstuvwxyz",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
     return new Response("upstream", {
       status: 200,
       headers: { "Content-Type": "text/plain" },
     });
   };
 
+  if (options.ownerKey) {
+    storage.set("ajl_share_owner_key", String(options.ownerKey));
+  }
+
   const windowObj = {
     fetch: upstreamFetch,
     localStorage,
     location: { origin: "https://example.test" },
+    AJL_SHARE_BASE_URL: options.shareBaseUrl || "",
+    AJL_SHARE_VIEWER_BASE_URL: options.viewerBaseUrl || "https://example.test",
     AJL_WEB_MODE: false,
   };
 
@@ -76,6 +94,44 @@ function createWebAdapterSandbox() {
   vm.runInContext(adapterSource, sandbox, { filename: "web-adapter.js" });
 
   return { sandbox, upstreamCalls, storage };
+}
+
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForUrl(url, timeoutMs = 10_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch (err) {
+      // ignore while waiting
+    }
+    await sleep(120);
+  }
+  throw new Error(`Timed out waiting for ${url}`);
+}
+
+async function stopChildProcess(child) {
+  if (!child || child.exitCode !== null) return;
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    child.once("exit", finish);
+    child.kill("SIGTERM");
+    setTimeout(() => {
+      if (child.exitCode === null) {
+        child.kill("SIGKILL");
+      }
+    }, 1500);
+    setTimeout(finish, 3500);
+  });
 }
 
 async function run() {
@@ -129,7 +185,7 @@ async function run() {
   process.env.AJL_DISABLE_LOCK = "1";
   process.env.PUBLIC_BASE_URL = "http://127.0.0.1";
 
-  const { app, close } = require("../server");
+  const { app, close, db } = require("../server");
   const server = await new Promise((resolve) => {
     const srv = app.listen(0, "127.0.0.1", () => resolve(srv));
   });
@@ -177,6 +233,48 @@ async function run() {
     assert.strictEqual(res.data.mode, "local");
     assert.strictEqual(typeof res.data.app_version, "string");
     assert.strictEqual(typeof res.data.schema_version, "string");
+    assert.strictEqual(typeof res.data.pid, "number");
+    assert.ok(res.data.pid > 0);
+    assert.strictEqual(typeof res.data.uptime_sec, "number");
+    assert.strictEqual(typeof res.data.started_at, "string");
+    const requestId = res.headers.get("x-request-id");
+    assert.ok(requestId && requestId.length >= 8, "missing x-request-id header");
+  });
+
+  test("metrics endpoint responds with telemetry shape", async () => {
+    const res = await request("GET", "/api/metrics");
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.ok, true);
+    assert.strictEqual(typeof res.data.uptime_sec, "number");
+    assert.ok(res.data.metrics && typeof res.data.metrics === "object");
+    assert.strictEqual(typeof res.data.metrics.requests_total, "number");
+    assert.strictEqual(typeof res.data.metrics.mutation_requests, "number");
+    assert.strictEqual(typeof res.data.metrics.llm_requests, "number");
+    assert.strictEqual(typeof res.data.metrics.llm_cache_hits, "number");
+    assert.strictEqual(typeof res.data.metrics.llm_timeouts, "number");
+    assert.strictEqual(typeof res.data.metrics.llm_cache_entries, "number");
+    assert.strictEqual(typeof res.data.metrics.actions_replayed, "number");
+    assert.strictEqual(typeof res.data.metrics.actions_conflicted, "number");
+  });
+
+  test("diagnostics cache clear endpoint works", async () => {
+    const res = await request("POST", "/api/system/diagnostics/clear-llm-cache", {});
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.ok, true);
+    assert.strictEqual(typeof res.data.cleared, "number");
+  });
+
+  test("diagnostics endpoint returns runtime + llm + share details", async () => {
+    const res = await request("GET", "/api/system/diagnostics");
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.ok, true);
+    assert.strictEqual(typeof res.data.request_id, "string");
+    assert.strictEqual(typeof res.data.runtime?.uptime_sec, "number");
+    assert.strictEqual(typeof res.data.limits?.llm_route_timeout_ms, "number");
+    assert.strictEqual(typeof res.data.llm?.connected, "boolean");
+    assert.strictEqual(typeof res.data.llm?.cache_entries, "number");
+    assert.strictEqual(typeof res.data.share?.viewer_base_url, "string");
+    assert.strictEqual(typeof res.data.storage?.db_file, "string");
   });
 
   test("api endpoints send no-store cache header", async () => {
@@ -222,6 +320,8 @@ async function run() {
     const res = await request("GET", "/api/settings");
     assert.strictEqual(res.status, 200, `settings status ${res.status}`);
     assert.strictEqual(res.data.hasCompletedOnboarding, false);
+    assert.strictEqual(typeof res.data.share_viewer_base_url, "string");
+    assert.ok(res.data.share_viewer_base_url.startsWith("http"));
   });
 
   test("invalid year/month input is rejected", async () => {
@@ -244,6 +344,11 @@ async function run() {
     assert.strictEqual(res.data.ok, true);
     assert.ok(Array.isArray(res.data.addresses));
     assert.ok(Array.isArray(res.data.urls));
+    assert.strictEqual(res.data.urls.length, res.data.addresses.length);
+    for (const url of res.data.urls) {
+      assert.strictEqual(typeof url, "string");
+      assert.ok(url.startsWith("http://"));
+    }
   });
 
   test("sqlite export endpoint returns downloadable file", async () => {
@@ -513,6 +618,83 @@ async function run() {
     assert.strictEqual(res.data.instance.due_date, "2026-02-20");
   });
 
+  test("action idempotency replays result without double mutation", async () => {
+    const actionId = `janitor_idempotent_${Math.random().toString(36).slice(2)}`;
+    const payload = {
+      action_id: actionId,
+      type: "ADD_PAYMENT",
+      instance_id: instanceId,
+      amount: 7.25,
+      paid_date: "2026-02-21",
+    };
+    const first = await request("POST", "/api/v1/actions", payload);
+    assert.strictEqual(first.status, 200);
+    assert.ok(first.data?.payment?.id);
+
+    const second = await request("POST", "/api/v1/actions", payload);
+    assert.strictEqual(second.status, 200);
+    assert.strictEqual(second.data?.payment?.id, first.data?.payment?.id);
+
+    const paymentsRes = await request("GET", "/api/payments?year=2026&month=2");
+    assert.strictEqual(paymentsRes.status, 200);
+    const matching = (paymentsRes.data || []).filter(
+      (row) => row.id === first.data.payment.id
+    );
+    assert.strictEqual(matching.length, 1);
+  });
+
+  test("action audit endpoint returns stored action status/result", async () => {
+    const actionId = `janitor_action_lookup_${Math.random().toString(36).slice(2)}`;
+    const runRes = await request("POST", "/api/v1/actions", {
+      action_id: actionId,
+      type: "UPDATE_INSTANCE_FIELDS",
+      instance_id: instanceId,
+      note: "lookup-test",
+    });
+    assert.strictEqual(runRes.status, 200);
+
+    const lookupRes = await request("GET", `/api/v1/actions/${actionId}`);
+    assert.strictEqual(lookupRes.status, 200);
+    assert.strictEqual(lookupRes.data.ok, true);
+    assert.strictEqual(lookupRes.data.action.action_id, actionId);
+    assert.strictEqual(lookupRes.data.action.status, "ok");
+    assert.strictEqual(lookupRes.data.action.result.action_id, actionId);
+
+    const listRes = await request("GET", "/api/v1/actions?limit=10&status=ok");
+    assert.strictEqual(listRes.status, 200);
+    assert.strictEqual(listRes.data.ok, true);
+    assert.ok(Array.isArray(listRes.data.actions));
+    assert.ok(
+      listRes.data.actions.some((entry) => entry.action_id === actionId),
+      "action list should include the created action"
+    );
+  });
+
+  test("duplicate action id while pending returns 409", async () => {
+    const actionId = `janitor_pending_${Math.random().toString(36).slice(2)}`;
+    db.prepare(
+      "INSERT INTO actions (id, type, payload, created_at, status, result) VALUES (?, ?, ?, ?, ?, NULL)"
+    ).run(
+      actionId,
+      "ADD_PAYMENT",
+      JSON.stringify({ action_id: actionId, type: "ADD_PAYMENT" }),
+      new Date().toISOString(),
+      "pending"
+    );
+
+    const res = await request("POST", "/api/v1/actions", {
+      action_id: actionId,
+      type: "ADD_PAYMENT",
+      instance_id: instanceId,
+      amount: 1,
+      paid_date: "2026-02-22",
+    });
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.data.ok, false);
+    assert.strictEqual(res.data.status, "pending");
+    assert.strictEqual(res.data.action_id, actionId);
+  });
+
   test("month settings roundtrip", async () => {
     const setRes = await request("POST", "/api/month-settings", {
       year: 2026,
@@ -637,6 +819,9 @@ async function run() {
     shareToken = shareRes.data.shareToken;
     assert.ok(shareToken);
     assert.ok(shareToken.length >= 24);
+    assert.ok(typeof shareRes.data.shareUrl === "string");
+    assert.ok(shareRes.data.shareUrl.includes("?share="));
+    assert.ok(typeof shareRes.data.ownerKey === "string");
 
     const publishRes = await request(
       "POST",
@@ -648,6 +833,16 @@ async function run() {
     );
     assert.strictEqual(publishRes.status, 200);
 
+    const publishCurrentRes = await request(
+      "POST",
+      `/api/shares/${shareToken}/publish-current`,
+      { year: 2026, month: 2 }
+    );
+    assert.strictEqual(publishCurrentRes.status, 200);
+    assert.strictEqual(publishCurrentRes.data.ok, true);
+    assert.strictEqual(publishCurrentRes.data.period, "2026-02");
+    assert.ok(Number.isInteger(Number(publishCurrentRes.data.items)));
+
     const viewRes = await request(
       "GET",
       `/api/shares/${shareToken}`,
@@ -657,6 +852,16 @@ async function run() {
     assert.strictEqual(viewRes.status, 200);
     assert.ok(Array.isArray(viewRes.data.payload.items));
     assert.strictEqual(viewRes.headers.get("set-cookie"), null);
+    const etag = viewRes.headers.get("etag");
+    assert.ok(typeof etag === "string" && etag.length > 8, "missing ETag on share view");
+
+    const notModified = await request(
+      "GET",
+      `/api/shares/${shareToken}`,
+      undefined,
+      { useCookie: false, headers: { "if-none-match": etag } }
+    );
+    assert.strictEqual(notModified.status, 304);
 
     const regenRes = await request(
       "POST",
@@ -690,7 +895,405 @@ async function run() {
     assert.strictEqual(viewRes.status, 410);
   });
 
-  test("share management endpoints require owner cookie", async () => {
+  test("creating a new share deactivates previous active share", async () => {
+    const first = await request("POST", "/api/shares", {
+      mode: "live",
+      owner_label: "First",
+    });
+    assert.strictEqual(first.status, 200);
+    const firstToken = first.data.shareToken;
+    assert.ok(firstToken);
+
+    const firstPublish = await request("POST", `/api/shares/${firstToken}/publish`, {
+      schema_version: "1",
+      payload: {
+        schema_version: "1",
+        period: "2026-03",
+        items: [{ id: "one", name_snapshot: "One", due_date: "2026-03-01", status: "pending" }],
+      },
+    });
+    assert.strictEqual(firstPublish.status, 200);
+
+    const second = await request("POST", "/api/shares", {
+      mode: "snapshot",
+      owner_label: "Second",
+    });
+    assert.strictEqual(second.status, 200);
+    const secondToken = second.data.shareToken;
+    assert.ok(secondToken && secondToken !== firstToken);
+
+    const firstView = await request("GET", `/api/shares/${firstToken}`, undefined, {
+      useCookie: false,
+    });
+    assert.strictEqual(firstView.status, 410);
+
+    const ownerView = await request("GET", "/api/shares");
+    assert.strictEqual(ownerView.status, 200);
+    assert.ok(ownerView.data.share);
+    assert.strictEqual(ownerView.data.share.token, secondToken);
+  });
+
+  test("share expiry is validated and persisted", async () => {
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const create = await request("POST", "/api/shares", {
+      mode: "live",
+      owner_label: "Expiry QA",
+      expires_at: future,
+    });
+    assert.strictEqual(create.status, 200);
+    const token = create.data.shareToken;
+    assert.ok(token);
+    assert.strictEqual(typeof create.data.expires_at, "string");
+
+    const ownerView = await request("GET", "/api/shares");
+    assert.strictEqual(ownerView.status, 200);
+    assert.ok(ownerView.data.share);
+
+    const publish = await request("POST", `/api/shares/${token}/publish`, {
+      schema_version: "1",
+      payload: {
+        schema_version: "1",
+        period: "2026-03",
+        items: [
+          {
+            id: "expiry-test-1",
+            name_snapshot: "Expiry test",
+            due_date: "2026-03-01",
+            status: "pending",
+          },
+        ],
+      },
+    });
+    assert.strictEqual(publish.status, 200);
+
+    const tokenView = await request("GET", `/api/shares/${token}`, undefined, {
+      useCookie: false,
+    });
+    assert.strictEqual(tokenView.status, 200);
+    assert.strictEqual(typeof tokenView.data.expiresAt, "string");
+
+    const invalidExpiryCreate = await request("POST", "/api/shares", {
+      mode: "live",
+      expires_at: "not-a-date",
+    });
+    assert.strictEqual(invalidExpiryCreate.status, 400);
+
+    const pastExpiryPatch = await request("PATCH", `/api/shares/${token}`, {
+      expires_at: new Date(Date.now() - 10_000).toISOString(),
+    });
+    assert.strictEqual(pastExpiryPatch.status, 400);
+
+    const clearExpiry = await request("PATCH", `/api/shares/${token}`, {
+      expires_at: null,
+    });
+    assert.strictEqual(clearExpiry.status, 200);
+
+    const soon = new Date(Date.now() + 250).toISOString();
+    const shortCreate = await request("POST", "/api/shares", {
+      mode: "live",
+      owner_label: "Short expiry",
+      expires_at: soon,
+    });
+    assert.strictEqual(shortCreate.status, 200);
+    const shortToken = shortCreate.data.shareToken;
+    assert.ok(shortToken);
+
+    await sleep(350);
+
+    const shortPublic = await request("GET", `/api/shares/${shortToken}`, undefined, {
+      useCookie: false,
+    });
+    assert.strictEqual(shortPublic.status, 410);
+
+    const ownerAfterExpire = await request("GET", "/api/shares");
+    assert.strictEqual(ownerAfterExpire.status, 200);
+    if (ownerAfterExpire.data.share) {
+      assert.notStrictEqual(ownerAfterExpire.data.share.token, shortToken);
+    }
+  });
+
+  test("share payload preserves privacy redaction fields", async () => {
+    const create = await request("POST", "/api/shares", {
+      mode: "snapshot",
+      owner_label: "Privacy",
+    });
+    assert.strictEqual(create.status, 200);
+    const token = create.data.shareToken;
+    assert.ok(token);
+
+    const publish = await request(
+      "POST",
+      `/api/shares/${token}/publish`,
+      {
+        schema_version: "1",
+        payload: {
+          schema_version: "1",
+          period: "2026-03",
+          privacy: {
+            include_amounts: false,
+            include_notes: false,
+            include_categories: true,
+          },
+          items: [
+            {
+              id: "sample-1",
+              name_snapshot: "Rent",
+              due_date: "2026-03-01",
+              status: "pending",
+              amount: null,
+              amount_paid: null,
+              amount_remaining: null,
+              note: null,
+            },
+          ],
+          categories: ["Housing"],
+        },
+      }
+    );
+    assert.strictEqual(publish.status, 200);
+
+    const view = await request("GET", `/api/shares/${token}`, undefined, {
+      useCookie: false,
+    });
+    assert.strictEqual(view.status, 200);
+    assert.strictEqual(view.data.payload.privacy.include_amounts, false);
+    assert.strictEqual(view.data.payload.items[0].amount, null);
+    assert.strictEqual(view.data.payload.items[0].amount_remaining, null);
+  });
+
+  test("bridge share relay lifecycle + payload validation", async () => {
+    const bridgeTmp = fs.mkdtempSync(path.join(os.tmpdir(), "ajl-bridge-janitor-"));
+    const bridgePort = 18080 + Math.floor(Math.random() * 500);
+    const bridgeEnv = {
+      ...process.env,
+      PORT: String(bridgePort),
+      HOST: "127.0.0.1",
+      DATA_DIR: bridgeTmp,
+      DB_FILE: path.join(bridgeTmp, "bridge.sqlite"),
+      COOKIE_SECURE: "false",
+      ALLOWED_ORIGINS: "*",
+      SHARE_VIEWER_BASE_URL: "https://aujourlejour.xyz",
+    };
+
+    const bridgeProc = spawn("node", [path.join(__dirname, "..", "bridge", "server.js")], {
+      env: bridgeEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    bridgeProc.stderr.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+
+    const bridgeBase = `http://127.0.0.1:${bridgePort}`;
+    const bridgeRequest = async (method, urlPath, body, headers = {}) => {
+      const res = await fetch(`${bridgeBase}${urlPath}`, {
+        method,
+        headers: {
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...headers,
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const contentType = res.headers.get("content-type") || "";
+      const data = contentType.includes("application/json") ? await res.json() : await res.text();
+      return { status: res.status, data, headers: res.headers };
+    };
+
+    try {
+      await waitForUrl(`${bridgeBase}/api/health`, 12_000);
+
+      const health = await bridgeRequest("GET", "/api/health");
+      assert.strictEqual(health.status, 200);
+      assert.strictEqual(health.data.ok, true);
+      assert.strictEqual(health.data.app, "ajl-share-relay");
+      const metrics = await bridgeRequest("GET", "/api/metrics");
+      assert.strictEqual(metrics.status, 200);
+      assert.strictEqual(metrics.data.ok, true);
+      assert.strictEqual(typeof metrics.data.metrics.requests_total, "number");
+      assert.strictEqual(typeof metrics.data.metrics.share_lookups, "number");
+      assert.strictEqual(typeof metrics.data.metrics.llm_requests, "number");
+
+      const bridgeExpiry = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+      const create = await bridgeRequest("POST", "/api/shares", {
+        mode: "live",
+        owner_label: "Bridge QA",
+        expires_at: bridgeExpiry,
+      });
+      assert.strictEqual(create.status, 200, `bridge create failed: ${JSON.stringify(create.data)}`);
+      const token = create.data.shareToken;
+      const ownerKey = create.data.ownerKey;
+      assert.ok(typeof token === "string" && token.length >= 24);
+      assert.ok(typeof ownerKey === "string" && ownerKey.length >= 24);
+      assert.strictEqual(typeof create.data.expires_at, "string");
+
+      const unauthorizedOwnerRead = await bridgeRequest("GET", "/api/shares");
+      assert.strictEqual(unauthorizedOwnerRead.status, 401);
+
+      const ownerRead = await bridgeRequest("GET", "/api/shares", undefined, {
+        "X-AJL-Share-Owner": ownerKey,
+      });
+      assert.strictEqual(ownerRead.status, 200);
+      assert.ok(ownerRead.data.share);
+      assert.strictEqual(typeof ownerRead.data.share.expires_at, "string");
+
+      const invalidPublish = await bridgeRequest(
+        "POST",
+        `/api/shares/${token}/publish`,
+        {
+          schema_version: "1",
+          payload: {
+            schema_version: "1",
+            period: "2026-03",
+            items: [{ id: "bad", name_snapshot: "Bad item", status: "pending" }],
+          },
+        },
+        { "X-AJL-Share-Owner": ownerKey }
+      );
+      assert.strictEqual(invalidPublish.status, 400);
+
+      const publish = await bridgeRequest(
+        "POST",
+        `/api/shares/${token}/publish`,
+        {
+          schema_version: "1",
+          payload: {
+            schema_version: "1",
+            period: "2026-03",
+            privacy: {
+              include_amounts: false,
+              include_notes: true,
+              include_categories: true,
+            },
+            items: [
+              {
+                id: "bridge-1",
+                template_id: "tmpl-1",
+                year: 2026,
+                month: 3,
+                name_snapshot: "Bridge Rent",
+                category_snapshot: "Housing",
+                amount: null,
+                due_date: "2026-03-01",
+                status: "pending",
+                paid_date: null,
+                amount_paid: null,
+                amount_remaining: null,
+                essential_snapshot: true,
+                autopay_snapshot: false,
+                note: null,
+              },
+            ],
+            categories: ["Housing"],
+          },
+        },
+        { "X-AJL-Share-Owner": ownerKey }
+      );
+      assert.strictEqual(publish.status, 200, `bridge publish failed: ${JSON.stringify(publish.data)}`);
+
+      const invalidExpiryPatch = await bridgeRequest(
+        "PATCH",
+        `/api/shares/${token}`,
+        { expires_at: "not-a-date" },
+        { "X-AJL-Share-Owner": ownerKey }
+      );
+      assert.strictEqual(invalidExpiryPatch.status, 400);
+
+      const publicView = await bridgeRequest("GET", `/api/shares/${token}`);
+      assert.strictEqual(publicView.status, 200);
+      assert.strictEqual(publicView.data.payload.privacy.include_amounts, false);
+      assert.strictEqual(publicView.data.payload.items[0].amount, null);
+      const bridgeEtag = publicView.headers.get("etag");
+      assert.ok(typeof bridgeEtag === "string" && bridgeEtag.length > 8);
+      const bridgeNotModified = await bridgeRequest(
+        "GET",
+        `/api/shares/${token}`,
+        undefined,
+        { "if-none-match": bridgeEtag }
+      );
+      assert.strictEqual(bridgeNotModified.status, 304);
+
+      const regen = await bridgeRequest(
+        "POST",
+        `/api/shares/${token}/regenerate`,
+        {},
+        { "X-AJL-Share-Owner": ownerKey }
+      );
+      assert.strictEqual(regen.status, 200);
+      assert.ok(typeof regen.data.shareToken === "string" && regen.data.shareToken !== token);
+
+      const oldTokenView = await bridgeRequest("GET", `/api/shares/${token}`);
+      assert.ok(oldTokenView.status === 404 || oldTokenView.status === 410);
+
+      const newTokenView = await bridgeRequest("GET", `/api/shares/${regen.data.shareToken}`);
+      assert.strictEqual(newTokenView.status, 200);
+
+      const secondCreate = await bridgeRequest(
+        "POST",
+        "/api/shares",
+        {
+          mode: "snapshot",
+          owner_label: "Bridge QA second",
+        },
+        { "X-AJL-Share-Owner": ownerKey }
+      );
+      assert.strictEqual(secondCreate.status, 200);
+      const secondToken = secondCreate.data.shareToken;
+      assert.ok(typeof secondToken === "string" && secondToken !== regen.data.shareToken);
+
+      const priorView = await bridgeRequest("GET", `/api/shares/${regen.data.shareToken}`);
+      assert.strictEqual(priorView.status, 410);
+
+      const ownerAfterSecond = await bridgeRequest("GET", "/api/shares", undefined, {
+        "X-AJL-Share-Owner": ownerKey,
+      });
+      assert.strictEqual(ownerAfterSecond.status, 200);
+      assert.ok(ownerAfterSecond.data.share);
+      assert.strictEqual(ownerAfterSecond.data.share.token, secondToken);
+
+      const shortExpiry = new Date(Date.now() + 300).toISOString();
+      const shortShare = await bridgeRequest("POST", "/api/shares", {
+        mode: "live",
+        owner_label: "Short bridge expiry",
+        expires_at: shortExpiry,
+      });
+      assert.strictEqual(shortShare.status, 200);
+      const shortToken = shortShare.data.shareToken;
+      assert.ok(shortToken);
+
+      await sleep(380);
+      const shortPublic = await bridgeRequest("GET", `/api/shares/${shortToken}`);
+      assert.strictEqual(shortPublic.status, 410);
+
+      const shortPublish = await bridgeRequest(
+        "POST",
+        `/api/shares/${shortToken}/publish`,
+        {
+          schema_version: "1",
+          payload: {
+            schema_version: "1",
+            period: "2026-03",
+            items: [
+              {
+                id: "bridge-expired-1",
+                name_snapshot: "Expired link item",
+                due_date: "2026-03-01",
+                status: "pending",
+              },
+            ],
+          },
+        },
+        { "X-AJL-Share-Owner": shortShare.data.ownerKey }
+      );
+      assert.strictEqual(shortPublish.status, 410);
+    } finally {
+      await stopChildProcess(bridgeProc);
+      if (stderr && bridgeProc.exitCode && bridgeProc.exitCode !== 0) {
+        throw new Error(`Bridge process failed: ${stderr}`);
+      }
+    }
+  });
+
+  test("share management endpoints require owner auth", async () => {
     const token = "missing_or_fake_token_1234567890AB";
     const checks = [
       ["GET", "/api/shares"],
@@ -698,6 +1301,7 @@ async function run() {
       ["PATCH", `/api/shares/${token}`, { isActive: false }],
       ["POST", `/api/shares/${token}/regenerate`, {}],
       ["POST", `/api/shares/${token}/publish`, { schema_version: "2", payload: { items: [] } }],
+      ["POST", `/api/shares/${token}/publish-current`, {}],
     ];
 
     for (const [method, url, body] of checks) {
@@ -708,6 +1312,33 @@ async function run() {
         `Expected 401 for ${method} ${url}, got ${res.status}`
       );
     }
+  });
+
+  test("share management endpoints accept owner header auth", async () => {
+    const create = await request("POST", "/api/shares", { mode: "live" });
+    assert.strictEqual(create.status, 200);
+    const token = create.data.shareToken;
+    const ownerKey = create.data.ownerKey;
+    assert.ok(token);
+    assert.ok(ownerKey);
+
+    const withoutCookie = await request("GET", "/api/shares", undefined, {
+      useCookie: false,
+      headers: { "X-AJL-Share-Owner": ownerKey },
+    });
+    assert.strictEqual(withoutCookie.status, 200);
+    assert.ok(withoutCookie.data.share);
+    assert.strictEqual(withoutCookie.data.share.ownerKey, ownerKey);
+    const managedToken = withoutCookie.data.share.token;
+    assert.ok(typeof managedToken === "string" && managedToken.length >= 24);
+
+    const patch = await request(
+      "PATCH",
+      `/api/shares/${managedToken}`,
+      { mode: "snapshot" },
+      { useCookie: false, headers: { "X-AJL-Share-Owner": ownerKey } }
+    );
+    assert.strictEqual(patch.status, 200);
   });
 
   test("share public lookup is rate limited", async () => {
@@ -743,11 +1374,14 @@ async function run() {
       ["PATCH", "/api/shares/short", { isActive: false }, { useCookie: true }],
       ["POST", "/api/shares/short/regenerate", {}, { useCookie: true }],
       ["POST", "/api/shares/short/publish", { payload: { items: [] } }, { useCookie: true }],
+      ["POST", "/api/shares/short/publish-current", {}, { useCookie: true }],
     ];
     for (const [method, url, body, opts] of checks) {
       const res = await request(method, url, body, opts);
       assert.strictEqual(res.status, 400, `Expected 400 for ${method} ${url}, got ${res.status}`);
     }
+    const invalidViewRoute = await request("GET", "/s/short", undefined, { useCookie: false });
+    assert.strictEqual(invalidViewRoute.status, 404);
   });
 
   test("export/import roundtrip", async () => {
@@ -884,6 +1518,157 @@ async function run() {
     }
   });
 
+  test("share UI controls are enabled in both builds", () => {
+    const files = [
+      path.join(__dirname, "..", "public", "index.html"),
+      path.join(__dirname, "..", "docs", "index.html"),
+    ];
+    for (const file of files) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes('id="share-open"'), `${path.basename(file)} missing share-open button`);
+      assert.ok(raw.includes('id="share-modal"'), `${path.basename(file)} missing share modal`);
+      assert.ok(raw.includes('id="share-include-amounts"'), `${path.basename(file)} missing share include amounts`);
+      assert.ok(raw.includes('id="share-include-notes"'), `${path.basename(file)} missing share include notes`);
+      assert.ok(raw.includes('id="share-include-categories"'), `${path.basename(file)} missing share include categories`);
+      assert.ok(raw.includes('id="share-expiry"'), `${path.basename(file)} missing share expiry control`);
+      assert.ok(raw.includes('id="share-expiry-custom"'), `${path.basename(file)} missing custom expiry input`);
+      assert.ok(raw.includes('id="share-owner-label"'), `${path.basename(file)} missing share owner label input`);
+      assert.ok(raw.includes('id="share-refresh"'), `${path.basename(file)} missing share-refresh action`);
+      assert.ok(raw.includes('id="share-relay-status"'), `${path.basename(file)} missing share relay status`);
+      assert.ok(raw.includes('id="shared-updated"'), `${path.basename(file)} missing shared-updated field`);
+      const shareOpenLine = raw.split("\n").find((line) => line.includes('id="share-open"')) || "";
+      const shareModalLine = raw.split("\n").find((line) => line.includes('id="share-modal"')) || "";
+      assert.ok(!shareOpenLine.includes("local-only"), `${path.basename(file)} share-open must not be local-only`);
+      assert.ok(!shareModalLine.includes("local-only"), `${path.basename(file)} share-modal must not be local-only`);
+    }
+  });
+
+  test("diagnostics controls exist in local and web html builds", () => {
+    const files = [
+      path.join(__dirname, "..", "public", "index.html"),
+      path.join(__dirname, "..", "docs", "index.html"),
+    ];
+    for (const file of files) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes('id="diagnostics-section"'), `${path.basename(file)} missing diagnostics-section`);
+      assert.ok(raw.includes('id="diagnostics-run"'), `${path.basename(file)} missing diagnostics-run`);
+      assert.ok(raw.includes('id="diagnostics-clear-cache"'), `${path.basename(file)} missing diagnostics-clear-cache`);
+      assert.ok(raw.includes('id="diagnostics-copy"'), `${path.basename(file)} missing diagnostics-copy`);
+      assert.ok(raw.includes('id="diagnostics-output"'), `${path.basename(file)} missing diagnostics-output`);
+    }
+  });
+
+  test("share publish retry queue primitives exist in app", () => {
+    const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    assert.ok(appFile.includes("function flushSharePublishQueue()"), "flushSharePublishQueue missing");
+    assert.ok(appFile.includes("getSharePublishRetryDelayMs"), "share retry delay helper missing");
+    assert.ok(appFile.includes("Share relay timeout. Falling back to local service."), "relay fallback warning missing");
+    assert.ok(appFile.includes("shareRelayBackoffUntil"), "share relay backoff state missing");
+    assert.ok(
+      appFile.includes("Share relay unavailable. Try again in a few seconds."),
+      "web relay unavailable message missing"
+    );
+    assert.ok(appFile.includes("function setShareBusy("), "setShareBusy helper missing");
+  });
+
+  test("share token routing supports query and path", () => {
+    const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    assert.ok(
+      appFile.includes("new URLSearchParams(window.location.search).get(\"share\")"),
+      "public/app.js must parse share token from query params"
+    );
+    assert.ok(
+      appFile.includes("window.location.pathname.match(/^\\/s\\/([A-Za-z0-9_-]{24,128})\\/?$/)"),
+      "public/app.js must parse share token from /s/:token path"
+    );
+    assert.ok(
+      appFile.includes("startSharedLivePolling"),
+      "public/app.js must support live share polling for viewer mode"
+    );
+    assert.ok(
+      appFile.includes("state.dataVersion += 1"),
+      "public/app.js must bump dataVersion when shared payload refreshes"
+    );
+    assert.ok(
+      appFile.includes("function parseFastCommand"),
+      "public/app.js must include deterministic fast-path command parser"
+    );
+  });
+
+  test("fast command parser covers high-frequency local actions", () => {
+    const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    const requiredSnippets = [
+      "function parseFastEssentialsIntent",
+      "function parseFastExportIntent",
+      "function parseFastBatchQueueIntent",
+      "function parseFastTemplateMutationIntent",
+      "function parseFastBulkTemplateIntent",
+      "function parseFastInstanceMutationIntent",
+      "function parseFastBulkInstanceIntent",
+      "function parseFastShareIntent",
+      "function parseFastAssistantIntent",
+      "function parseFastQuestionIntent",
+      "function resolveByName",
+      "function formatAmbiguityMessage",
+      "intent: \"MARK_ALL_OVERDUE\"",
+      "intent: \"MARK_ALL_DUE_SOON\"",
+      "intent: \"MARK_INSTANCES_BULK_DONE\"",
+      "intent: \"MARK_INSTANCES_BULK_PENDING\"",
+      "intent: \"SKIP_INSTANCES_BULK\"",
+      "intent: \"EXPORT_BACKUP\"",
+      "intent: \"EXPORT_MONTH\"",
+      "intent: \"SET_ESSENTIALS_ONLY\"",
+      "intent: \"UPDATE_INSTANCE_FIELDS\"",
+      "intent: \"UPDATE_AMOUNT_FLEX\"",
+      "intent: \"CREATE_TEMPLATES_BULK\"",
+      "intent: \"DELETE_TEMPLATES_BULK\"",
+      "intent: \"ARCHIVE_TEMPLATES_BULK\"",
+      "intent: \"ACTIVATE_TEMPLATES_BULK\"",
+      "intent: \"SHOW_SHARE\"",
+      "intent: \"CREATE_SHARE\"",
+      "intent: \"REFRESH_SHARE\"",
+      "intent: \"DISABLE_SHARE\"",
+      "intent: \"REGENERATE_SHARE\"",
+      "intent: \"COPY_SHARE\"",
+      "intent: \"SHOW_ASSISTANT\"",
+      "intent: \"START_AGENT_AUTH\"",
+      "intent: \"LOCAL_SUMMARY_REMAINING\"",
+      "intent: \"LOCAL_SUMMARY_OVERDUE\"",
+      "intent: \"LOCAL_SUMMARY_DUE_SOON\"",
+      "intent: \"LOCAL_SUMMARY_FREE\"",
+      "function parseFastMonthIntent",
+      "FAST_MONTH_MAP",
+      "function canAutoExecuteProposal",
+      "AUTO_EXECUTE_INTENTS",
+      "function logAutoAgentExecution",
+    ];
+    requiredSnippets.forEach((snippet) => {
+      assert.ok(appFile.includes(snippet), `public/app.js missing fast parser snippet: ${snippet}`);
+    });
+  });
+
+  test("web entrypoint defines share relay base config", () => {
+    const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+    assert.ok(
+      html.includes("window.AJL_SHARE_BASE_URL"),
+      "public/index.html must define window.AJL_SHARE_BASE_URL"
+    );
+    assert.ok(
+      html.includes("window.AJL_SHARE_VIEWER_BASE_URL"),
+      "public/index.html must define window.AJL_SHARE_VIEWER_BASE_URL"
+    );
+  });
+
+  test("web adapter exposes relay-backed share support hooks", () => {
+    const adapter = fs.readFileSync(path.join(__dirname, "..", "docs", "web-adapter.js"), "utf8");
+    assert.ok(adapter.includes("const SHARE_BASE_URL"), "web-adapter missing SHARE_BASE_URL config");
+    assert.ok(adapter.includes("X-AJL-Share-Owner"), "web-adapter must pass owner key header");
+    assert.ok(
+      adapter.includes("if (path.startsWith(\"/api/shares\"))"),
+      "web-adapter missing /api/shares branch"
+    );
+  });
+
   test("today list virtualization primitives exist in both builds", () => {
     const files = [
       path.join(__dirname, "..", "public", "app.js"),
@@ -972,6 +1757,14 @@ async function run() {
     });
   });
 
+  test("migration framework exists", () => {
+    const migrationFile = path.join(__dirname, "..", "migrations", "index.js");
+    assert.ok(fs.existsSync(migrationFile), "Missing migrations/index.js");
+    const raw = fs.readFileSync(migrationFile, "utf8");
+    assert.ok(raw.includes("schema_migrations"), "Migration framework must track schema_migrations");
+    assert.ok(raw.includes("runMigrations"), "Migration framework must export runMigrations");
+  });
+
   test("repo docs do not contain absolute local home paths", () => {
     const textFiles = [
       path.join(__dirname, "..", "README.md"),
@@ -1027,8 +1820,22 @@ async function run() {
     assert.strictEqual(result.status, 0, result.stderr || "CLI exited non-zero");
     const out = `${result.stdout || ""}${result.stderr || ""}`;
     assert.ok(out.includes("AJL CLI"));
+    assert.ok(out.includes("health"));
+    assert.ok(out.includes("doctor"));
+    assert.ok(out.includes("lan"));
     assert.ok(out.includes("backup"));
     assert.ok(out.includes("export-json"));
+    assert.ok(out.includes("diagnostics"));
+    assert.ok(out.includes("clear-llm-cache"));
+    assert.ok(out.includes("mamdou-status"));
+    assert.ok(out.includes("mamdou-login"));
+    assert.ok(out.includes("mamdou-logout"));
+    assert.ok(out.includes("share-link"));
+    assert.ok(out.includes("--publish"));
+    assert.ok(out.includes("--year <yyyy>"));
+    assert.ok(out.includes("--month <1-12>"));
+    assert.ok(out.includes("actions"));
+    assert.ok(out.includes("action"));
   });
 
   test("start/stop scripts are valid bash syntax", () => {
@@ -1109,6 +1916,23 @@ async function run() {
       const aRaw = fs.readFileSync(aPath, "utf8").trim();
       const bRaw = fs.readFileSync(bPath, "utf8").trim();
       assert.strictEqual(bRaw, aRaw, `${b} drifted from ${a}`);
+    }
+  });
+
+  test("web 404 route redirects share path to query token", () => {
+    const pages = [
+      path.join(__dirname, "..", "docs", "404.html"),
+      path.join(__dirname, "..", "public", "404.html"),
+    ];
+    for (const pagePath of pages) {
+      assert.ok(fs.existsSync(pagePath), `${pagePath} is missing`);
+      const raw = fs.readFileSync(pagePath, "utf8");
+      assert.ok(
+        raw.includes("/s/") || raw.includes("\\/s\\/"),
+        `${pagePath} must inspect /s/:token path`
+      );
+      assert.ok(raw.includes("location.replace(\"/?share=\""), `${pagePath} must redirect token to query route`);
+      assert.ok(raw.includes("location.replace(\"/\")"), `${pagePath} must fallback to root`);
     }
   });
 
@@ -1514,6 +2338,39 @@ async function run() {
     const passthroughRes = await sandbox.window.fetch(`${base}/not-api`);
     assert.strictEqual(passthroughRes.status, 200);
     assert.strictEqual(upstreamCalls.length >= 1, true);
+  });
+
+  test("web adapter omits owner header for public share lookup", async () => {
+    const ownerKey = "owner_key_abcdefghijklmnopqrstuvwxyz012345";
+    const { sandbox, upstreamCalls } = createWebAdapterSandbox({
+      shareBaseUrl: "https://relay.example.test",
+      ownerKey,
+    });
+    const base = "https://example.test";
+    const token = "share_token_abcdefghijklmnopqrstuvwxyz";
+    const res = await sandbox.window.fetch(`${base}/api/shares/${token}`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(upstreamCalls.length, 1);
+    const call = upstreamCalls[0];
+    assert.strictEqual(String(call.input), `https://relay.example.test/api/shares/${token}`);
+    const headers = new Headers(call.init.headers || {});
+    assert.strictEqual(headers.get("X-AJL-Share-Owner"), null);
+  });
+
+  test("web adapter forwards owner header for share management endpoints", async () => {
+    const ownerKey = "owner_key_abcdefghijklmnopqrstuvwxyz012345";
+    const { sandbox, upstreamCalls } = createWebAdapterSandbox({
+      shareBaseUrl: "https://relay.example.test",
+      ownerKey,
+    });
+    const base = "https://example.test";
+    const res = await sandbox.window.fetch(`${base}/api/shares`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(upstreamCalls.length, 1);
+    const call = upstreamCalls[0];
+    assert.strictEqual(String(call.input), "https://relay.example.test/api/shares");
+    const headers = new Headers(call.init.headers || {});
+    assert.strictEqual(headers.get("X-AJL-Share-Owner"), ownerKey);
   });
 
   for (const t of tests) {

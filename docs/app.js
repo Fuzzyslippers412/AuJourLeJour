@@ -7,9 +7,13 @@ const state = {
   settings: {
     defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
     categories: [],
+    share_base_url: "",
+    share_viewer_base_url: "",
   },
   nudges: [],
   lastNudgeKey: null,
+  lastNudgeAt: 0,
+  nudgeInFlight: false,
   llmStatus: { status: "unknown", auth_url: null, error: null },
   llmChecked: false,
   qwenAuth: { connected: false, status: "unknown", session_id: null, verification_uri_complete: null, interval_seconds: null },
@@ -47,10 +51,26 @@ const state = {
   summaryExpanded: false,
   shareToken: null,
   shareInfo: null,
+  shareBusy: false,
+  shareOwnerLabel: "",
+  shareOwnerKey: "",
+  shareExpiryPreset: "never",
+  sharePrivacy: null,
+  sharedMeta: null,
+  sharedEtag: "",
+  shareOptions: {
+    includeAmounts: true,
+    includeNotes: true,
+    includeCategories: true,
+  },
+  shareRelayBackoffUntil: 0,
   lanInfo: null,
   integrityStatus: "unknown",
   dataVersion: 0,
   summaryCache: null,
+  agentBusy: false,
+  lastAgentInput: "",
+  lastAgentSubmittedAt: 0,
 };
 
 const weeksPerMonth = 4.33;
@@ -59,16 +79,34 @@ let flashTimer = null;
 let autoMonthTimer = null;
 let refreshTimer = null;
 let splitViewTimer = null;
+let sharedLiveTimer = null;
+let sharePublishTimer = null;
+let sharePublishRetryTimer = null;
+let sharePublishInFlight = false;
+let sharePublishRetryCount = 0;
+let sharePublishDirty = false;
+let diagnosticsInFlight = false;
+let lastDiagnosticsAt = 0;
 let scrollShadowBound = false;
 let storageFailureHandled = false;
-const MAX_LLM_INSTANCES = 60;
-const MAX_LLM_TEMPLATES = 60;
-const MAX_LLM_DUE = 8;
+const MAX_LLM_INSTANCES = 20;
+const MAX_LLM_TEMPLATES = 20;
+const MAX_LLM_FUNDS = 10;
+const MAX_LLM_DUE = 6;
+const NUDGE_CACHE_TTL_MS = 45_000;
+const AGENT_DUPLICATE_WINDOW_MS = 1200;
 const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
+const SHARE_BASE_URL_CONFIG = String(window.AJL_SHARE_BASE_URL || "").trim().replace(/\/+$/, "");
 const PROFILE_NAME_KEY = "ajl_profile_name";
 const BACKUP_LAST_KEY = "ajl_last_backup_at";
 const LOCAL_EDIT_COUNT_KEY = "ajl_local_edit_count";
 const LOCAL_BACKUP_REMINDER_KEY = "ajl_local_backup_reminder";
+const SHARE_OWNER_KEY = "ajl_share_owner_key";
+const SHARE_OPTIONS_KEY = "ajl_share_options";
+const SHARE_LIVE_REFRESH_MS = 8000;
+const SHARE_RELAY_TIMEOUT_MS = 4500;
+const SHARE_PUBLISH_BASE_DELAY_MS = 1500;
+const SHARE_PUBLISH_MAX_DELAY_MS = 60000;
 const PWA_DB_NAME = "ajl_pwa";
 const PWA_DB_PREFIX = "ajl_pwa";
 const WEB_META_KEY = "auj_web_meta";
@@ -92,19 +130,42 @@ async function readApiData(res) {
   return unwrapApiData(payload);
 }
 
+function getRequestIdFromResponse(res) {
+  try {
+    const id = res?.headers?.get("x-request-id");
+    return id ? String(id) : "";
+  } catch (err) {
+    return "";
+  }
+}
+
 async function apiFetch(url, options = {}, opts = {}) {
   const res = await fetch(url, options);
   if (!res.ok && !opts.silent) {
     let message = `Request failed (${res.status}).`;
+    const requestId = getRequestIdFromResponse(res);
     try {
       const data = await res.clone().json();
       message = getErrorMessage(data, message);
     } catch (err) {
       // ignore
     }
+    if (requestId) {
+      message = `${message} (ref: ${requestId})`;
+    }
     showSystemBanner(message);
   }
   return res;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = SHARE_RELAY_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(800, Number(timeoutMs) || SHARE_RELAY_TIMEOUT_MS));
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function getErrorMessage(data, fallback) {
@@ -268,9 +329,18 @@ const els = {
   shareLink: document.getElementById("share-link"),
   shareCopy: document.getElementById("share-copy"),
   shareLive: document.getElementById("share-live"),
+  shareExpiry: document.getElementById("share-expiry"),
+  shareExpiryCustomWrap: document.getElementById("share-expiry-custom-wrap"),
+  shareExpiryCustom: document.getElementById("share-expiry-custom"),
+  shareOwnerLabel: document.getElementById("share-owner-label"),
+  shareIncludeAmounts: document.getElementById("share-include-amounts"),
+  shareIncludeNotes: document.getElementById("share-include-notes"),
+  shareIncludeCategories: document.getElementById("share-include-categories"),
   shareCreate: document.getElementById("share-create"),
+  shareRefresh: document.getElementById("share-refresh"),
   shareRegenerate: document.getElementById("share-regenerate"),
   shareDisable: document.getElementById("share-disable"),
+  shareRelayStatus: document.getElementById("share-relay-status"),
   backupOpen: document.getElementById("open-backup"),
   backupSection: document.getElementById("backup-section"),
   backupLast: document.getElementById("backup-last"),
@@ -290,6 +360,10 @@ const els = {
   storageHealth: document.getElementById("storage-health"),
   lanUrl: document.getElementById("lan-url"),
   lanCopy: document.getElementById("lan-copy"),
+  diagnosticsRun: document.getElementById("diagnostics-run"),
+  diagnosticsClearCache: document.getElementById("diagnostics-clear-cache"),
+  diagnosticsCopy: document.getElementById("diagnostics-copy"),
+  diagnosticsOutput: document.getElementById("diagnostics-output"),
   previewReadonly: document.getElementById("preview-readonly"),
   setupCta: document.getElementById("setup-cta"),
   ctaImport: document.getElementById("cta-import"),
@@ -329,6 +403,7 @@ const els = {
   summaryCountDone: document.getElementById("summary-count-done"),
   sharedHeader: document.getElementById("shared-header"),
   sharedOwner: document.getElementById("shared-owner"),
+  sharedUpdated: document.getElementById("shared-updated"),
   queueOverdue: document.getElementById("queue-overdue"),
   queueSoon: document.getElementById("queue-soon"),
   queueLater: document.getElementById("queue-later"),
@@ -421,6 +496,15 @@ const els = {
   assistantConnectionTitle: document.getElementById("assistant-connection-title"),
   assistantConnectionBody: document.getElementById("assistant-connection-body"),
   assistantConnectionAction: document.getElementById("assistant-connection-action"),
+  agentInlineConnection: document.getElementById("agent-inline-connection"),
+  agentInlineOpen: document.getElementById("agent-inline-open"),
+  agentInlineInput: document.getElementById("agent-inline-input"),
+  agentInlineSend: document.getElementById("agent-inline-send"),
+  agentInlineStatus: document.getElementById("agent-inline-status"),
+  agentInlineActions: document.getElementById("agent-inline-actions"),
+  agentInlineConfirm: document.getElementById("agent-inline-confirm"),
+  agentInlineCancel: document.getElementById("agent-inline-cancel"),
+  agentInlineShortcuts: Array.from(document.querySelectorAll("[data-agent-shortcut]")),
   llmAgentInput: document.getElementById("llm-agent-input"),
   llmAgentSend: document.getElementById("llm-agent-send"),
   llmAgentOutput: document.getElementById("llm-agent-output"),
@@ -443,6 +527,14 @@ function formatMoney(value) {
     currency: "USD",
     minimumFractionDigits: 2,
   }).format(amount);
+}
+
+function isSharedAmountsHidden() {
+  return !!(state.readOnly && state.sharePrivacy && state.sharePrivacy.include_amounts === false);
+}
+
+function formatMoneyDisplay(value) {
+  return isSharedAmountsHidden() ? "Hidden" : formatMoney(value);
 }
 
 function escapeCsv(value) {
@@ -478,6 +570,209 @@ function saveProfileName(name) {
   } catch (err) {
     // ignore
   }
+}
+
+function loadShareOwnerKey() {
+  try {
+    return localStorage.getItem(SHARE_OWNER_KEY) || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function saveShareOwnerKey(key) {
+  try {
+    if (!key) localStorage.removeItem(SHARE_OWNER_KEY);
+    else localStorage.setItem(SHARE_OWNER_KEY, key);
+  } catch (err) {
+    // ignore
+  }
+}
+
+function loadShareOptions() {
+  const defaults = {
+    includeAmounts: true,
+    includeNotes: true,
+    includeCategories: true,
+  };
+  try {
+    const raw = localStorage.getItem(SHARE_OPTIONS_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw);
+    return {
+      includeAmounts: parsed.includeAmounts !== false,
+      includeNotes: parsed.includeNotes !== false,
+      includeCategories: parsed.includeCategories !== false,
+    };
+  } catch (err) {
+    return defaults;
+  }
+}
+
+function saveShareOptions() {
+  try {
+    localStorage.setItem(
+      SHARE_OPTIONS_KEY,
+      JSON.stringify({
+        includeAmounts: state.shareOptions.includeAmounts !== false,
+        includeNotes: state.shareOptions.includeNotes !== false,
+        includeCategories: state.shareOptions.includeCategories !== false,
+      })
+    );
+  } catch (err) {
+    // ignore
+  }
+}
+
+function getShareBaseUrl() {
+  const fromSettings = String(state.settings?.share_base_url || "").trim().replace(/\/+$/, "");
+  if (fromSettings) return fromSettings;
+  return SHARE_BASE_URL_CONFIG;
+}
+
+function getShareViewerBaseUrl() {
+  const fromSettings = String(state.settings?.share_viewer_base_url || "").trim().replace(/\/+$/, "");
+  if (fromSettings) return fromSettings;
+  const host = String(window.location.hostname || "").toLowerCase();
+  const localHost =
+    host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
+  if (!AJL_WEB_MODE && localHost && state.lanInfo && Array.isArray(state.lanInfo.urls) && state.lanInfo.urls[0]) {
+    return String(state.lanInfo.urls[0]).replace(/\/+$/, "");
+  }
+  return window.location.origin.replace(/\/+$/, "");
+}
+
+function hostLooksLocal(urlString) {
+  try {
+    const parsed = new URL(urlString);
+    const host = String(parsed.hostname || "").toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
+  } catch (err) {
+    return false;
+  }
+}
+
+function getShareNetworkMode() {
+  const shareBase = getShareBaseUrl();
+  const viewerBase = getShareViewerBaseUrl();
+  const viewerLocal = hostLooksLocal(viewerBase);
+  if (shareBase) {
+    return {
+      mode: "relay",
+      tone: "ok",
+      message: `Share mode: Relay (${shareBase.replace(/^https?:\/\//i, "")})`,
+      warning: viewerLocal ? "Viewer base resolves to localhost; other devices cannot open the link." : "",
+    };
+  }
+  return {
+    mode: "lan",
+    tone: viewerLocal ? "warn" : "ok",
+    message: viewerLocal ? "Share mode: Localhost only (same device)." : "Share mode: LAN direct.",
+    warning: viewerLocal ? "Use LAN URL or set SHARE_VIEWER_BASE_URL for multi-device access." : "",
+  };
+}
+
+async function ensureShareViewerBaseReady() {
+  if (AJL_WEB_MODE) return;
+  const host = String(window.location.hostname || "").toLowerCase();
+  const localHost =
+    host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
+  if (!localHost) return;
+  const urls = state.lanInfo && Array.isArray(state.lanInfo.urls) ? state.lanInfo.urls : [];
+  if (urls.length > 0) return;
+  await loadLanInfo();
+}
+
+function buildShareViewerUrl(token, fallbackUrl = "") {
+  const cleanToken = String(token || "").trim();
+  if (!cleanToken) return fallbackUrl || "";
+  if (fallbackUrl && typeof fallbackUrl === "string") {
+    if (/^https?:\/\//i.test(fallbackUrl)) {
+      return fallbackUrl;
+    }
+    if (fallbackUrl.startsWith("/")) {
+      return `${getShareViewerBaseUrl()}${fallbackUrl}`;
+    }
+  }
+  const base = getShareViewerBaseUrl();
+  return `${base}/?share=${encodeURIComponent(cleanToken)}`;
+}
+
+async function shareFetch(path, options = {}) {
+  const base = getShareBaseUrl();
+  const headers = new Headers(options.headers || {});
+  const isPublicShareLookup = /^\/api\/shares\/[A-Za-z0-9_-]{12,}$/.test(path);
+  const isOwnerPath = path === "/api/shares" || path.startsWith("/api/shares/");
+  if (state.shareOwnerKey && !isPublicShareLookup) {
+    headers.set("X-AJL-Share-Owner", state.shareOwnerKey);
+  }
+  const init = {
+    ...options,
+    headers,
+  };
+  const localInit = {
+    ...init,
+    credentials: "same-origin",
+  };
+  const remoteInit = {
+    ...init,
+    credentials: "omit",
+  };
+  if (!base) {
+    return fetch(path, localInit);
+  }
+  if (!AJL_WEB_MODE && Date.now() < Number(state.shareRelayBackoffUntil || 0)) {
+    return fetch(path, localInit);
+  }
+  try {
+    const remoteRes = await fetchWithTimeout(`${base}${path}`, remoteInit, SHARE_RELAY_TIMEOUT_MS);
+    if (
+      remoteRes.status === 401 &&
+      state.shareOwnerKey &&
+      isOwnerPath &&
+      !isPublicShareLookup
+    ) {
+      state.shareOwnerKey = "";
+      saveShareOwnerKey("");
+      updateShareStatusLine("Owner key expired. Create a new share link.", "warn");
+    }
+    if (
+      !AJL_WEB_MODE &&
+      [401, 404, 408, 429, 500, 502, 503, 504].includes(Number(remoteRes.status || 0))
+    ) {
+      state.shareRelayBackoffUntil = Date.now() + 15_000;
+      updateShareStatusLine(
+        `Share relay HTTP ${remoteRes.status}. Falling back to local service.`,
+        "warn"
+      );
+      return fetch(path, localInit);
+    }
+    state.shareRelayBackoffUntil = 0;
+    return remoteRes;
+  } catch (err) {
+    if (!AJL_WEB_MODE) {
+      state.shareRelayBackoffUntil = Date.now() + 15_000;
+      updateShareStatusLine("Share relay timeout. Falling back to local service.", "warn");
+      return fetch(path, localInit);
+    }
+    throw new Error("Share relay unavailable. Try again in a few seconds.");
+  }
+}
+
+async function readApiErrorMessage(res, fallbackMessage) {
+  try {
+    const payload = await res.clone().json();
+    if (payload && typeof payload === "object") {
+      if (typeof payload.error === "string" && payload.error.trim()) return payload.error;
+      if (payload.error && typeof payload.error.message === "string" && payload.error.message.trim()) {
+        return payload.error.message;
+      }
+      if (typeof payload.message === "string" && payload.message.trim()) return payload.message;
+    }
+  } catch (err) {
+    // fall through
+  }
+  return fallbackMessage;
 }
 
 function loadWebMeta() {
@@ -1094,6 +1389,9 @@ async function loadSettings() {
         defaultPeriod: defaults.defaultPeriod || "month",
       },
       categories,
+      share_base_url: typeof data.share_base_url === "string" ? data.share_base_url : "",
+      share_viewer_base_url:
+        typeof data.share_viewer_base_url === "string" ? data.share_viewer_base_url : "",
       firstRunCompleted: !!data.firstRunCompleted,
       hasCompletedOnboarding: !!(data.hasCompletedOnboarding ?? data.firstRunCompleted),
     };
@@ -1260,6 +1558,19 @@ async function logAgentCommand(entry) {
   }
 }
 
+async function logAutoAgentExecution(inputText, summary, proposal, outcome, meta = {}) {
+  if (AJL_WEB_MODE) return;
+  await logAgentCommand({
+    user_text: inputText || "",
+    kind: "command",
+    summary: summary || summarizeProposal(proposal),
+    status: outcome?.ok ? "ok" : "error",
+    payload: { proposal: proposal || null, ...meta },
+    result: outcome || null,
+  });
+  await loadCommandLog();
+}
+
 async function loadCommandLog() {
   if (AJL_WEB_MODE) {
     state.commandLog = [];
@@ -1347,44 +1658,101 @@ async function addPayment(instanceId, amount) {
   scheduleSharePublish();
 }
 
+function normalizeInstanceIds(instanceIds) {
+  if (!Array.isArray(instanceIds)) return [];
+  const seen = new Set();
+  const ids = [];
+  for (const value of instanceIds) {
+    const id = String(value || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+async function markInstancesDone(instanceIds) {
+  if (state.readOnly) return { ok: false, error: "Read-only mode." };
+  const ids = normalizeInstanceIds(instanceIds);
+  if (ids.length === 0) return { ok: false, error: "No items selected.", done: 0, total: 0, failed: [] };
+  const failed = [];
+  for (const id of ids) {
+    const result = await postAction({
+      type: "MARK_PAID",
+      instance_id: id,
+      paid_date: getTodayDateString(),
+    });
+    if (!result || result.ok === false) {
+      failed.push({ id, error: getErrorMessage(result, "Unable to mark done.") });
+      continue;
+    }
+    if (result.instance) updateInstanceInState(result.instance);
+  }
+  const done = ids.length - failed.length;
+  if (done > 0) {
+    await loadPayments();
+    await loadActivityEvents();
+    renderDashboard();
+    recordMutation();
+    scheduleSharePublish();
+  }
+  return {
+    ok: failed.length === 0,
+    total: ids.length,
+    done,
+    failed,
+  };
+}
+
+async function markInstancesPending(instanceIds) {
+  if (state.readOnly) return { ok: false, error: "Read-only mode." };
+  const ids = normalizeInstanceIds(instanceIds);
+  if (ids.length === 0) return { ok: false, error: "No items selected.", done: 0, total: 0, failed: [] };
+  const failed = [];
+  for (const id of ids) {
+    const result = await postAction({
+      type: "MARK_PENDING",
+      instance_id: id,
+    });
+    if (!result || result.ok === false) {
+      failed.push({ id, error: getErrorMessage(result, "Unable to undo.") });
+      continue;
+    }
+    if (result.instance) updateInstanceInState(result.instance);
+  }
+  const done = ids.length - failed.length;
+  if (done > 0) {
+    await loadPayments();
+    await loadActivityEvents();
+    renderDashboard();
+    recordMutation();
+    scheduleSharePublish();
+  }
+  return {
+    ok: failed.length === 0,
+    total: ids.length,
+    done,
+    failed,
+  };
+}
+
 async function markPaid(instanceId, options = {}) {
-  if (state.readOnly) return;
-  const result = await postAction({
-    type: "MARK_PAID",
-    instance_id: instanceId,
-    paid_date: getTodayDateString(),
-  });
-  if (!result || result.ok === false) {
-    window.alert(getErrorMessage(result, "Unable to mark done."));
+  const outcome = await markInstancesDone([instanceId]);
+  if (!outcome.ok && outcome.done === 0) {
+    window.alert(outcome.failed?.[0]?.error || outcome.error || "Unable to mark done.");
     return;
   }
-  if (result.instance) updateInstanceInState(result.instance);
-  await loadPayments();
-  await loadActivityEvents();
-  renderDashboard();
-  recordMutation();
-  scheduleSharePublish();
   if (!options.silent) {
     showToast("Marked done.", "Undo", () => markPending(instanceId));
   }
 }
 
 async function markPending(instanceId) {
-  if (state.readOnly) return;
-  const result = await postAction({
-    type: "MARK_PENDING",
-    instance_id: instanceId,
-  });
-  if (!result || result.ok === false) {
-    window.alert(getErrorMessage(result, "Unable to undo."));
+  const outcome = await markInstancesPending([instanceId]);
+  if (!outcome.ok && outcome.done === 0) {
+    window.alert(outcome.failed?.[0]?.error || outcome.error || "Unable to undo.");
     return;
   }
-  if (result.instance) updateInstanceInState(result.instance);
-  await loadPayments();
-  await loadActivityEvents();
-  renderDashboard();
-  recordMutation();
-  scheduleSharePublish();
 }
 
 function flashRow(instanceId) {
@@ -1443,6 +1811,36 @@ function deriveInstances() {
   });
 
   return state.instances.map((item) => {
+    if (isSharedAmountsHidden()) {
+      const baseStatus = String(item.status || "").toLowerCase();
+      const status =
+        baseStatus === "skipped"
+          ? "skipped"
+          : baseStatus === "paid"
+          ? "paid"
+          : baseStatus === "partial"
+          ? "partial"
+          : "pending";
+      const dueAmount = item.amount == null ? null : Number(item.amount || 0);
+      const paidAmount = item.amount_paid == null ? null : Number(item.amount_paid || 0);
+      let remainingAmount =
+        item.amount_remaining == null
+          ? status === "paid" || status === "skipped"
+            ? 0
+            : 1
+          : Number(item.amount_remaining || 0);
+      if (status === "paid" || status === "skipped") {
+        remainingAmount = 0;
+      }
+      return {
+        ...item,
+        amount: dueAmount,
+        amount_paid: paidAmount,
+        amount_remaining: remainingAmount,
+        status_derived: status,
+      };
+    }
+
     const amountPaid = Number(item.amount_paid ?? totals.get(item.id) ?? 0);
     const amountDue = Number(item.amount || 0);
     const amountRemaining = Math.max(0, amountDue - amountPaid);
@@ -1469,6 +1867,86 @@ function getBaseInstances(list) {
     filtered = filtered.filter((item) => item.essential_snapshot);
   }
   return filtered;
+}
+
+function getShareOwnerLabelValue() {
+  if (els.shareOwnerLabel) {
+    return String(els.shareOwnerLabel.value || "").trim().slice(0, 120);
+  }
+  return String(state.shareOwnerLabel || "").trim().slice(0, 120);
+}
+
+function inferShareExpiryPreset(expiresAt) {
+  if (!expiresAt) return "never";
+  const targetTs = new Date(expiresAt).getTime();
+  if (!Number.isFinite(targetTs)) return "custom";
+  const delta = targetTs - Date.now();
+  if (delta <= 0) return "custom";
+  const day = 24 * 60 * 60 * 1000;
+  if (Math.abs(delta - day) < 2 * 60 * 60 * 1000) return "24h";
+  if (Math.abs(delta - 7 * day) < 6 * 60 * 60 * 1000) return "7d";
+  if (Math.abs(delta - 30 * day) < 12 * 60 * 60 * 1000) return "30d";
+  return "custom";
+}
+
+function getShareExpiryPresetValue() {
+  if (els.shareExpiry) {
+    const value = String(els.shareExpiry.value || "never");
+    return value || "never";
+  }
+  return state.shareExpiryPreset || "never";
+}
+
+function toDatetimeLocalInputValue(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDatetimeLocalInputValue(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function setShareExpiryCustomVisibility(show) {
+  if (!els.shareExpiryCustomWrap) return;
+  els.shareExpiryCustomWrap.classList.toggle("hidden", !show);
+}
+
+function buildExpiresAtFromPreset(preset) {
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  switch (String(preset || "never")) {
+    case "24h":
+      return new Date(now + day).toISOString();
+    case "7d":
+      return new Date(now + 7 * day).toISOString();
+    case "30d":
+      return new Date(now + 30 * day).toISOString();
+    case "never":
+      return null;
+    case "custom":
+      return fromDatetimeLocalInputValue(els.shareExpiryCustom?.value || "") || state.shareInfo?.expires_at || null;
+    default:
+      return null;
+  }
+}
+
+function getShareExpiryValue(options = {}) {
+  const allowPast = !!options.allowPast;
+  const preset = getShareExpiryPresetValue();
+  state.shareExpiryPreset = preset;
+  const expiresAt = buildExpiresAtFromPreset(preset);
+  if (!expiresAt || allowPast) return expiresAt;
+  const expiryTs = new Date(expiresAt).getTime();
+  if (!Number.isFinite(expiryTs) || expiryTs <= Date.now()) {
+    return null;
+  }
+  return expiresAt;
 }
 
 function computeTotals(list) {
@@ -1517,6 +1995,73 @@ function prioritizeInstancesForAgent(list) {
   return scored.map((entry) => entry.item);
 }
 
+function tokenizeAgentText(text) {
+  if (!text) return [];
+  return String(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 3)
+    .slice(0, 12);
+}
+
+function pickRelevantInstancesForAgent(base, userText) {
+  const prioritized = prioritizeInstancesForAgent(base);
+  const tokens = tokenizeAgentText(userText);
+  const byId = new Map();
+
+  const selected = prioritized.find((item) => item.id === state.selectedInstanceId);
+  if (selected) byId.set(selected.id, selected);
+
+  if (tokens.length > 0) {
+    for (const item of prioritized) {
+      const haystack = `${item.name_snapshot || ""} ${item.category_snapshot || ""}`.toLowerCase();
+      const matched = tokens.some((token) => haystack.includes(token));
+      if (!matched) continue;
+      byId.set(item.id, item);
+      if (byId.size >= Math.floor(MAX_LLM_INSTANCES / 2)) break;
+    }
+  }
+
+  for (const item of prioritized) {
+    if (byId.size >= MAX_LLM_INSTANCES) break;
+    byId.set(item.id, item);
+  }
+
+  return Array.from(byId.values()).slice(0, MAX_LLM_INSTANCES);
+}
+
+function pickRelevantTemplatesForAgent(templates, userText) {
+  const tokens = tokenizeAgentText(userText);
+  if (tokens.length === 0) return templates.slice(0, MAX_LLM_TEMPLATES);
+  const ranked = templates
+    .map((tmpl) => {
+      const haystack = `${tmpl.name || ""} ${tmpl.category || ""}`.toLowerCase();
+      const score = tokens.reduce((sum, token) => (haystack.includes(token) ? sum + 1 : sum), 0);
+      return { tmpl, score };
+    })
+    .sort((a, b) => b.score - a.score || String(a.tmpl.name).localeCompare(String(b.tmpl.name)));
+  const focused = ranked.filter((entry) => entry.score > 0).map((entry) => entry.tmpl);
+  const fallback = ranked.filter((entry) => entry.score === 0).map((entry) => entry.tmpl);
+  return [...focused, ...fallback].slice(0, MAX_LLM_TEMPLATES);
+}
+
+function pickRelevantFundsForAgent(funds, userText) {
+  const tokens = tokenizeAgentText(userText);
+  if (tokens.length === 0) return funds.slice(0, MAX_LLM_FUNDS);
+  const ranked = funds
+    .map((fund) => {
+      const haystack = `${fund.name || ""} ${fund.category || ""}`.toLowerCase();
+      const score = tokens.reduce((sum, token) => (haystack.includes(token) ? sum + 1 : sum), 0);
+      return { fund, score };
+    })
+    .sort((a, b) => b.score - a.score || String(a.fund.name).localeCompare(String(b.fund.name)));
+  const focused = ranked.filter((entry) => entry.score > 0).map((entry) => entry.fund);
+  const fallback = ranked.filter((entry) => entry.score === 0).map((entry) => entry.fund);
+  return [...focused, ...fallback].slice(0, MAX_LLM_FUNDS);
+}
+
 function buildLlmContext() {
   const derived = deriveInstances();
   const base = getBaseInstances(derived);
@@ -1563,18 +2108,19 @@ function buildLlmContext() {
 function buildAgentPayload(userText) {
   const derived = deriveInstances();
   const base = getBaseInstances(derived);
-  const prioritized = prioritizeInstancesForAgent(base);
-  const knownInstances = prioritized.slice(0, MAX_LLM_INSTANCES).map((item) => ({
+  const relevantInstances = pickRelevantInstancesForAgent(base, userText);
+  const selectedInstance = base.find((item) => item.id === state.selectedInstanceId) || null;
+  const knownInstances = relevantInstances.map((item) => ({
     name: item.name_snapshot,
     remaining: item.amount_remaining,
     status: item.status_derived,
     due_date: item.due_date,
   }));
-  const knownTemplates = state.templates.slice(0, MAX_LLM_TEMPLATES).map((t) => ({
+  const knownTemplates = pickRelevantTemplatesForAgent(state.templates, userText).map((t) => ({
     name: t.name,
     active: t.active,
   }));
-  const knownFunds = (state.funds || []).slice(0, MAX_LLM_TEMPLATES).map((f) => ({
+  const knownFunds = pickRelevantFundsForAgent(state.funds || [], userText).map((f) => ({
     name: f.name,
     due_date: f.due_date,
     target_amount: f.target_amount,
@@ -1593,11 +2139,775 @@ function buildAgentPayload(userText) {
     user_text: userText,
     period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
     context: buildLlmContext(),
+    selected_instance:
+      selectedInstance ?
+        {
+          name: selectedInstance.name_snapshot,
+          remaining: selectedInstance.amount_remaining,
+          status: selectedInstance.status_derived,
+          due_date: selectedInstance.due_date,
+        } :
+        null,
     known_instances: knownInstances,
     known_templates: knownTemplates,
     known_funds: knownFunds,
     recent_payments: recentPayments,
   };
+}
+
+function normalizeQuickTarget(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/^["']+|["']+$/g, "")
+    .replace(/\s+/g, " ");
+}
+
+const FAST_MONTH_MAP = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
+function shiftYearMonth(year, month, delta) {
+  const index = year * 12 + (month - 1) + delta;
+  if (!Number.isFinite(index)) return { year, month };
+  const nextYear = Math.floor(index / 12);
+  const nextMonth = (index % 12) + 1;
+  return { year: nextYear, month: nextMonth };
+}
+
+function parseFastMonthIntent(input) {
+  const text = String(input || "").toLowerCase();
+  const match = text.match(/\b(20\d{2})-(0[1-9]|1[0-2])\b/);
+  const normalized = text.replace(/^(?:go\s+to|open|switch\s+to|set)\s+/, "");
+  let year = NaN;
+  let month = NaN;
+  if (match) {
+    year = Number(match[1]);
+    month = Number(match[2]);
+  } else if (/^(?:next|forward)\s+month$/.test(normalized)) {
+    const next = shiftYearMonth(state.selectedYear, state.selectedMonth, 1);
+    year = next.year;
+    month = next.month;
+  } else if (/^(?:prev(?:ious)?|last|back)\s+month$/.test(normalized)) {
+    const prev = shiftYearMonth(state.selectedYear, state.selectedMonth, -1);
+    year = prev.year;
+    month = prev.month;
+  } else if (/^(?:this|current)\s+month$/.test(normalized)) {
+    year = state.selectedYear;
+    month = state.selectedMonth;
+  } else {
+    const named = text.match(
+      /^(?:go\s+to\s+|open\s+|switch\s+to\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(20\d{2}))?$/
+    );
+    if (named) {
+      month = Number(FAST_MONTH_MAP[String(named[1] || "").toLowerCase()] || 0);
+      year = named[2] ? Number(named[2]) : state.selectedYear;
+    }
+  }
+  if (!Number.isInteger(year) || !Number.isInteger(month)) return null;
+  return {
+    intent: "SET_MONTH",
+    confidence: 0.99,
+    needs_confirmation: true,
+    target: { type: "month", period: `${year}-${pad2(month)}` },
+    payload: { year, month },
+  };
+}
+
+function parseFastAmount(text) {
+  const cleaned = String(text || "").replace(/,/g, "");
+  const match = cleaned.match(/\$?\s*(-?\d+(?:\.\d+)?)/);
+  if (!match) return NaN;
+  return Number(match[1]);
+}
+
+function splitTargetNames(raw) {
+  if (!raw) return [];
+  const normalized = String(raw)
+    .replace(/\s+and\s+/gi, ",")
+    .replace(/\s*&\s*/g, ",")
+    .replace(/\s*;\s*/g, ",");
+  const seen = new Set();
+  const values = [];
+  normalized.split(",").forEach((part) => {
+    const name = normalizeQuickTarget(part);
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    values.push(name);
+  });
+  return values;
+}
+
+function parseFastTemplateIntent(input) {
+  const text = String(input || "").trim();
+  const lower = text.toLowerCase();
+  if (!lower.startsWith("add ") && !lower.startsWith("create ")) return null;
+  if (!lower.includes("$") && !/\b\d+(?:\.\d+)?\b/.test(lower)) return null;
+  const amount = parseFastAmount(text);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+
+  const dueDayMatch = lower.match(/\b(?:due|on)\s+(\d{1,2})(?:st|nd|rd|th)?\b/);
+  const dueDay = dueDayMatch ? Math.max(1, Math.min(31, Number(dueDayMatch[1]))) : 1;
+
+  let namePart = text
+    .replace(/^\s*(add|create)\s+/i, "")
+    .replace(/\$?\s*-?\d+(?:\.\d+)?/i, "")
+    .replace(/\b(?:a|per)?\s*month(?:ly)?\b/i, "")
+    .replace(/\b(?:due|on)\s+\d{1,2}(?:st|nd|rd|th)?\b/i, "")
+    .trim();
+  namePart = normalizeQuickTarget(namePart);
+  if (!namePart) return null;
+
+  return {
+    intent: "CREATE_TEMPLATE",
+    confidence: 0.96,
+    needs_confirmation: true,
+    target: { type: "template", name: namePart },
+    payload: {
+      name: namePart,
+      amount_default: amount,
+      due_day: dueDay,
+      essential: true,
+      active: true,
+    },
+  };
+}
+
+function parseFastBulkTemplateIntent(input) {
+  const text = String(input || "");
+  const lines = text
+    .split(/\r?\n+/)
+    .map((line) =>
+      line
+        .replace(/^[\s>*\-•\d.)]+/, "")
+        .trim()
+    )
+    .filter(Boolean);
+  if (lines.length < 2) return null;
+  const templates = [];
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    if (!line || lower.includes("monthly total") || lower.includes("new total")) continue;
+    const match =
+      line.match(/^(.*?)\s*(?:[-—:])\s*\$?\s*(-?\d[\d,]*(?:\.\d+)?)\s*$/) ||
+      line.match(/^(.*?)\s+\$?\s*(-?\d[\d,]*(?:\.\d+)?)\s*$/);
+    if (!match) continue;
+    const name = normalizeQuickTarget(match[1]);
+    const amount = parseFastAmount(match[2]);
+    if (!name || !Number.isFinite(amount) || amount <= 0) continue;
+    templates.push({
+      name,
+      category: null,
+      amount_default: Number(amount.toFixed(2)),
+      due_day_guess: 1,
+      essential_guess: true,
+      autopay_guess: false,
+      notes: null,
+    });
+  }
+  if (templates.length < 2) return null;
+  return {
+    intent: "CREATE_TEMPLATES_BULK",
+    confidence: 0.97,
+    needs_confirmation: true,
+    target: { type: "template", name: null },
+    payload: { templates },
+  };
+}
+
+function parseFastEssentialsIntent(input) {
+  const text = String(input || "").trim().toLowerCase();
+  if (
+    /^(?:essentials(?:\s+only)?\s+on|turn\s+on\s+essentials(?:\s+only)?|show\s+essentials(?:\s+only)?)$/.test(
+      text
+    )
+  ) {
+    return {
+      intent: "SET_ESSENTIALS_ONLY",
+      confidence: 0.98,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: { essentials_only: true },
+    };
+  }
+  if (
+    /^(?:essentials(?:\s+only)?\s+off|turn\s+off\s+essentials(?:\s+only)?|show\s+all(?:\s+bills)?|all\s+bills)$/.test(
+      text
+    )
+  ) {
+    return {
+      intent: "SET_ESSENTIALS_ONLY",
+      confidence: 0.98,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: { essentials_only: false },
+    };
+  }
+  return null;
+}
+
+function parseFastExportIntent(input) {
+  const text = String(input || "").trim().toLowerCase();
+  if (/^(?:export|download)\s+(?:month|monthly)\s+(?:csv|report)?$/.test(text)) {
+    return {
+      intent: "EXPORT_MONTH",
+      confidence: 0.97,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:export|download)\s+(?:backup|json|full\s+backup)$/.test(text)) {
+    return {
+      intent: "EXPORT_BACKUP",
+      confidence: 0.97,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  return null;
+}
+
+function parseFastBatchQueueIntent(input) {
+  const text = String(input || "").trim().toLowerCase();
+  if (/^(?:mark|set)\s+all\s+overdue\s+(?:done|paid|complete(?:d)?)$/.test(text)) {
+    return {
+      intent: "MARK_ALL_OVERDUE",
+      confidence: 0.98,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:mark|set)\s+all\s+(?:due\s*soon|soon)\s+(?:done|paid|complete(?:d)?)$/.test(text)) {
+    return {
+      intent: "MARK_ALL_DUE_SOON",
+      confidence: 0.98,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  return null;
+}
+
+function parseFastTemplateMutationIntent(input) {
+  const text = String(input || "").trim();
+  const deleteMatch = text.match(/^(?:delete|remove)\s+templates?\s+(.+)$/i);
+  if (deleteMatch) {
+    const names = splitTargetNames(deleteMatch[1]);
+    if (names.length > 1) {
+      return {
+        intent: "DELETE_TEMPLATES_BULK",
+        confidence: 0.95,
+        needs_confirmation: true,
+        target: { type: "template", name: null },
+        payload: { names },
+      };
+    }
+    return {
+      intent: "DELETE_TEMPLATE",
+      confidence: 0.96,
+      needs_confirmation: true,
+      target: { type: "template", name: names[0] || normalizeQuickTarget(deleteMatch[1]) },
+      payload: {},
+    };
+  }
+  const archiveMatch = text.match(/^(?:archive|disable)\s+templates?\s+(.+)$/i);
+  if (archiveMatch) {
+    const names = splitTargetNames(archiveMatch[1]);
+    if (names.length > 1) {
+      return {
+        intent: "ARCHIVE_TEMPLATES_BULK",
+        confidence: 0.95,
+        needs_confirmation: true,
+        target: { type: "template", name: null },
+        payload: { names },
+      };
+    }
+    return {
+      intent: "ARCHIVE_TEMPLATE",
+      confidence: 0.96,
+      needs_confirmation: true,
+      target: { type: "template", name: names[0] || normalizeQuickTarget(archiveMatch[1]) },
+      payload: {},
+    };
+  }
+  const activateMatch = text.match(/^(?:activate|enable|restore|unarchive)\s+templates?\s+(.+)$/i);
+  if (activateMatch) {
+    const names = splitTargetNames(activateMatch[1]);
+    if (names.length > 1) {
+      return {
+        intent: "ACTIVATE_TEMPLATES_BULK",
+        confidence: 0.95,
+        needs_confirmation: true,
+        target: { type: "template", name: null },
+        payload: { names },
+      };
+    }
+    return {
+      intent: "UPDATE_TEMPLATE",
+      confidence: 0.95,
+      needs_confirmation: true,
+      target: { type: "template", name: names[0] || normalizeQuickTarget(activateMatch[1]) },
+      payload: { active: true },
+    };
+  }
+  const updateAmountMatch = text.match(
+    /^(?:set|update)\s+template\s+(.+?)\s+(?:to|=)\s*\$?\s*(\d+(?:\.\d+)?)(?:\s+(?:due|on)\s*(\d{1,2}))?$/i
+  );
+  if (updateAmountMatch) {
+    const amount = Number(updateAmountMatch[2]);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    const payload = { amount_default: amount };
+    const dueDay = Number(updateAmountMatch[3] || NaN);
+    if (Number.isInteger(dueDay) && dueDay >= 1 && dueDay <= 31) {
+      payload.due_day = dueDay;
+    }
+    return {
+      intent: "UPDATE_TEMPLATE",
+      confidence: 0.95,
+      needs_confirmation: true,
+      target: { type: "template", name: normalizeQuickTarget(updateAmountMatch[1]) },
+      payload,
+    };
+  }
+  return null;
+}
+
+function parseFastInstanceMutationIntent(input) {
+  const text = String(input || "").trim();
+
+  const amountBillMatch = text.match(
+    /^(?:set|update)\s+bill\s+(.+?)\s+(?:amount|amt)\s*(?:to|=)\s*\$?\s*(\d+(?:\.\d+)?)$/i
+  );
+  if (amountBillMatch) {
+    const amount = Number(amountBillMatch[2]);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    return {
+      intent: "UPDATE_INSTANCE_FIELDS",
+      confidence: 0.95,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(amountBillMatch[1]) },
+      payload: { amount },
+    };
+  }
+
+  const amountGenericMatch = text.match(
+    /^(?:set|update)\s+(?:amount|amt)\s+(?:for|of)\s+(.+?)\s*(?:to|=)\s*\$?\s*(\d+(?:\.\d+)?)$/i
+  );
+  if (amountGenericMatch) {
+    const amount = Number(amountGenericMatch[2]);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    return {
+      intent: "UPDATE_INSTANCE_FIELDS",
+      confidence: 0.94,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(amountGenericMatch[1]) },
+      payload: { amount },
+    };
+  }
+
+  const dueMatch = text.match(
+    /^(?:set|update)\s+bill\s+(.+?)\s+due(?:\s+date)?\s*(?:to|=)\s*(\d{4}-\d{2}-\d{2})$/i
+  );
+  if (dueMatch) {
+    return {
+      intent: "UPDATE_INSTANCE_FIELDS",
+      confidence: 0.95,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(dueMatch[1]) },
+      payload: { due_date: dueMatch[2] },
+    };
+  }
+
+  const noteMatch = text.match(/^(?:set|update)\s+bill\s+(.+?)\s+note\s*(?:to|=)\s+(.+)$/i);
+  if (noteMatch) {
+    const note = String(noteMatch[2] || "").trim();
+    if (!note) return null;
+    return {
+      intent: "UPDATE_INSTANCE_FIELDS",
+      confidence: 0.92,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(noteMatch[1]) },
+      payload: { note },
+    };
+  }
+
+  const flexAmountMatch = text.match(
+    /^(?:set|update|change)\s+(.+?)\s+(?:to|=)\s*\$?\s*(\d+(?:\.\d+)?)\s*(?:monthly|month|\/mo|mo)?$/i
+  );
+  if (flexAmountMatch) {
+    const target = normalizeQuickTarget(flexAmountMatch[1]);
+    const blockedTargets = new Set([
+      "month",
+      "this month",
+      "next month",
+      "previous month",
+      "essentials",
+      "summary",
+      "today",
+    ]);
+    if (!target || blockedTargets.has(target.toLowerCase())) return null;
+    const amount = Number(flexAmountMatch[2]);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    return {
+      intent: "UPDATE_AMOUNT_FLEX",
+      confidence: 0.9,
+      needs_confirmation: true,
+      target: { type: "none", name: target },
+      payload: { amount },
+    };
+  }
+
+  return null;
+}
+
+function parseFastBulkInstanceIntent(input) {
+  const text = String(input || "").trim();
+  const doneMatch =
+    text.match(/^(?:mark|set)\s+done\s+(.+)$/i) ||
+    text.match(/^(?:mark|set)\s+(.+)\s+done$/i);
+  if (doneMatch) {
+    const names = splitTargetNames(doneMatch[1]);
+    if (names.length > 1) {
+      return {
+        intent: "MARK_INSTANCES_BULK_DONE",
+        confidence: 0.95,
+        needs_confirmation: true,
+        target: { type: "instance", name: null },
+        payload: { names },
+      };
+    }
+  }
+
+  const pendingMatch = text.match(/^(?:mark|set)\s+pending\s+(.+)$/i);
+  if (pendingMatch) {
+    const names = splitTargetNames(pendingMatch[1]);
+    if (names.length > 1) {
+      return {
+        intent: "MARK_INSTANCES_BULK_PENDING",
+        confidence: 0.95,
+        needs_confirmation: true,
+        target: { type: "instance", name: null },
+        payload: { names },
+      };
+    }
+  }
+
+  const skipMatch = text.match(/^(?:skip|archive)\s+(.+)$/i);
+  if (skipMatch) {
+    const names = splitTargetNames(skipMatch[1]);
+    if (names.length > 1) {
+      return {
+        intent: "SKIP_INSTANCES_BULK",
+        confidence: 0.95,
+        needs_confirmation: true,
+        target: { type: "instance", name: null },
+        payload: { names },
+      };
+    }
+  }
+  return null;
+}
+
+function parseFastShareIntent(input) {
+  const text = String(input || "").trim().toLowerCase();
+  if (/^(?:show|open)\s+share(?:\s+link)?$/.test(text) || /^share\s+link$/.test(text)) {
+    return {
+      intent: "SHOW_SHARE",
+      confidence: 0.98,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:create|new|enable)\s+share(?:\s+link)?$/.test(text)) {
+    return {
+      intent: "CREATE_SHARE",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:refresh|update)\s+share(?:\s+link)?$/.test(text)) {
+    return {
+      intent: "REFRESH_SHARE",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:disable|turn\s+off)\s+share(?:\s+link)?$/.test(text)) {
+    return {
+      intent: "DISABLE_SHARE",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:regenerate|rotate|renew)\s+share(?:\s+link)?$/.test(text)) {
+    return {
+      intent: "REGENERATE_SHARE",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^copy\s+share(?:\s+link)?$/.test(text)) {
+    return {
+      intent: "COPY_SHARE",
+      confidence: 0.98,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  return null;
+}
+
+function parseFastAssistantIntent(input) {
+  const text = String(input || "").trim().toLowerCase();
+  if (/^(?:open|show)\s+(?:assistant|mamdou|agent)$/.test(text)) {
+    return {
+      intent: "SHOW_ASSISTANT",
+      confidence: 0.98,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:connect|start|login)\s+(?:assistant|mamdou|agent)$/.test(text)) {
+    return {
+      intent: "START_AGENT_AUTH",
+      confidence: 0.97,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  return null;
+}
+
+function parseFastQuestionIntent(input) {
+  const text = String(input || "").trim().toLowerCase();
+  if (!text) return null;
+  if (
+    /^(?:how much|what(?:'s| is)?|show)\s+(?:is\s+)?(?:left|remaining)(?:\s+this\s+month)?\??$/.test(text) ||
+    /^(?:remaining(?:\s+this\s+month)?)\??$/.test(text)
+  ) {
+    return {
+      intent: "LOCAL_SUMMARY_REMAINING",
+      confidence: 0.99,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:how many|what(?:'s| is)?|show)\s+overdue(?:\s+bills?)?\??$/.test(text) || /^overdue\??$/.test(text)) {
+    return {
+      intent: "LOCAL_SUMMARY_OVERDUE",
+      confidence: 0.99,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (
+    /^(?:how many|what(?:'s| is)?|show)\s+(?:due\s*soon|due\s+next\s+7\s+days)(?:\s+bills?)?\??$/.test(text) ||
+    /^due\s*soon\??$/.test(text)
+  ) {
+    return {
+      intent: "LOCAL_SUMMARY_DUE_SOON",
+      confidence: 0.99,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (/^(?:am\s+i|are\s+we)\s+free(?:\s+for\s+the\s+month)?\??$/.test(text) || /^free\s+for\s+the\s+month\??$/.test(text)) {
+    return {
+      intent: "LOCAL_SUMMARY_FREE",
+      confidence: 0.99,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  return null;
+}
+
+function parseFastCommand(userText) {
+  const text = String(userText || "").trim();
+  if (!text) return null;
+  const lower = text.toLowerCase();
+
+  if (/^(show|open)\s+overdue\b/.test(lower)) {
+    return { intent: "SHOW_OVERDUE", confidence: 0.99, needs_confirmation: false, target: { type: "none", name: null }, payload: {} };
+  }
+  if (/^(show|open)\s+due\s+soon\b/.test(lower)) {
+    return { intent: "SHOW_DUE_SOON", confidence: 0.99, needs_confirmation: false, target: { type: "none", name: null }, payload: {} };
+  }
+  if (/^(show|open)\s+templates\b/.test(lower)) {
+    return { intent: "SHOW_TEMPLATES", confidence: 0.99, needs_confirmation: false, target: { type: "none", name: null }, payload: {} };
+  }
+  if (/^(show|open)\s+(summary|dashboard|today)\b/.test(lower)) {
+    return { intent: "SHOW_SUMMARY", confidence: 0.99, needs_confirmation: false, target: { type: "none", name: null }, payload: {} };
+  }
+  if (/^(show|open)\s+(backup|export)\b/.test(lower)) {
+    return { intent: "SHOW_BACKUP", confidence: 0.99, needs_confirmation: false, target: { type: "none", name: null }, payload: {} };
+  }
+  if (/^(show|open)\s+(piggy|fund|funds)\b/.test(lower)) {
+    return { intent: "SHOW_PIGGY", confidence: 0.99, needs_confirmation: false, target: { type: "none", name: null }, payload: {} };
+  }
+
+  const essentialsIntent = parseFastEssentialsIntent(text);
+  if (essentialsIntent) return essentialsIntent;
+
+  const exportIntent = parseFastExportIntent(text);
+  if (exportIntent) return exportIntent;
+
+  const batchIntent = parseFastBatchQueueIntent(text);
+  if (batchIntent) return batchIntent;
+
+  const monthIntent = parseFastMonthIntent(text);
+  if (monthIntent) return monthIntent;
+
+  const bulkTemplateIntent = parseFastBulkTemplateIntent(text);
+  if (bulkTemplateIntent) return bulkTemplateIntent;
+
+  const templateMutationIntent = parseFastTemplateMutationIntent(text);
+  if (templateMutationIntent) return templateMutationIntent;
+
+  const templateIntent = parseFastTemplateIntent(text);
+  if (templateIntent) return templateIntent;
+
+  const instanceMutationIntent = parseFastInstanceMutationIntent(text);
+  if (instanceMutationIntent) return instanceMutationIntent;
+
+  const bulkInstanceIntent = parseFastBulkInstanceIntent(text);
+  if (bulkInstanceIntent) return bulkInstanceIntent;
+
+  const shareIntent = parseFastShareIntent(text);
+  if (shareIntent) return shareIntent;
+
+  const assistantIntent = parseFastAssistantIntent(text);
+  if (assistantIntent) return assistantIntent;
+
+  const questionIntent = parseFastQuestionIntent(text);
+  if (questionIntent) return questionIntent;
+
+  const skipMatch = text.match(/^(?:skip|archive)\s+(.+)$/i);
+  if (skipMatch) {
+    return {
+      intent: "SKIP_INSTANCE",
+      confidence: 0.95,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(skipMatch[1]) },
+      payload: {},
+    };
+  }
+
+  const pendingMatch = text.match(/^(?:unskip|mark\s+pending|undo\s+done)\s+(.+)$/i);
+  if (pendingMatch) {
+    return {
+      intent: "MARK_PENDING",
+      confidence: 0.95,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(pendingMatch[1]) },
+      payload: {},
+    };
+  }
+
+  const doneMatch = text.match(/^(?:mark|set)?\s*(.+?)\s+(?:done|paid|complete(?:d)?)$/i);
+  if (doneMatch) {
+    return {
+      intent: "MARK_PAID",
+      confidence: 0.96,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(doneMatch[1]) },
+      payload: {},
+    };
+  }
+
+  const payFullMatch = text.match(/^(?:done|pay\s+full)\s+(.+)$/i);
+  if (payFullMatch) {
+    return {
+      intent: "ADD_PAYMENT",
+      confidence: 0.95,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(payFullMatch[1]) },
+      payload: { amount_mode: "FULL_REMAINING" },
+    };
+  }
+
+  const fractionMatch = text.match(/^(?:pay|log|add)\s+(half|quarter)\s+(.+)$/i);
+  if (fractionMatch) {
+    const fraction = fractionMatch[1].toLowerCase() === "quarter" ? 0.25 : 0.5;
+    return {
+      intent: "ADD_PAYMENT",
+      confidence: 0.92,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(fractionMatch[2]) },
+      payload: { amount_mode: "FRACTION", fraction },
+    };
+  }
+
+  const amountMatch = text.match(/^(?:pay|log|add)\s+\$?\s*(-?\d+(?:\.\d+)?)\s+(?:to|for)?\s*(.+)$/i);
+  if (amountMatch) {
+    const amount = Number(amountMatch[1]);
+    if (Number.isFinite(amount) && amount > 0) {
+      return {
+        intent: "ADD_PAYMENT",
+        confidence: 0.93,
+        needs_confirmation: true,
+        target: { type: "instance", name: normalizeQuickTarget(amountMatch[2]) },
+        payload: { amount_mode: "FIXED", amount },
+      };
+    }
+  }
+
+  const payNameMatch = text.match(/^pay\s+(.+)$/i);
+  if (payNameMatch) {
+    return {
+      intent: "ADD_PAYMENT",
+      confidence: 0.92,
+      needs_confirmation: true,
+      target: { type: "instance", name: normalizeQuickTarget(payNameMatch[1]) },
+      payload: { amount_mode: "FULL_REMAINING" },
+    };
+  }
+
+  return null;
 }
 
 function renderSummary(list) {
@@ -1618,15 +2928,20 @@ function renderSummary(list) {
   const dueSoon = remainingItems.filter((item) => currentMonth && item.due_date >= today && item.due_date <= soonCutoffString);
   const doneCount = list.filter((item) => item.status_derived === "paid" || item.amount_remaining <= 0).length;
 
-  els.requiredAmount.textContent = formatMoney(totals.required);
-  els.paidAmount.textContent = formatMoney(totals.paid);
-  els.remainingAmount.textContent = formatMoney(totals.remaining);
-  if (els.miniRemainingAmount) els.miniRemainingAmount.textContent = formatMoney(totals.remaining);
-  if (els.miniDoneAmount) els.miniDoneAmount.textContent = formatMoney(totals.paid);
-  els.needDay.textContent = formatMoney(needDailyExact);
-  els.needWeek.textContent = formatMoney(needWeeklyExact);
-  els.needDayPlan.textContent = `Planning avg: ${formatMoney(needDailyPlan)}/day`;
-  els.needWeekPlan.textContent = `Planning avg: ${formatMoney(needWeeklyPlan)}/week`;
+  const hideAmounts = isSharedAmountsHidden();
+  els.requiredAmount.textContent = formatMoneyDisplay(totals.required);
+  els.paidAmount.textContent = formatMoneyDisplay(totals.paid);
+  els.remainingAmount.textContent = formatMoneyDisplay(totals.remaining);
+  if (els.miniRemainingAmount) els.miniRemainingAmount.textContent = formatMoneyDisplay(totals.remaining);
+  if (els.miniDoneAmount) els.miniDoneAmount.textContent = formatMoneyDisplay(totals.paid);
+  els.needDay.textContent = hideAmounts ? "Hidden" : formatMoney(needDailyExact);
+  els.needWeek.textContent = hideAmounts ? "Hidden" : formatMoney(needWeeklyExact);
+  els.needDayPlan.textContent = hideAmounts
+    ? "Planning avg: Hidden"
+    : `Planning avg: ${formatMoney(needDailyPlan)}/day`;
+  els.needWeekPlan.textContent = hideAmounts
+    ? "Planning avg: Hidden"
+    : `Planning avg: ${formatMoney(needWeeklyPlan)}/week`;
 
   if (els.summaryPanel) {
     els.summaryPanel.classList.toggle("expanded", state.summaryExpanded);
@@ -1733,7 +3048,7 @@ function renderActionQueue(baseList) {
     right.className = "item-meta";
     const amount = document.createElement("div");
     amount.className = "item-amount";
-    amount.textContent = formatMoney(item.amount_remaining);
+    amount.textContent = formatMoneyDisplay(item.amount_remaining);
     right.appendChild(amount);
     if (!state.readOnly) {
       const kebab = document.createElement("button");
@@ -2143,20 +3458,38 @@ async function fetchNudges(events) {
     return;
   }
   if (!els.nudgesList) return;
+  const eventKey = JSON.stringify({
+    period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
+    essentialsOnly: state.essentialsOnly,
+    events,
+    connected: !!state.qwenAuth?.connected,
+  });
+  if (
+    state.lastNudgeKey === eventKey &&
+    Date.now() - Number(state.lastNudgeAt || 0) < NUDGE_CACHE_TTL_MS
+  ) {
+    return;
+  }
   if (state.qwenAuth && state.qwenAuth.connected === false) {
     state.nudges = [];
+    state.lastNudgeKey = eventKey;
+    state.lastNudgeAt = Date.now();
     renderNudges();
     return;
   }
   const shouldProbe = events.length === 0 && !state.llmChecked;
   if (events.length === 0 && !shouldProbe) {
     state.nudges = [];
+    state.lastNudgeKey = eventKey;
+    state.lastNudgeAt = Date.now();
     renderNudges();
     return;
   }
   if (shouldProbe) {
     state.llmChecked = true;
   }
+  if (state.nudgeInFlight) return;
+  state.nudgeInFlight = true;
   try {
     const res = await fetch("/internal/advisor/query", {
       method: "POST",
@@ -2178,18 +3511,43 @@ async function fetchNudges(events) {
         state.llmStatus = { status: "unavailable", auth_url: null, error: data.error || "Mamdou unavailable" };
       }
       state.nudges = fallbackNudges(events);
+      state.lastNudgeKey = eventKey;
+      state.lastNudgeAt = Date.now();
       renderNudges();
       return;
     }
     const data = await res.json();
     state.llmStatus = { status: "ok", auth_url: null, error: null };
     state.nudges = data?.data?.messages || fallbackNudges(events);
+    state.lastNudgeKey = eventKey;
+    state.lastNudgeAt = Date.now();
     renderNudges();
   } catch (err) {
     state.llmStatus = { status: "unavailable", auth_url: null, error: err.message || "Mamdou unavailable" };
     state.nudges = fallbackNudges(events);
+    state.lastNudgeKey = eventKey;
+    state.lastNudgeAt = Date.now();
     renderNudges();
+  } finally {
+    state.nudgeInFlight = false;
   }
+}
+
+function scheduleNudgeRefresh() {
+  if (AJL_WEB_MODE || state.readOnly) return;
+  const derived = deriveInstances();
+  const base = getBaseInstances(derived);
+  const totals = computeTotals(base);
+  const today = getTodayDateString();
+  const overdueCount = base.filter(
+    (item) =>
+      item.status_derived !== "skipped" &&
+      Number(item.amount_remaining || 0) > 0 &&
+      item.due_date < today
+  ).length;
+  const isFree = totals.required > 0 && totals.remaining === 0 && overdueCount === 0;
+  const events = buildNudgeEvents(base, totals, isFree);
+  fetchNudges(events).catch(() => {});
 }
 
 function pushLlmMessage(role, text, meta = "") {
@@ -2253,6 +3611,96 @@ function renderLlmHistory() {
   els.llmAgentHistory.scrollTop = els.llmAgentHistory.scrollHeight;
 }
 
+function getQueueTargets(kind) {
+  const derived = deriveInstances();
+  const base = getBaseInstances(derived);
+  const today = getTodayDateString();
+  const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+  if (!currentMonth) return [];
+  if (kind === "overdue") {
+    return base.filter(
+      (item) =>
+        item.status_derived !== "skipped" &&
+        Number(item.amount_remaining || 0) > 0 &&
+        item.due_date < today
+    );
+  }
+  const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
+  const soonCutoff = new Date();
+  soonCutoff.setDate(soonCutoff.getDate() + Math.max(1, dueSoonDays));
+  const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
+  return base.filter(
+    (item) =>
+      item.status_derived !== "skipped" &&
+      Number(item.amount_remaining || 0) > 0 &&
+      item.due_date >= today &&
+      item.due_date <= soonCutoffString
+  );
+}
+
+async function markQueueItemsDone(kind, options = {}) {
+  const list = getQueueTargets(kind);
+  const label = kind === "overdue" ? "overdue" : "due-soon";
+  if (list.length === 0) {
+    return { ok: false, done: 0, total: 0, message: `No ${label} items.` };
+  }
+  if (options.confirm === true) {
+    const preview = list.slice(0, 5).map((item) => item.name_snapshot).join(", ");
+    const suffix = list.length > 5 ? "…" : "";
+    const confirmed = window.confirm(
+      `Mark ${list.length} ${label} item(s) done?\n${preview}${suffix}`
+    );
+    if (!confirmed) {
+      return { ok: false, done: 0, total: list.length, message: "Canceled." };
+    }
+  }
+  const ids = list.map((item) => item.id);
+  const outcome = await markInstancesDone(ids);
+  if (outcome.done > 0 && options.toast !== false) {
+    showToast(`Marked ${outcome.done} ${label} item(s) done.`, "Undo", async () => {
+      await markInstancesPending(ids);
+    });
+  }
+  if (outcome.done === 0) {
+    return {
+      ok: false,
+      done: 0,
+      total: ids.length,
+      message: outcome.failed?.[0]?.error || `Unable to mark ${label} items done.`,
+    };
+  }
+  const failCount = Math.max(0, Number(outcome.total || 0) - Number(outcome.done || 0));
+  const message =
+    failCount > 0 ?
+      `Marked ${outcome.done} ${label} item(s) done (${failCount} failed).` :
+      `Marked ${outcome.done} ${label} item(s) done.`;
+  return { ok: failCount === 0, done: outcome.done, total: outcome.total, message };
+}
+
+function resolveInstanceTargetsByNames(baseList, rawNames) {
+  const names = splitTargetNames(rawNames);
+  const ids = [];
+  const seen = new Set();
+  const unresolved = [];
+  for (const name of names) {
+    const resolved = findInstanceByName(name, baseList, { withMeta: true });
+    if (resolved.match) {
+      const id = String(resolved.match.id || "");
+      if (id && !seen.has(id)) {
+        ids.push(id);
+        seen.add(id);
+      }
+      continue;
+    }
+    if (resolved.ambiguous) {
+      unresolved.push(`ambiguous: ${name}`);
+    } else {
+      unresolved.push(name);
+    }
+  }
+  return { ids, unresolved };
+}
+
 async function applyProposal(proposal) {
   if (!proposal) return { ok: false, message: "No action found." };
   const derived = deriveInstances();
@@ -2261,25 +3709,90 @@ async function applyProposal(proposal) {
   let instance = null;
   let template = null;
   let fund = null;
+  let ambiguityMessage = null;
 
   if (proposal.target?.type === "instance") {
-    instance = findInstanceByName(targetName, base);
+    const resolved = findInstanceByName(targetName, base, { withMeta: true });
+    instance = resolved.match;
+    if (!instance && resolved.ambiguous) {
+      ambiguityMessage = formatAmbiguityMessage("bills", targetName, resolved.ambiguous);
+    }
   } else if (proposal.target?.type === "template") {
-    template = findTemplateByName(targetName);
+    const resolved = findTemplateByName(targetName, { withMeta: true });
+    template = resolved.match;
+    if (!template && resolved.ambiguous) {
+      ambiguityMessage = formatAmbiguityMessage("templates", targetName, resolved.ambiguous);
+    }
   } else if (proposal.target?.type === "fund") {
-    fund = findFundByName(targetName);
+    const resolved = findFundByName(targetName, { withMeta: true });
+    fund = resolved.match;
+    if (!fund && resolved.ambiguous) {
+      ambiguityMessage = formatAmbiguityMessage("reserved buckets", targetName, resolved.ambiguous);
+    }
   }
 
   const intent = String(proposal.intent || proposal.action || "").toUpperCase();
 
   if (!template && intent && intent.includes("TEMPLATE")) {
-    template = findTemplateByName(targetName);
+    const resolved = findTemplateByName(targetName, { withMeta: true });
+    template = resolved.match;
+    if (!template && resolved.ambiguous && !ambiguityMessage) {
+      ambiguityMessage = formatAmbiguityMessage("templates", targetName, resolved.ambiguous);
+    }
   }
   if (!fund && intent && (intent.includes("FUND") || intent.includes("SINKING"))) {
-    fund = findFundByName(targetName);
+    const resolved = findFundByName(targetName, { withMeta: true });
+    fund = resolved.match;
+    if (!fund && resolved.ambiguous && !ambiguityMessage) {
+      ambiguityMessage = formatAmbiguityMessage("reserved buckets", targetName, resolved.ambiguous);
+    }
   }
   if (!instance && !template && !fund && targetName) {
-    instance = findInstanceByName(targetName, base);
+    const resolved = findInstanceByName(targetName, base, { withMeta: true });
+    instance = resolved.match;
+    if (!instance && resolved.ambiguous && !ambiguityMessage) {
+      ambiguityMessage = formatAmbiguityMessage("bills", targetName, resolved.ambiguous);
+    }
+  }
+
+  if (intent === "UPDATE_AMOUNT_FLEX" && !instance) {
+    const resolvedTemplate = findTemplateByName(targetName, { withMeta: true });
+    template = resolvedTemplate.match || template;
+    if (!template && resolvedTemplate.ambiguous && !ambiguityMessage) {
+      ambiguityMessage = formatAmbiguityMessage("templates", targetName, resolvedTemplate.ambiguous);
+    }
+  }
+
+  if (ambiguityMessage) {
+    return { ok: false, message: ambiguityMessage };
+  }
+
+  if (intent === "UPDATE_AMOUNT_FLEX") {
+    const amount = parseMoney(proposal.payload?.amount);
+    if (!Number.isFinite(amount) || amount < 0) {
+      return { ok: false, message: "Invalid amount." };
+    }
+    if (instance) {
+      await postAction({
+        type: "UPDATE_INSTANCE_FIELDS",
+        instance_id: instance.id,
+        amount,
+      });
+      await refreshAll();
+      return { ok: true, message: "Updated this month bill amount." };
+    }
+    if (template) {
+      await postAction({
+        type: "UPDATE_TEMPLATE",
+        template_id: template.id,
+        amount_default: amount,
+        year: state.selectedYear,
+        month: state.selectedMonth,
+      });
+      await refreshAll();
+      return { ok: true, message: "Updated template default amount." };
+    }
+    return { ok: false, message: "Could not find a matching bill or template." };
   }
 
   if (!instance && intent && intent.startsWith("SHOW_")) {
@@ -2296,6 +3809,10 @@ async function applyProposal(proposal) {
       document.getElementById("funds-section")?.scrollIntoView({ behavior: "smooth" });
     } else if (intent === "SHOW_BACKUP") {
       els.backupOpen?.click();
+    } else if (intent === "SHOW_SHARE") {
+      await openShareModal();
+    } else if (intent === "SHOW_ASSISTANT") {
+      els.assistantDrawer?.classList.remove("hidden");
     } else if (intent === "SHOW_SUMMARY" || intent === "SHOW_DASHBOARD") {
       state.view = "today";
       renderView();
@@ -2336,6 +3853,155 @@ async function applyProposal(proposal) {
     if (els.essentialsToggle) els.essentialsToggle.checked = state.essentialsOnly;
     renderDashboard();
     return { ok: true, message: `Essentials only: ${state.essentialsOnly ? "on" : "off"}.` };
+  }
+  if (
+    intent === "LOCAL_SUMMARY_REMAINING" ||
+    intent === "LOCAL_SUMMARY_OVERDUE" ||
+    intent === "LOCAL_SUMMARY_DUE_SOON" ||
+    intent === "LOCAL_SUMMARY_FREE"
+  ) {
+    const today = getTodayDateString();
+    const list = getBaseInstances(deriveInstances());
+    const totals = computeTotals(list);
+    const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
+    const remainingItems = list.filter((item) => item.status_derived !== "skipped" && item.amount_remaining > 0);
+    const overdue = remainingItems.filter((item) => currentMonth && item.due_date < today);
+    const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
+    const soonCutoff = new Date();
+    soonCutoff.setDate(soonCutoff.getDate() + Math.max(1, dueSoonDays));
+    const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
+    const dueSoon = remainingItems.filter(
+      (item) => currentMonth && item.due_date >= today && item.due_date <= soonCutoffString
+    );
+    if (intent === "LOCAL_SUMMARY_REMAINING") {
+      return { ok: true, message: `Remaining this month: ${formatMoney(totals.remaining)} (${remainingItems.length} bills).` };
+    }
+    if (intent === "LOCAL_SUMMARY_OVERDUE") {
+      return { ok: true, message: `Overdue: ${overdue.length} bill(s).` };
+    }
+    if (intent === "LOCAL_SUMMARY_DUE_SOON") {
+      return { ok: true, message: `Due soon (${dueSoonDays} days): ${dueSoon.length} bill(s).` };
+    }
+    if (totals.required > 0 && totals.remaining === 0 && overdue.length === 0) {
+      return { ok: true, message: "Yes — free for the month." };
+    }
+    return { ok: true, message: "Not free yet for this month." };
+  }
+  if (intent === "START_AGENT_AUTH") {
+    if (AJL_WEB_MODE) {
+      return { ok: false, message: "Mamdou is available in the local app only." };
+    }
+    if (state.qwenAuth?.connected) {
+      els.assistantDrawer?.classList.remove("hidden");
+      return { ok: true, message: "Mamdou is already connected." };
+    }
+    await startQwenAuth();
+    renderAssistantConnection();
+    els.assistantDrawer?.classList.remove("hidden");
+    if (state.qwenAuth?.verification_uri_complete) {
+      return { ok: true, message: "Opened Mamdou login flow." };
+    }
+    return { ok: false, message: state.qwenAuth?.error || "Unable to start Mamdou login." };
+  }
+  if (intent === "SHOW_SHARE") {
+    await openShareModal();
+    return { ok: true, message: "Opened share controls." };
+  }
+  if (intent === "COPY_SHARE") {
+    if (!state.shareInfo?.url) {
+      return { ok: false, message: "No active share link yet." };
+    }
+    await copyShareLink();
+    return { ok: true, message: "Copied share link." };
+  }
+  if (intent === "CREATE_SHARE") {
+    await openShareModal();
+    await createShareLink();
+    if (state.shareInfo?.url) {
+      return { ok: true, message: "Created share link." };
+    }
+    return { ok: false, message: "Unable to create share link." };
+  }
+  if (intent === "REFRESH_SHARE") {
+    if (!state.shareInfo?.token) return { ok: false, message: "No active share link yet." };
+    await refreshSharedNow();
+    return { ok: true, message: "Shared view updated." };
+  }
+  if (intent === "DISABLE_SHARE") {
+    if (!state.shareInfo?.token) return { ok: false, message: "No active share link yet." };
+    await disableShareLink({ skipConfirm: true });
+    return { ok: true, message: "Share link disabled." };
+  }
+  if (intent === "REGENERATE_SHARE") {
+    if (!state.shareInfo?.token) return { ok: false, message: "No active share link yet." };
+    await regenerateShareLink({ skipConfirm: true });
+    if (state.shareInfo?.url) return { ok: true, message: "Share link regenerated." };
+    return { ok: false, message: "Unable to regenerate share link." };
+  }
+  if (intent === "MARK_ALL_OVERDUE") {
+    const result = await markQueueItemsDone("overdue", { confirm: false, toast: false });
+    return { ok: result.ok, message: result.message || "Unable to mark overdue items." };
+  }
+  if (intent === "MARK_ALL_DUE_SOON") {
+    const result = await markQueueItemsDone("dueSoon", { confirm: false, toast: false });
+    return { ok: result.ok, message: result.message || "Unable to mark due-soon items." };
+  }
+  if (intent === "MARK_INSTANCES_BULK_DONE") {
+    const resolved = resolveInstanceTargetsByNames(base, proposal.payload?.names || []);
+    if (resolved.ids.length === 0) {
+      const unresolved = resolved.unresolved.length > 0 ? ` Unresolved: ${resolved.unresolved.slice(0, 5).join(", ")}.` : "";
+      return { ok: false, message: `No matching bills found.${unresolved}` };
+    }
+    const result = await markInstancesDone(resolved.ids);
+    const unresolvedLabel = resolved.unresolved.length > 0 ? ` Unresolved: ${resolved.unresolved.slice(0, 5).join(", ")}.` : "";
+    if (result.done <= 0) {
+      return { ok: false, message: `Unable to mark done.${unresolvedLabel}` };
+    }
+    const failCount = Math.max(0, Number(result.total || 0) - Number(result.done || 0));
+    const failLabel = failCount > 0 ? ` (${failCount} failed)` : "";
+    return { ok: failCount === 0, message: `Marked ${result.done} bill(s) done${failLabel}.${unresolvedLabel}` };
+  }
+  if (intent === "MARK_INSTANCES_BULK_PENDING") {
+    const resolved = resolveInstanceTargetsByNames(base, proposal.payload?.names || []);
+    if (resolved.ids.length === 0) {
+      const unresolved = resolved.unresolved.length > 0 ? ` Unresolved: ${resolved.unresolved.slice(0, 5).join(", ")}.` : "";
+      return { ok: false, message: `No matching bills found.${unresolved}` };
+    }
+    const result = await markInstancesPending(resolved.ids);
+    const unresolvedLabel = resolved.unresolved.length > 0 ? ` Unresolved: ${resolved.unresolved.slice(0, 5).join(", ")}.` : "";
+    if (result.done <= 0) {
+      return { ok: false, message: `Unable to mark pending.${unresolvedLabel}` };
+    }
+    const failCount = Math.max(0, Number(result.total || 0) - Number(result.done || 0));
+    const failLabel = failCount > 0 ? ` (${failCount} failed)` : "";
+    return { ok: failCount === 0, message: `Marked ${result.done} bill(s) pending${failLabel}.${unresolvedLabel}` };
+  }
+  if (intent === "SKIP_INSTANCES_BULK") {
+    const resolved = resolveInstanceTargetsByNames(base, proposal.payload?.names || []);
+    if (resolved.ids.length === 0) {
+      const unresolved = resolved.unresolved.length > 0 ? ` Unresolved: ${resolved.unresolved.slice(0, 5).join(", ")}.` : "";
+      return { ok: false, message: `No matching bills found.${unresolved}` };
+    }
+    let skipped = 0;
+    for (const id of resolved.ids) {
+      const row = await postAction({ type: "SKIP_INSTANCE", instance_id: id });
+      if (row?.ok && row.instance) {
+        updateInstanceInState(row.instance);
+        skipped += 1;
+      }
+    }
+    if (skipped > 0) {
+      await loadPayments();
+      await loadActivityEvents();
+      renderDashboard();
+      recordMutation();
+      scheduleSharePublish();
+    }
+    const unresolvedLabel = resolved.unresolved.length > 0 ? ` Unresolved: ${resolved.unresolved.slice(0, 5).join(", ")}.` : "";
+    return {
+      ok: skipped > 0,
+      message: skipped > 0 ? `Skipped ${skipped} bill(s).${unresolvedLabel}` : `No bills skipped.${unresolvedLabel}`,
+    };
   }
   if (intent === "EXPORT_MONTH") {
     els.exportMonth?.click();
@@ -2405,6 +4071,12 @@ async function applyProposal(proposal) {
     return { ok: true, message: "Template created." };
   }
 
+  if (intent === "CREATE_TEMPLATES_BULK") {
+    const templates = Array.isArray(proposal.payload?.templates) ? proposal.payload.templates : [];
+    const outcome = await applyIntakeTemplates(templates);
+    return { ok: outcome.created > 0, message: outcome.message };
+  }
+
   if (intent === "UPDATE_TEMPLATE") {
     if (!template) return { ok: false, message: "Template not found." };
     const parsedAmount = proposal.payload?.amount_default ?? proposal.payload?.amount;
@@ -2452,6 +4124,34 @@ async function applyProposal(proposal) {
     return { ok: true, message: "Template archived." };
   }
 
+  if (intent === "ARCHIVE_TEMPLATES_BULK") {
+    const names = splitTargetNames(proposal.payload?.names || []);
+    if (names.length === 0) return { ok: false, message: "No templates provided." };
+    let archived = 0;
+    const missed = [];
+    for (const name of names) {
+      const resolved = findTemplateByName(name, { withMeta: true });
+      const match = resolved.match;
+      if (!match) {
+        if (resolved.ambiguous) {
+          missed.push(`ambiguous: ${name}`);
+          continue;
+        }
+        missed.push(name);
+        continue;
+      }
+      const result = await postAction({ type: "ARCHIVE_TEMPLATE", template_id: match.id });
+      if (result?.ok) archived += 1;
+      else missed.push(name);
+    }
+    if (archived > 0) await refreshAll();
+    const missedLabel = missed.length > 0 ? ` Unresolved: ${missed.slice(0, 5).join(", ")}.` : "";
+    return {
+      ok: archived > 0,
+      message: archived > 0 ? `Archived ${archived} template(s).${missedLabel}` : `No templates archived.${missedLabel}`,
+    };
+  }
+
   if (intent === "DELETE_TEMPLATE") {
     if (!template) return { ok: false, message: "Template not found." };
     await postAction({
@@ -2462,6 +4162,73 @@ async function applyProposal(proposal) {
     });
     await refreshAll();
     return { ok: true, message: "Template deleted." };
+  }
+
+  if (intent === "DELETE_TEMPLATES_BULK") {
+    const names = splitTargetNames(proposal.payload?.names || []);
+    if (names.length === 0) return { ok: false, message: "No templates provided." };
+    let deleted = 0;
+    const missed = [];
+    for (const name of names) {
+      const resolved = findTemplateByName(name, { withMeta: true });
+      const match = resolved.match;
+      if (!match) {
+        if (resolved.ambiguous) {
+          missed.push(`ambiguous: ${name}`);
+          continue;
+        }
+        missed.push(name);
+        continue;
+      }
+      const result = await postAction({
+        type: "DELETE_TEMPLATE",
+        template_id: match.id,
+        year: state.selectedYear,
+        month: state.selectedMonth,
+      });
+      if (result?.ok) deleted += 1;
+      else missed.push(name);
+    }
+    if (deleted > 0) await refreshAll();
+    const missedLabel = missed.length > 0 ? ` Unresolved: ${missed.slice(0, 5).join(", ")}.` : "";
+    return {
+      ok: deleted > 0,
+      message: deleted > 0 ? `Deleted ${deleted} template(s).${missedLabel}` : `No templates deleted.${missedLabel}`,
+    };
+  }
+
+  if (intent === "ACTIVATE_TEMPLATES_BULK") {
+    const names = splitTargetNames(proposal.payload?.names || []);
+    if (names.length === 0) return { ok: false, message: "No templates provided." };
+    let updated = 0;
+    const missed = [];
+    for (const name of names) {
+      const resolved = findTemplateByName(name, { withMeta: true });
+      const match = resolved.match;
+      if (!match) {
+        if (resolved.ambiguous) {
+          missed.push(`ambiguous: ${name}`);
+          continue;
+        }
+        missed.push(name);
+        continue;
+      }
+      const result = await postAction({
+        type: "UPDATE_TEMPLATE",
+        template_id: match.id,
+        active: true,
+        year: state.selectedYear,
+        month: state.selectedMonth,
+      });
+      if (result?.ok) updated += 1;
+      else missed.push(name);
+    }
+    if (updated > 0) await refreshAll();
+    const missedLabel = missed.length > 0 ? ` Unresolved: ${missed.slice(0, 5).join(", ")}.` : "";
+    return {
+      ok: updated > 0,
+      message: updated > 0 ? `Activated ${updated} template(s).${missedLabel}` : `No templates activated.${missedLabel}`,
+    };
   }
 
   if (intent === "CREATE_FUND") {
@@ -2667,31 +4434,76 @@ async function applyIntakeTemplates(templates) {
   };
 }
 
-async function sendLlmAgent() {
+async function sendLlmAgent(source = "drawer") {
   if (!els.llmAgentInput || !els.llmAgentOutput) return;
+  const inputEl = source === "inline" ? els.agentInlineInput : els.llmAgentInput;
+  const fallbackInput = source === "inline" ? els.llmAgentInput : els.agentInlineInput;
+  if (!inputEl) return;
   if (AJL_WEB_MODE) {
-    els.llmAgentOutput.textContent = "Mamdou is available in the local app only.";
+    setAgentStatus("Mamdou is available in the local app only.");
     pushLlmMessage("assistant", "Mamdou is available in the local app only.");
     return;
   }
   if (state.qwenAuth && state.qwenAuth.status === "disabled") {
-    els.llmAgentOutput.textContent = "Mamdou is available in the local app only.";
+    setAgentStatus("Mamdou is available in the local app only.");
     return;
   }
   if (state.qwenAuth && !state.qwenAuth.connected) {
-    els.llmAgentOutput.textContent = "Connect Mamdou first.";
+    setAgentStatus("Connect Mamdou first.");
     return;
   }
   if (state.pendingAgentAction) {
-    els.llmAgentOutput.textContent = "Confirm or cancel the pending action first.";
+    setAgentStatus("Confirm or cancel the pending action first.");
     return;
   }
-  const text = els.llmAgentInput.value.trim();
+  if (state.agentBusy) return;
+  let text = String(inputEl.value || "").trim();
+  if (!text && fallbackInput) {
+    text = String(fallbackInput.value || "").trim();
+  }
   if (!text) return;
-  els.llmAgentOutput.textContent = "Thinking...";
+  const normalized = text.toLowerCase();
+  const nowTs = Date.now();
+  if (
+    normalized === state.lastAgentInput &&
+    nowTs - Number(state.lastAgentSubmittedAt || 0) < AGENT_DUPLICATE_WINDOW_MS
+  ) {
+    setAgentStatus("Duplicate command ignored.");
+    return;
+  }
+  state.lastAgentInput = normalized;
+  state.lastAgentSubmittedAt = nowTs;
+
+  setAgentBusy(true);
+  setAgentStatus("Thinking...");
   pushLlmMessage("user", text);
-  els.llmAgentInput.value = "";
+  inputEl.value = "";
   focusAgentInput();
+  const startedAt = performance.now();
+
+  const fastProposal = parseFastCommand(text);
+  if (fastProposal) {
+    const summary = summarizeProposal(fastProposal);
+    if (canAutoExecuteProposal(fastProposal)) {
+      const outcome = await applyProposal(fastProposal);
+      await logAutoAgentExecution(text, summary, fastProposal, outcome, { fast_path: true });
+      setAgentStatus(`Done in ${((performance.now() - startedAt) / 1000).toFixed(1)}s`);
+      pushLlmMessage("assistant", outcome.message);
+      setAgentBusy(false);
+      return;
+    }
+    setPendingAgentAction({
+      kind: "command",
+      proposal: fastProposal,
+      summary,
+      source_text: text,
+      fast_path: true,
+    });
+    setAgentStatus(`${summary}. Confirm to proceed.`);
+    pushLlmMessage("assistant", `${summary}. Waiting for confirmation.`);
+    setAgentBusy(false);
+    return;
+  }
 
   try {
     const res = await fetch("/internal/advisor/query", {
@@ -2702,18 +4514,23 @@ async function sendLlmAgent() {
         payload: buildAgentPayload(text),
       }),
     });
+    const requestId = getRequestIdFromResponse(res);
     const data = await res.json();
     if (!res.ok || !data?.ok) {
+      const serverError = data?.error || "Mamdou unavailable";
+      const displayError = requestId ? `${serverError} (ref: ${requestId})` : serverError;
       if (data?.auth_url) {
-        state.llmStatus = { status: "auth_required", auth_url: data.auth_url, error: data.error || "" };
+        state.llmStatus = { status: "auth_required", auth_url: data.auth_url, error: displayError };
       } else {
-        state.llmStatus = { status: "unavailable", auth_url: null, error: data?.error || "Mamdou unavailable" };
+        state.llmStatus = { status: "unavailable", auth_url: null, error: displayError };
       }
       renderNudges();
-      els.llmAgentOutput.textContent = data?.error || "Mamdou unavailable.";
-      pushLlmMessage("assistant", "Mamdou unavailable.", data?.error || "");
+      setAgentStatus(displayError);
+      pushLlmMessage("assistant", "Mamdou unavailable.", displayError);
       return;
     }
+    const doneStatus = (cached) =>
+      `Done in ${((performance.now() - startedAt) / 1000).toFixed(1)}s${cached ? " (cached)" : ""}`;
 
     const result = data?.data || {};
     const kind = String(result.kind || "").toLowerCase();
@@ -2727,7 +4544,7 @@ async function sendLlmAgent() {
     };
     if (kind === "ask") {
       const answer = result.answer || "No response.";
-      els.llmAgentOutput.textContent = "";
+      setAgentStatus(doneStatus(!!data?.cached));
       pushLlmMessage("assistant", answer);
       focusAgentInput();
       return;
@@ -2736,21 +4553,25 @@ async function sendLlmAgent() {
     if (kind === "command" || proposals.length > 0 || result.proposal) {
       const proposal = pickProposal();
       if (proposal?.clarifying_question) {
-        els.llmAgentOutput.textContent = "";
+        setAgentStatus(`Need clarification (${((performance.now() - startedAt) / 1000).toFixed(1)}s)`);
         pushLlmMessage("assistant", proposal.clarifying_question);
         focusAgentInput();
         return;
       }
-      if (proposal?.intent && proposal.intent.startsWith("SHOW_")) {
+      if (canAutoExecuteProposal(proposal)) {
         const outcome = await applyProposal(proposal);
-        els.llmAgentOutput.textContent = "";
+        await logAutoAgentExecution(text, summarizeProposal(proposal), proposal, outcome, {
+          fast_path: false,
+          cached: !!data?.cached,
+        });
+        setAgentStatus(doneStatus(!!data?.cached));
         pushLlmMessage("assistant", outcome.message);
         focusAgentInput();
         return;
       }
       const summary = summarizeProposal(proposal);
       setPendingAgentAction({ kind: "command", proposal, summary, source_text: text });
-      els.llmAgentOutput.textContent = `${summary}. Confirm to proceed.`;
+      setAgentStatus(`${summary}. Confirm to proceed.`);
       pushLlmMessage("assistant", `${summary}. Waiting for confirmation.`);
       focusAgentInput();
       return;
@@ -2761,7 +4582,7 @@ async function sendLlmAgent() {
       const warnings = result.warnings || [];
       if (questions.length > 0) {
         const questionText = questions.map((q) => q.question).join(" ");
-        els.llmAgentOutput.textContent = "";
+        setAgentStatus(`Need clarification (${((performance.now() - startedAt) / 1000).toFixed(1)}s)`);
         pushLlmMessage("assistant", questionText || "Need more details.");
         focusAgentInput();
         return;
@@ -2770,7 +4591,7 @@ async function sendLlmAgent() {
       const summary = summarizeIntake(templates);
       setPendingAgentAction({ kind: "intake", templates, warnings, summary, source_text: text });
       const warningText = warnings.length > 0 ? warnings.join(" ") : "";
-      els.llmAgentOutput.textContent = `${summary}. Confirm to proceed.`;
+      setAgentStatus(`${summary}. Confirm to proceed.`);
       pushLlmMessage("assistant", `${summary}. Waiting for confirmation.`);
       if (warningText) {
         pushLlmMessage("assistant", warningText);
@@ -2781,52 +4602,119 @@ async function sendLlmAgent() {
 
     const errors = Array.isArray(result.errors) ? result.errors : [];
     if (errors.length > 0) {
-      els.llmAgentOutput.textContent = "";
+      setAgentStatus(`Completed with warnings (${((performance.now() - startedAt) / 1000).toFixed(1)}s${data?.cached ? ", cached" : ""})`);
       pushLlmMessage("assistant", errors.join(" "));
       focusAgentInput();
       return;
     }
     if (result.answer) {
-      els.llmAgentOutput.textContent = "";
+      setAgentStatus(doneStatus(!!data?.cached));
       pushLlmMessage("assistant", result.answer);
       focusAgentInput();
       return;
     }
-    els.llmAgentOutput.textContent = "";
+    setAgentStatus(doneStatus(!!data?.cached));
     pushLlmMessage("assistant", "No response.");
     focusAgentInput();
   } catch (err) {
-    els.llmAgentOutput.textContent = "Mamdou unavailable.";
+    setAgentStatus("Mamdou unavailable.");
     pushLlmMessage("assistant", "Mamdou unavailable.");
     focusAgentInput();
+  } finally {
+    setAgentBusy(false);
   }
 }
 
-function findInstanceByName(name, baseList) {
-  if (!name) return null;
-  const target = name.toLowerCase();
-  const exact = baseList.find((item) => item.name_snapshot.toLowerCase() === target);
-  if (exact) return exact;
-  const partial = baseList.find((item) => item.name_snapshot.toLowerCase().includes(target));
-  return partial || null;
+async function confirmPendingAgentAction() {
+  const pending = state.pendingAgentAction;
+  if (!pending) return;
+  setAgentStatus("Applying...");
+  let outcome = { ok: false, message: "No action applied." };
+  if (pending.kind === "command") {
+    outcome = await applyProposal(pending.proposal);
+  } else if (pending.kind === "intake") {
+    outcome = await applyIntakeTemplates(pending.templates || []);
+  }
+  await logAgentCommand({
+    user_text: pending.source_text || "",
+    kind: pending.kind || "command",
+    summary: pending.summary || "",
+    status: outcome?.ok ? "ok" : "error",
+    payload:
+      pending.kind === "intake"
+        ? { templates: pending.templates || [] }
+        : { proposal: pending.proposal || null },
+    result: outcome,
+  });
+  await loadCommandLog();
+  setAgentStatus("");
+  pushLlmMessage("assistant", outcome.message, pending.summary || "");
+  clearPendingAgentAction();
+  focusAgentInput();
 }
 
-function findTemplateByName(name) {
-  if (!name) return null;
-  const target = name.toLowerCase();
-  const exact = state.templates.find((t) => t.name.toLowerCase() === target);
-  if (exact) return exact;
-  const partial = state.templates.find((t) => t.name.toLowerCase().includes(target));
-  return partial || null;
+function cancelPendingAgentAction() {
+  if (!state.pendingAgentAction) return;
+  clearPendingAgentAction();
+  setAgentStatus("");
+  pushLlmMessage("assistant", "Canceled.");
+  focusAgentInput();
 }
 
-function findFundByName(name) {
-  if (!name) return null;
-  const target = name.toLowerCase();
-  const exact = (state.funds || []).find((f) => f.name.toLowerCase() === target);
-  if (exact) return exact;
-  const partial = (state.funds || []).find((f) => f.name.toLowerCase().includes(target));
-  return partial || null;
+function resolveByName(name, list, getName) {
+  const target = normalizeQuickTarget(name).toLowerCase();
+  if (!target) return { match: null, ambiguous: null };
+  const entries = Array.isArray(list) ? list : [];
+  const withNames = entries
+    .map((item) => ({ item, name: String(getName(item) || "").trim() }))
+    .filter((entry) => entry.name.length > 0);
+  const exact = withNames.filter((entry) => entry.name.toLowerCase() === target);
+  if (exact.length === 1) {
+    return { match: exact[0].item, ambiguous: null };
+  }
+  if (exact.length > 1) {
+    return {
+      match: null,
+      ambiguous: exact.map((entry) => entry.name),
+    };
+  }
+  const partial = withNames.filter((entry) => entry.name.toLowerCase().includes(target));
+  if (partial.length === 1) {
+    return { match: partial[0].item, ambiguous: null };
+  }
+  if (partial.length > 1) {
+    return {
+      match: null,
+      ambiguous: partial.map((entry) => entry.name),
+    };
+  }
+  return { match: null, ambiguous: null };
+}
+
+function formatAmbiguityMessage(kind, target, candidates) {
+  const list = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+  if (list.length === 0) return null;
+  const preview = list.slice(0, 5).join(", ");
+  const suffix = list.length > 5 ? ", …" : "";
+  return `Multiple ${kind} match "${target}": ${preview}${suffix}. Be more specific.`;
+}
+
+function findInstanceByName(name, baseList, options = {}) {
+  const resolved = resolveByName(name, baseList || [], (item) => item.name_snapshot);
+  if (options.withMeta) return resolved;
+  return resolved.match;
+}
+
+function findTemplateByName(name, options = {}) {
+  const resolved = resolveByName(name, state.templates || [], (item) => item.name);
+  if (options.withMeta) return resolved;
+  return resolved.match;
+}
+
+function findFundByName(name, options = {}) {
+  const resolved = resolveByName(name, state.funds || [], (item) => item.name);
+  if (options.withMeta) return resolved;
+  return resolved.match;
 }
 
 function summarizeIntake(templates) {
@@ -2839,14 +4727,31 @@ function summarizeIntake(templates) {
   return `Create ${templates.length} template(s): ${preview}${suffix}`;
 }
 
+function setAgentStatus(text) {
+  const message = String(text || "");
+  if (els.llmAgentOutput) els.llmAgentOutput.textContent = message;
+  if (els.agentInlineStatus) els.agentInlineStatus.textContent = message;
+}
+
+function setAgentBusy(busy) {
+  const next = !!busy;
+  state.agentBusy = next;
+  if (els.llmAgentSend) els.llmAgentSend.disabled = next;
+  if (els.agentInlineSend) els.agentInlineSend.disabled = next;
+  if (els.llmAgentInput) els.llmAgentInput.disabled = next;
+  if (els.agentInlineInput) els.agentInlineInput.disabled = next;
+}
+
 function setPendingAgentAction(action) {
   state.pendingAgentAction = action;
   if (els.llmAgentActions) els.llmAgentActions.classList.remove("hidden");
+  if (els.agentInlineActions) els.agentInlineActions.classList.remove("hidden");
 }
 
 function clearPendingAgentAction() {
   state.pendingAgentAction = null;
   if (els.llmAgentActions) els.llmAgentActions.classList.add("hidden");
+  if (els.agentInlineActions) els.agentInlineActions.classList.add("hidden");
 }
 
 function summarizeProposal(proposal) {
@@ -2856,6 +4761,18 @@ function summarizeProposal(proposal) {
   if (intent === "MARK_PAID") return `Mark done: ${target}`;
   if (intent === "SKIP_INSTANCE") return `Skip: ${target}`;
   if (intent === "MARK_PENDING") return `Mark pending: ${target}`;
+  if (intent === "MARK_INSTANCES_BULK_DONE") {
+    const count = splitTargetNames(proposal.payload?.names || []).length;
+    return count > 0 ? `Mark done ${count} bills` : "Mark multiple bills done";
+  }
+  if (intent === "MARK_INSTANCES_BULK_PENDING") {
+    const count = splitTargetNames(proposal.payload?.names || []).length;
+    return count > 0 ? `Mark pending ${count} bills` : "Mark multiple bills pending";
+  }
+  if (intent === "SKIP_INSTANCES_BULK") {
+    const count = splitTargetNames(proposal.payload?.names || []).length;
+    return count > 0 ? `Skip ${count} bills` : "Skip multiple bills";
+  }
   if (intent === "ADD_PAYMENT") {
     const mode = proposal.payload?.amount_mode || "FIXED";
     if (mode === "FULL_REMAINING") return `Mark done: ${target}`;
@@ -2863,10 +4780,27 @@ function summarizeProposal(proposal) {
     return `Log update for ${target}`;
   }
   if (intent === "UPDATE_INSTANCE_FIELDS") return `Update bill: ${target}`;
+  if (intent === "UPDATE_AMOUNT_FLEX") return `Update amount: ${target}`;
   if (intent === "CREATE_TEMPLATE") return `Create template: ${target}`;
+  if (intent === "CREATE_TEMPLATES_BULK") {
+    const count = Array.isArray(proposal.payload?.templates) ? proposal.payload.templates.length : 0;
+    return count > 0 ? `Create ${count} template(s)` : "Create templates";
+  }
   if (intent === "UPDATE_TEMPLATE") return `Update template: ${target}`;
   if (intent === "ARCHIVE_TEMPLATE") return `Archive template: ${target}`;
+  if (intent === "ARCHIVE_TEMPLATES_BULK") {
+    const count = splitTargetNames(proposal.payload?.names || []).length;
+    return count > 0 ? `Archive ${count} template(s)` : "Archive templates";
+  }
   if (intent === "DELETE_TEMPLATE") return `Delete template: ${target}`;
+  if (intent === "DELETE_TEMPLATES_BULK") {
+    const count = splitTargetNames(proposal.payload?.names || []).length;
+    return count > 0 ? `Delete ${count} template(s)` : "Delete templates";
+  }
+  if (intent === "ACTIVATE_TEMPLATES_BULK") {
+    const count = splitTargetNames(proposal.payload?.names || []).length;
+    return count > 0 ? `Activate ${count} template(s)` : "Activate templates";
+  }
   if (intent === "APPLY_TEMPLATES") return "Apply templates to this month";
   if (intent === "CREATE_FUND") return `Create reserved bucket: ${target}`;
   if (intent === "UPDATE_FUND") return `Update reserved bucket: ${target}`;
@@ -2878,11 +4812,59 @@ function summarizeProposal(proposal) {
   if (intent === "EXPORT_MONTH") return "Export current month CSV";
   if (intent === "EXPORT_BACKUP") return "Export full backup JSON";
   if (intent === "GENERATE_MONTH") return "Generate month";
+  if (intent === "MARK_ALL_OVERDUE") {
+    const count = getQueueTargets("overdue").length;
+    return count > 0 ? `Mark all overdue items done (${count})` : "Mark all overdue items done";
+  }
+  if (intent === "MARK_ALL_DUE_SOON") {
+    const count = getQueueTargets("dueSoon").length;
+    return count > 0 ? `Mark all due-soon items done (${count})` : "Mark all due-soon items done";
+  }
   if (intent === "UNDO_PAYMENT") return `Undo update: ${target}`;
   if (intent === "SET_MONTH") return "Switch month";
   if (intent === "SET_ESSENTIALS_ONLY") return "Toggle essentials only";
   if (intent === "SHOW_SUMMARY") return "Show Today";
+  if (intent === "SHOW_SHARE") return "Open share controls";
+  if (intent === "CREATE_SHARE") return "Create share link";
+  if (intent === "REFRESH_SHARE") return "Refresh shared view";
+  if (intent === "DISABLE_SHARE") return "Disable share link";
+  if (intent === "REGENERATE_SHARE") return "Regenerate share link";
+  if (intent === "COPY_SHARE") return "Copy share link";
+  if (intent === "SHOW_ASSISTANT") return "Open Mamdou";
+  if (intent === "START_AGENT_AUTH") return "Start Mamdou login";
+  if (intent === "LOCAL_SUMMARY_REMAINING") return "Show remaining this month";
+  if (intent === "LOCAL_SUMMARY_OVERDUE") return "Show overdue count";
+  if (intent === "LOCAL_SUMMARY_DUE_SOON") return "Show due-soon count";
+  if (intent === "LOCAL_SUMMARY_FREE") return "Check free-for-month status";
   return `Intent: ${intent}`;
+}
+
+const AUTO_EXECUTE_INTENTS = new Set([
+  "SHOW_DUE_SOON",
+  "SHOW_OVERDUE",
+  "SHOW_TEMPLATES",
+  "SHOW_SUMMARY",
+  "SHOW_DASHBOARD",
+  "SHOW_BACKUP",
+  "SHOW_PIGGY",
+  "SHOW_SHARE",
+  "SHOW_ASSISTANT",
+  "COPY_SHARE",
+  "START_AGENT_AUTH",
+  "EXPORT_MONTH",
+  "EXPORT_BACKUP",
+  "LOCAL_SUMMARY_REMAINING",
+  "LOCAL_SUMMARY_OVERDUE",
+  "LOCAL_SUMMARY_DUE_SOON",
+  "LOCAL_SUMMARY_FREE",
+]);
+
+function canAutoExecuteProposal(proposal) {
+  if (!proposal) return false;
+  const intent = String(proposal.intent || proposal.action || "").toUpperCase();
+  if (!intent) return false;
+  if (AUTO_EXECUTE_INTENTS.has(intent)) return true;
+  return proposal.needs_confirmation === false && intent.startsWith("SHOW_");
 }
 
 function renderAssistantConnection() {
@@ -2893,6 +4875,9 @@ function renderAssistantConnection() {
     els.assistantConnectionTitle.textContent = "Mamdou unavailable";
     els.assistantConnectionBody.textContent = "Mamdou is available in the local app only.";
     els.assistantConnectionAction.innerHTML = "";
+    if (els.agentInlineConnection) {
+      els.agentInlineConnection.textContent = "Mamdou unavailable on web.";
+    }
     return;
   }
   const actionWrap = els.assistantConnectionAction;
@@ -2935,6 +4920,9 @@ function renderAssistantConnection() {
 
   els.assistantConnectionTitle.textContent = title;
   els.assistantConnectionBody.textContent = body;
+  if (els.agentInlineConnection) {
+    els.agentInlineConnection.textContent = connected ? "Connected and ready for commands." : body;
+  }
 
   if (action) {
     if (action.type === "link") {
@@ -3251,12 +5239,27 @@ function renderImportPreview() {
 }
 
 function getShareTokenFromPath() {
-  const match = window.location.pathname.match(/^\/s\/([A-Za-z0-9_-]+)$/);
+  const queryToken = new URLSearchParams(window.location.search).get("share");
+  if (queryToken && /^[A-Za-z0-9_-]{24,128}$/.test(queryToken)) {
+    return queryToken;
+  }
+  const match = window.location.pathname.match(/^\/s\/([A-Za-z0-9_-]{24,128})\/?$/);
   return match ? match[1] : null;
 }
 
 function setReadOnlyMode(enabled) {
   state.readOnly = enabled;
+  if (enabled) {
+    sharePublishDirty = false;
+    sharePublishRetryCount = 0;
+    clearSharePublishTimers();
+  }
+  if (!enabled) {
+    state.sharePrivacy = null;
+    state.sharedMeta = null;
+    state.sharedEtag = "";
+    stopSharedLivePolling();
+  }
   document.body.classList.toggle("read-only", enabled);
   if (enabled && els.sharedHeader) {
     els.sharedHeader.classList.remove("hidden");
@@ -3270,49 +5273,159 @@ function setReadOnlyMode(enabled) {
 
 function renderSharedHeader(label, meta = {}) {
   if (!els.sharedHeader) return;
-  if (label) {
-    els.sharedOwner.textContent = label;
-  } else {
-    els.sharedOwner.textContent = meta.ownerLabel ? meta.ownerLabel : "";
+  if (els.sharedOwner) {
+    if (label) {
+      els.sharedOwner.textContent = label;
+    } else if (meta.ownerLabel) {
+      els.sharedOwner.textContent = meta.ownerLabel;
+    } else {
+      els.sharedOwner.textContent = "Read-only shared view";
+    }
+  }
+  if (els.sharedUpdated) {
+    const updatedRaw = meta.lastPublishedAt || meta.last_published_at || null;
+    const expiresRaw = meta.expiresAt || meta.expires_at || null;
+    const parts = [];
+    if (updatedRaw) parts.push(`Updated ${formatDateTime(updatedRaw)}`);
+    if (expiresRaw) parts.push(`Expires ${formatDateTime(expiresRaw)}`);
+    els.sharedUpdated.textContent = parts.join(" · ");
   }
   els.sharedHeader.classList.remove("hidden");
   els.sharedHeader.classList.add("visible");
 }
 
+function stopSharedLivePolling() {
+  if (sharedLiveTimer) {
+    clearInterval(sharedLiveTimer);
+    sharedLiveTimer = null;
+  }
+}
+
+function startSharedLivePolling(token, mode) {
+  stopSharedLivePolling();
+  if (!state.readOnly) return;
+  if (!token || mode !== "live") return;
+  sharedLiveTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadSharedView(token, { silent: true }).catch(() => {});
+  }, SHARE_LIVE_REFRESH_MS);
+}
+
+async function refreshShareRelayStatus() {
+  if (!els.shareRelayStatus) return;
+  const setStatus = (message, tone = "") => {
+    els.shareRelayStatus.textContent = message;
+    els.shareRelayStatus.classList.remove("ok");
+    els.shareRelayStatus.classList.remove("warn");
+    if (tone === "ok" || tone === "warn") {
+      els.shareRelayStatus.classList.add(tone);
+    }
+  };
+  const base = getShareBaseUrl();
+  if (!base) {
+    const network = getShareNetworkMode();
+    const message = network.warning ? `${network.message} ${network.warning}` : network.message;
+    setStatus(message, network.tone);
+    return;
+  }
+  setStatus("Share relay: checking...");
+  const startedAt = performance.now();
+  try {
+    const res = await fetchWithTimeout(
+      `${base}/api/health`,
+      { method: "GET", credentials: "omit" },
+      SHARE_RELAY_TIMEOUT_MS
+    );
+    if (res.ok) {
+      const displayBase = base.replace(/^https?:\/\//i, "");
+      const ms = Math.max(1, Math.round(performance.now() - startedAt));
+      state.shareRelayBackoffUntil = 0;
+      setStatus(`Share relay connected (${displayBase}) · ${ms}ms`, "ok");
+      return;
+    }
+    const ms = Math.max(1, Math.round(performance.now() - startedAt));
+    if (!AJL_WEB_MODE) state.shareRelayBackoffUntil = Date.now() + 15_000;
+    setStatus(`Share relay unavailable right now (HTTP ${res.status}, ${ms}ms).`, "warn");
+  } catch (err) {
+    if (!AJL_WEB_MODE) state.shareRelayBackoffUntil = Date.now() + 15_000;
+    setStatus("Share relay unavailable right now.", "warn");
+  }
+}
+
+function updateShareStatusLine(message, tone = "") {
+  if (!els.shareRelayStatus) return;
+  els.shareRelayStatus.textContent = message;
+  els.shareRelayStatus.classList.remove("ok");
+  els.shareRelayStatus.classList.remove("warn");
+  if (tone === "ok" || tone === "warn") {
+    els.shareRelayStatus.classList.add(tone);
+  }
+}
+
+function setShareBusy(busy) {
+  state.shareBusy = !!busy;
+  const disabled = state.shareBusy || state.readOnly;
+  if (els.shareCreate) els.shareCreate.disabled = disabled;
+  if (els.shareRefresh) els.shareRefresh.disabled = disabled;
+  if (els.shareRegenerate) els.shareRegenerate.disabled = disabled;
+  if (els.shareDisable) els.shareDisable.disabled = disabled;
+  if (els.shareCopy) els.shareCopy.disabled = disabled || !state.shareInfo;
+  if (els.shareLive) els.shareLive.disabled = disabled;
+  if (els.shareExpiry) els.shareExpiry.disabled = disabled;
+  if (els.shareExpiryCustom) els.shareExpiryCustom.disabled = disabled;
+  if (els.shareOwnerLabel) els.shareOwnerLabel.disabled = disabled;
+  if (els.shareIncludeAmounts) els.shareIncludeAmounts.disabled = disabled;
+  if (els.shareIncludeNotes) els.shareIncludeNotes.disabled = disabled;
+  if (els.shareIncludeCategories) els.shareIncludeCategories.disabled = disabled;
+}
+
 function buildSharePayload() {
   const derived = deriveInstances();
   const base = getBaseInstances(derived);
+  const ownerLabel = getShareOwnerLabelValue() || state.profileName || null;
+  const includeAmounts = state.shareOptions.includeAmounts !== false;
+  const includeNotes = state.shareOptions.includeNotes !== false;
+  const includeCategories = state.shareOptions.includeCategories !== false;
   return {
     schema_version: "1",
     period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
-    owner_label: state.profileName || null,
+    owner_label: ownerLabel,
     generated_at: new Date().toISOString(),
+    privacy: {
+      include_amounts: includeAmounts,
+      include_notes: includeNotes,
+      include_categories: includeCategories,
+    },
     items: base.map((item) => ({
       id: item.id,
       template_id: item.template_id,
       year: item.year,
       month: item.month,
       name_snapshot: item.name_snapshot,
-      category_snapshot: item.category_snapshot || null,
-      amount: Number(item.amount || 0),
+      category_snapshot: includeCategories ? item.category_snapshot || null : null,
+      amount: includeAmounts ? Number(item.amount || 0) : null,
       due_date: item.due_date,
       status: item.status_derived,
       paid_date: item.paid_date || null,
-      amount_paid: Number(item.amount_paid || 0),
-      amount_remaining: Number(item.amount_remaining || 0),
+      amount_paid: includeAmounts ? Number(item.amount_paid || 0) : null,
+      amount_remaining: includeAmounts ? Number(item.amount_remaining || 0) : null,
       essential_snapshot: !!item.essential_snapshot,
       autopay_snapshot: !!item.autopay_snapshot,
-      note: item.note || null,
+      note: includeNotes ? item.note || null : null,
     })),
-    categories: state.settings.categories || [],
+    categories: includeCategories ? state.settings.categories || [] : [],
   };
 }
 
 async function loadShareInfo() {
-  if (AJL_WEB_MODE) return null;
   try {
-    const res = await fetch("/api/shares");
-    if (!res.ok) return null;
+    const res = await shareFetch("/api/shares");
+    if (!res.ok) {
+      if (res.status === 401) {
+        updateShareStatusLine("No active owner session. Create a share link to start.", "warn");
+      }
+      return null;
+    }
     const data = await res.json();
     return data && data.share ? data.share : null;
   } catch (err) {
@@ -3321,36 +5434,116 @@ async function loadShareInfo() {
 }
 
 async function publishShare(payloadOverride = null) {
-  if (AJL_WEB_MODE || state.readOnly) return;
+  if (state.readOnly) return;
   if (!state.shareInfo || !state.shareInfo.token) return;
+  const ownerLabel = getShareOwnerLabelValue() || state.profileName || null;
   const payload = payloadOverride || buildSharePayload();
-  await fetch(`/api/shares/${state.shareInfo.token}/publish`, {
+  const res = await shareFetch(`/api/shares/${state.shareInfo.token}/publish`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ payload, schema_version: payload.schema_version, owner_label: state.profileName || null }),
+    body: JSON.stringify({ payload, schema_version: payload.schema_version, owner_label: ownerLabel }),
   });
+  if (!res.ok) {
+    const message = await readApiErrorMessage(res, "Unable to update shared data.");
+    throw new Error(message);
+  }
+  const stamp = new Date().toISOString();
+  state.shareInfo.last_published_at = stamp;
+  updateShareStatusLine(`Shared data updated at ${formatDateTime(stamp)}.`, "ok");
 }
 
-let sharePublishTimer = null;
-function scheduleSharePublish() {
-  if (AJL_WEB_MODE || state.readOnly) return;
-  if (!state.shareInfo || state.shareInfo.mode !== "live" || !state.shareInfo.is_active) return;
-  if (sharePublishTimer) clearTimeout(sharePublishTimer);
-  sharePublishTimer = setTimeout(() => {
-    publishShare().catch(() => {});
-  }, 1200);
+function clearSharePublishTimers() {
+  if (sharePublishTimer) {
+    clearTimeout(sharePublishTimer);
+    sharePublishTimer = null;
+  }
+  if (sharePublishRetryTimer) {
+    clearTimeout(sharePublishRetryTimer);
+    sharePublishRetryTimer = null;
+  }
 }
 
-async function loadSharedView(token) {
+function getSharePublishRetryDelayMs() {
+  const factor = Math.min(sharePublishRetryCount, 6);
+  return Math.min(SHARE_PUBLISH_MAX_DELAY_MS, SHARE_PUBLISH_BASE_DELAY_MS * (2 ** factor));
+}
+
+function canPublishShareLive() {
+  return !state.readOnly && !!(state.shareInfo && state.shareInfo.mode === "live" && state.shareInfo.is_active);
+}
+
+async function flushSharePublishQueue() {
+  if (!canPublishShareLive()) return;
+  if (sharePublishInFlight) return;
+  if (!sharePublishDirty) return;
+  sharePublishInFlight = true;
+  sharePublishDirty = false;
   try {
-    const res = await fetch(`/api/shares/${token}`);
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      const message = data?.error || "This link is invalid or has been disabled.";
-      showSystemBanner(message);
+    await publishShare();
+    sharePublishRetryCount = 0;
+    if (sharePublishRetryTimer) {
+      clearTimeout(sharePublishRetryTimer);
+      sharePublishRetryTimer = null;
+    }
+  } catch (err) {
+    sharePublishDirty = true;
+    sharePublishRetryCount += 1;
+    const delay = getSharePublishRetryDelayMs();
+    updateShareStatusLine(
+      `${String(err?.message || "Unable to sync shared data.")} Retrying in ${Math.round(delay / 1000)}s.`,
+      "warn"
+    );
+    if (sharePublishRetryTimer) clearTimeout(sharePublishRetryTimer);
+    sharePublishRetryTimer = setTimeout(() => {
+      flushSharePublishQueue().catch(() => {});
+    }, delay);
+  } finally {
+    sharePublishInFlight = false;
+    if (sharePublishDirty && !sharePublishRetryTimer) {
+      sharePublishTimer = setTimeout(() => {
+        flushSharePublishQueue().catch(() => {});
+      }, 50);
+    }
+  }
+}
+
+function scheduleSharePublish(options = {}) {
+  if (!canPublishShareLive()) return;
+  const immediate = options.immediate === true;
+  sharePublishDirty = true;
+  if (sharePublishTimer) clearTimeout(sharePublishTimer);
+  const delay = immediate ? 0 : 1200;
+  sharePublishTimer = setTimeout(() => {
+    flushSharePublishQueue().catch((err) => {
+      updateShareStatusLine(String(err?.message || "Unable to sync shared data."), "warn");
+    });
+  }, delay);
+}
+
+async function loadSharedView(token, options = {}) {
+  const silent = !!options.silent;
+  try {
+    const headers = {};
+    if (state.sharedEtag) {
+      headers["If-None-Match"] = state.sharedEtag;
+    }
+    const res = await shareFetch(`/api/shares/${token}`, { headers });
+    if (res.status === 304) {
+      hideSystemBanner();
       return;
     }
+    if (!res.ok) {
+      stopSharedLivePolling();
+      state.sharedEtag = "";
+      const data = await res.json().catch(() => ({}));
+      const message = data?.error || "This link is invalid or has been disabled.";
+      if (!silent) showSystemBanner(message);
+      return;
+    }
+    hideSystemBanner();
     const data = await res.json();
+    const etag = res.headers.get("etag");
+    state.sharedEtag = etag ? String(etag) : "";
     const payload = data.payload || data.data || {};
     const period = payload.period || "";
     if (period && period.includes("-")) {
@@ -3358,13 +5551,24 @@ async function loadSharedView(token) {
       if (year && month) setMonth(year, month);
     }
     state.instances = Array.isArray(payload.items) ? payload.items : [];
+    state.dataVersion += 1;
+    state.summaryCache = null;
+    state.sharePrivacy = payload.privacy && typeof payload.privacy === "object" ? payload.privacy : null;
+    state.sharedMeta = {
+      mode: data.mode || payload.mode || "live",
+      ownerLabel: data.ownerLabel || payload.owner_label || null,
+      lastPublishedAt: data.lastPublishedAt || payload.last_published_at || null,
+      expiresAt: data.expiresAt || payload.expires_at || null,
+    };
     state.payments = [];
     state.settings.categories = Array.isArray(payload.categories) ? payload.categories : [];
-    renderSharedHeader(payload.owner_label || data.ownerLabel);
+    renderSharedHeader(payload.owner_label || data.ownerLabel, state.sharedMeta);
+    startSharedLivePolling(token, state.sharedMeta.mode);
     renderView();
     renderDashboard();
   } catch (err) {
-    showSystemBanner("Unable to load shared list.");
+    stopSharedLivePolling();
+    if (!silent) showSystemBanner("Unable to load shared list.");
   }
 }
 
@@ -3377,8 +5581,37 @@ function updateShareModal() {
   if (els.shareLive) {
     els.shareLive.checked = share ? share.mode === "live" : true;
   }
+  if (els.shareExpiry) {
+    const inferred = inferShareExpiryPreset(share?.expires_at || null);
+    state.shareExpiryPreset = inferred;
+    els.shareExpiry.value = inferred;
+    setShareExpiryCustomVisibility(inferred === "custom");
+    if (els.shareExpiryCustom) {
+      if (share?.expires_at) {
+        els.shareExpiryCustom.value = toDatetimeLocalInputValue(share.expires_at);
+      } else if (inferred !== "custom") {
+        els.shareExpiryCustom.value = "";
+      }
+    }
+  }
+  if (els.shareOwnerLabel) {
+    const value = share?.owner_label || state.shareOwnerLabel || state.profileName || "";
+    els.shareOwnerLabel.value = value;
+  }
+  if (els.shareIncludeAmounts) {
+    els.shareIncludeAmounts.checked = state.shareOptions.includeAmounts !== false;
+  }
+  if (els.shareIncludeNotes) {
+    els.shareIncludeNotes.checked = state.shareOptions.includeNotes !== false;
+  }
+  if (els.shareIncludeCategories) {
+    els.shareIncludeCategories.checked = state.shareOptions.includeCategories !== false;
+  }
   if (els.shareCreate) {
     els.shareCreate.classList.toggle("hidden", !!share);
+  }
+  if (els.shareRefresh) {
+    els.shareRefresh.classList.toggle("hidden", !share);
   }
   if (els.shareRegenerate) {
     els.shareRegenerate.classList.toggle("hidden", !share);
@@ -3389,13 +5622,39 @@ function updateShareModal() {
   if (els.shareCopy) {
     els.shareCopy.disabled = !share;
   }
+  const network = getShareNetworkMode();
+  if (els.shareRelayStatus && share?.last_published_at) {
+    let message = `${network.message} Last shared update: ${formatDateTime(share.last_published_at)}.`;
+    if (share.expires_at) {
+      message += ` Expires ${formatDateTime(share.expires_at)}.`;
+    }
+    if (network.warning) message += ` ${network.warning}`;
+    updateShareStatusLine(message, network.warning ? "warn" : "ok");
+  } else if (els.shareRelayStatus && share?.expires_at) {
+    let message = `${network.message} Share link expires ${formatDateTime(share.expires_at)}.`;
+    if (network.warning) message += ` ${network.warning}`;
+    updateShareStatusLine(message, network.warning ? "warn" : "ok");
+  } else if (els.shareRelayStatus) {
+    let message = network.message;
+    if (network.warning) message += ` ${network.warning}`;
+    updateShareStatusLine(message, network.tone);
+  }
+  setShareBusy(state.shareBusy);
 }
 
 async function openShareModal() {
   if (!els.shareModal) return;
   if (state.readOnly) return;
+  await ensureShareViewerBaseReady();
+  refreshShareRelayStatus().catch(() => {});
   const share = await loadShareInfo();
+  if (share && (share.owner_key || share.ownerKey || share.manageKey)) {
+    const ownerKey = share.owner_key || share.ownerKey || share.manageKey;
+    state.shareOwnerKey = ownerKey;
+    saveShareOwnerKey(ownerKey);
+  }
   state.shareInfo = share ? normalizeShareInfo(share) : null;
+  state.shareOwnerLabel = state.shareInfo?.owner_label || state.shareOwnerLabel || state.profileName || "";
   updateShareModal();
   els.shareModal.classList.remove("hidden");
 }
@@ -3407,85 +5666,205 @@ function closeShareModal() {
 
 function normalizeShareInfo(share) {
   if (!share) return null;
-  const base = window.location.origin;
+  const token = share.token || share.shareToken || null;
+  const url = buildShareViewerUrl(token, share.url || share.shareUrl || "");
+  const expiresAt = share.expires_at || share.expiresAt || null;
   return {
-    token: share.token,
-    mode: share.mode,
+    token,
+    mode: share.mode || "live",
     is_active: !!share.is_active,
     owner_label: share.owner_label || null,
     last_published_at: share.last_published_at || null,
-    url: `${base}/s/${share.token}`,
+    expires_at: expiresAt,
+    url,
   };
 }
 
 async function createShareLink() {
+  if (state.shareBusy) return;
+  setShareBusy(true);
+  try {
+  await ensureShareViewerBaseReady();
   const mode = els.shareLive && els.shareLive.checked ? "live" : "snapshot";
-  const res = await fetch("/api/shares", {
+  const ownerLabel = getShareOwnerLabelValue() || state.profileName || null;
+  const expiryPreset = getShareExpiryPresetValue();
+  if (expiryPreset === "custom" && !fromDatetimeLocalInputValue(els.shareExpiryCustom?.value || "")) {
+    updateShareStatusLine("Choose a custom expiry date/time.", "warn");
+    return;
+  }
+  const expiresAt = getShareExpiryValue();
+  if (expiryPreset !== "never" && !expiresAt) {
+    updateShareStatusLine("Custom expiry must be a future date/time.", "warn");
+    return;
+  }
+  state.shareOwnerLabel = ownerLabel || "";
+  const res = await shareFetch("/api/shares", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode, owner_label: state.profileName || null }),
+    body: JSON.stringify({ mode, owner_label: ownerLabel, expires_at: expiresAt }),
   });
   if (!res.ok) {
-    window.alert("Unable to create share link.");
+    const message = await readApiErrorMessage(res, "Unable to create share link.");
+    window.alert(message);
+    updateShareStatusLine(message, "warn");
     return;
   }
   const data = await res.json();
+  const ownerKey = data.ownerKey || data.manageKey || data.owner_key || null;
+  if (ownerKey) {
+    state.shareOwnerKey = ownerKey;
+    saveShareOwnerKey(ownerKey);
+  }
+  const shareUrl = buildShareViewerUrl(data.shareToken, data.shareUrl || "");
   state.shareInfo = {
     token: data.shareToken,
     mode,
     is_active: true,
-    owner_label: state.profileName || null,
-    url: data.shareUrl,
+    owner_label: ownerLabel,
+    expires_at: data.expires_at || expiresAt || null,
+    url: shareUrl,
   };
-  await publishShare(buildSharePayload());
+  try {
+    await publishShare(buildSharePayload());
+  } catch (err) {
+    const message = String(err.message || "Share created, but initial publish failed.");
+    showSystemBanner(message);
+    updateShareStatusLine(message, "warn");
+    scheduleSharePublish({ immediate: true });
+  }
   updateShareModal();
+  } finally {
+    setShareBusy(false);
+  }
 }
 
-async function regenerateShareLink() {
+async function regenerateShareLink(options = {}) {
+  if (state.shareBusy) return;
+  setShareBusy(true);
+  try {
+  await ensureShareViewerBaseReady();
   if (!state.shareInfo) return;
-  const confirmed = window.confirm("Regenerate link? The old link will stop working.");
+  const confirmed =
+    options.skipConfirm === true ?
+      true :
+      window.confirm("Regenerate link? The old link will stop working.");
   if (!confirmed) return;
-  const res = await fetch(`/api/shares/${state.shareInfo.token}/regenerate`, { method: "POST" });
+  const res = await shareFetch(`/api/shares/${state.shareInfo.token}/regenerate`, { method: "POST" });
   if (!res.ok) {
-    window.alert("Unable to regenerate link.");
+    const message = await readApiErrorMessage(res, "Unable to regenerate link.");
+    window.alert(message);
+    updateShareStatusLine(message, "warn");
     return;
   }
   const data = await res.json();
+  const ownerKey = data.ownerKey || data.manageKey || data.owner_key || null;
+  if (ownerKey) {
+    state.shareOwnerKey = ownerKey;
+    saveShareOwnerKey(ownerKey);
+  }
   state.shareInfo = {
     ...state.shareInfo,
     token: data.shareToken,
-    url: data.shareUrl,
+    url: buildShareViewerUrl(data.shareToken, data.shareUrl || ""),
+    expires_at: data.expires_at || state.shareInfo.expires_at || null,
   };
   updateShareModal();
+  updateShareStatusLine("Share link regenerated.", "ok");
+  } finally {
+    setShareBusy(false);
+  }
 }
 
-async function disableShareLink() {
+async function disableShareLink(options = {}) {
+  if (state.shareBusy) return;
+  setShareBusy(true);
+  try {
   if (!state.shareInfo) return;
-  const confirmed = window.confirm("Disable this share link? Viewers will lose access.");
+  const confirmed =
+    options.skipConfirm === true ?
+      true :
+      window.confirm("Disable this share link? Viewers will lose access.");
   if (!confirmed) return;
-  await fetch(`/api/shares/${state.shareInfo.token}`, {
+  const res = await shareFetch(`/api/shares/${state.shareInfo.token}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ isActive: false }),
   });
+  if (!res.ok) {
+    const message = await readApiErrorMessage(res, "Unable to disable share link.");
+    window.alert(message);
+    updateShareStatusLine(message, "warn");
+    return;
+  }
   state.shareInfo = null;
+  sharePublishDirty = false;
+  sharePublishRetryCount = 0;
+  clearSharePublishTimers();
   updateShareModal();
+  updateShareStatusLine("Share link disabled.");
+  } finally {
+    setShareBusy(false);
+  }
 }
 
 async function updateShareMode() {
+  if (state.shareBusy) return;
+  setShareBusy(true);
+  try {
   if (!state.shareInfo) return;
   const mode = els.shareLive && els.shareLive.checked ? "live" : "snapshot";
+  const ownerLabel = getShareOwnerLabelValue() || state.profileName || null;
+  const expiryPreset = getShareExpiryPresetValue();
+  if (expiryPreset === "custom" && !fromDatetimeLocalInputValue(els.shareExpiryCustom?.value || "")) {
+    updateShareStatusLine("Choose a custom expiry date/time.", "warn");
+    return;
+  }
+  const expiresAt = getShareExpiryValue();
+  if (expiryPreset !== "never" && !expiresAt) {
+    updateShareStatusLine("Custom expiry must be a future date/time.", "warn");
+    return;
+  }
   state.shareInfo.mode = mode;
-  await fetch(`/api/shares/${state.shareInfo.token}`, {
+  state.shareInfo.owner_label = ownerLabel;
+  state.shareInfo.expires_at = expiresAt;
+  state.shareOwnerLabel = ownerLabel || "";
+  const patchRes = await shareFetch(`/api/shares/${state.shareInfo.token}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify({ mode, owner_label: ownerLabel, expires_at: expiresAt }),
   });
-  await publishShare(buildSharePayload());
+  if (!patchRes.ok) {
+    const message = await readApiErrorMessage(patchRes, "Unable to update share mode.");
+    window.alert(message);
+    updateShareStatusLine(message, "warn");
+    return;
+  }
+  try {
+    await publishShare(buildSharePayload());
+  } catch (err) {
+    const message = String(err.message || "Unable to refresh shared data.");
+    showSystemBanner(message);
+    updateShareStatusLine(message, "warn");
+    if (mode === "live") {
+      scheduleSharePublish({ immediate: true });
+    }
+  }
+  if (mode !== "live") {
+    sharePublishDirty = false;
+    sharePublishRetryCount = 0;
+    clearSharePublishTimers();
+  }
   updateShareModal();
+  } finally {
+    setShareBusy(false);
+  }
 }
 
 async function copyShareLink() {
+  await ensureShareViewerBaseReady();
+  if (state.shareInfo?.token) {
+    state.shareInfo.url = buildShareViewerUrl(state.shareInfo.token, state.shareInfo.url || "");
+  }
   const link = state.shareInfo?.url || "";
   if (!link) return;
   try {
@@ -3497,6 +5876,103 @@ async function copyShareLink() {
       document.execCommand("copy");
       showToast("Link copied.");
     }
+  }
+}
+
+async function refreshSharedNow() {
+  if (state.shareBusy) return;
+  setShareBusy(true);
+  try {
+  if (!state.shareInfo) return;
+  try {
+    await publishShare(buildSharePayload());
+    showToast("Shared view updated.");
+  } catch (err) {
+    const message = String(err.message || "Unable to update shared data.");
+    showSystemBanner(message);
+    updateShareStatusLine(message, "warn");
+    scheduleSharePublish({ immediate: true });
+  }
+  } finally {
+    setShareBusy(false);
+  }
+}
+
+async function updateShareOwnerLabel() {
+  if (state.shareBusy) return;
+  setShareBusy(true);
+  try {
+  const ownerLabel = getShareOwnerLabelValue() || null;
+  const previous = state.shareInfo?.owner_label || null;
+  state.shareOwnerLabel = ownerLabel || "";
+  if (!state.shareInfo || !state.shareInfo.token) return;
+  if (ownerLabel === previous) return;
+  state.shareInfo.owner_label = ownerLabel;
+  const res = await shareFetch(`/api/shares/${state.shareInfo.token}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner_label: ownerLabel }),
+  });
+  if (!res.ok) {
+    const message = await readApiErrorMessage(res, "Unable to update display name.");
+    showSystemBanner(message);
+    updateShareStatusLine(message, "warn");
+    return;
+  }
+  updateShareStatusLine("Display name updated.", "ok");
+  scheduleSharePublish();
+  updateShareModal();
+  } finally {
+    setShareBusy(false);
+  }
+}
+
+async function updateShareExpiry() {
+  if (state.shareBusy) return;
+  setShareBusy(true);
+  try {
+  const preset = getShareExpiryPresetValue();
+  state.shareExpiryPreset = preset;
+  setShareExpiryCustomVisibility(preset === "custom");
+  if (preset === "custom") {
+    const customRaw = String(els.shareExpiryCustom?.value || "");
+    if (!customRaw) {
+      updateShareStatusLine("Choose a custom expiry date/time.", "warn");
+      return;
+    }
+  }
+  const expiresAt = getShareExpiryValue();
+  if (preset !== "never" && !expiresAt) {
+    updateShareStatusLine("Custom expiry must be a future date/time.", "warn");
+    return;
+  }
+  if (!state.shareInfo || !state.shareInfo.token) {
+    updateShareStatusLine(
+      expiresAt ? `Link will expire ${formatDateTime(expiresAt)}.` : "Link expiry set to never."
+    );
+    return;
+  }
+  if (state.shareInfo.expires_at === expiresAt) return;
+  state.shareInfo.expires_at = expiresAt;
+  const res = await shareFetch(`/api/shares/${state.shareInfo.token}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expires_at: expiresAt }),
+  });
+  if (!res.ok) {
+    const message = await readApiErrorMessage(res, "Unable to update link expiry.");
+    showSystemBanner(message);
+    updateShareStatusLine(message, "warn");
+    return;
+  }
+  if (expiresAt) {
+    updateShareStatusLine(`Link expires ${formatDateTime(expiresAt)}.`, "ok");
+  } else {
+    updateShareStatusLine("Link set to never expire.", "ok");
+  }
+  updateShareModal();
+  } finally {
+    setShareBusy(false);
   }
 }
 
@@ -3630,6 +6106,8 @@ async function saveSettings(updates) {
   const payload = {
     defaults: state.settings.defaults,
     categories: state.settings.categories,
+    share_base_url: state.settings.share_base_url || "",
+    share_viewer_base_url: state.settings.share_viewer_base_url || "",
     firstRunCompleted: state.settings.firstRunCompleted,
     hasCompletedOnboarding: state.settings.hasCompletedOnboarding,
     ...updates,
@@ -3643,6 +6121,12 @@ async function saveSettings(updates) {
   if (data && typeof data === "object") {
     state.settings.defaults = data.defaults || state.settings.defaults;
     state.settings.categories = Array.isArray(data.categories) ? data.categories : state.settings.categories;
+    if (typeof data.share_base_url === "string") {
+      state.settings.share_base_url = data.share_base_url;
+    }
+    if (typeof data.share_viewer_base_url === "string") {
+      state.settings.share_viewer_base_url = data.share_viewer_base_url;
+    }
   }
 }
 
@@ -3784,7 +6268,7 @@ function renderItems(baseList) {
     right.className = "item-meta";
     const amount = document.createElement("div");
     amount.className = "item-amount";
-    amount.textContent = formatMoney(item.amount);
+    amount.textContent = formatMoneyDisplay(item.amount);
     const pill = document.createElement("div");
     pill.className = `status-pill ${item.status_derived === "paid" ? "done" : item.status_derived}`;
     pill.textContent = formatStatusLabel(item.status_derived);
@@ -3976,6 +6460,66 @@ async function loadLanInfo() {
   } catch (err) {
     // ignore
   }
+}
+
+function formatDiagnosticsOutput(data) {
+  if (!data || typeof data !== "object") {
+    return "No diagnostics available.";
+  }
+  return JSON.stringify(data, null, 2);
+}
+
+async function runDiagnostics(options = {}) {
+  if (AJL_WEB_MODE || !els.diagnosticsOutput) return;
+  const force = options.force === true;
+  const now = Date.now();
+  if (!force && diagnosticsInFlight) return;
+  if (!force && now - lastDiagnosticsAt < 2500) return;
+  diagnosticsInFlight = true;
+  els.diagnosticsOutput.textContent = "Running diagnostics...";
+  try {
+    const res = await apiFetch("/api/system/diagnostics", {}, { silent: true });
+    const requestId = getRequestIdFromResponse(res);
+    if (!res.ok) {
+      let message = `Diagnostics failed (${res.status}).`;
+      try {
+        const data = await res.json();
+        message = getErrorMessage(data, message);
+      } catch (err) {
+        // ignore
+      }
+      if (requestId) message = `${message} (ref: ${requestId})`;
+      els.diagnosticsOutput.textContent = message;
+      showSystemBanner(message);
+      return;
+    }
+    const payload = await readApiData(res);
+    els.diagnosticsOutput.textContent = formatDiagnosticsOutput(payload);
+    showToast("Diagnostics updated.");
+    lastDiagnosticsAt = Date.now();
+  } finally {
+    diagnosticsInFlight = false;
+  }
+}
+
+async function clearDiagnosticsCache() {
+  if (AJL_WEB_MODE || !els.diagnosticsOutput) return;
+  const res = await apiFetch(
+    "/api/system/diagnostics/clear-llm-cache",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    { silent: true }
+  );
+  if (!res.ok) {
+    const requestId = getRequestIdFromResponse(res);
+    const payload = await res.json().catch(() => null);
+    const baseMessage = getErrorMessage(payload, `Unable to clear Mamdou cache (${res.status}).`);
+    const message = requestId ? `${baseMessage} (ref: ${requestId})` : baseMessage;
+    showSystemBanner(message);
+    return;
+  }
+  const payload = await readApiData(res);
+  showToast(`Mamdou cache cleared (${Number(payload?.cleared || 0)} entries).`);
+  await runDiagnostics({ force: true });
 }
 
 function maybeShowFirstRunWizard() {
@@ -4186,7 +6730,7 @@ function renderMonthReview(baseList) {
   remainingLabel.textContent = "Remaining total";
   const remainingValue = document.createElement("div");
   remainingValue.className = "review-value";
-  remainingValue.textContent = formatMoney(summary.remaining);
+  remainingValue.textContent = formatMoneyDisplay(summary.remaining);
   const remainingSub = document.createElement("div");
   remainingSub.className = "review-sub";
   remainingSub.textContent = "Reference amount";
@@ -4204,7 +6748,7 @@ function renderMonthReview(baseList) {
   doneValue.textContent = `${paidItems.length}/${activeItems.length}`;
   const doneSub = document.createElement("div");
   doneSub.className = "review-sub";
-  doneSub.textContent = `${formatMoney(summary.paid)} of ${formatMoney(summary.required)}`;
+  doneSub.textContent = `${formatMoneyDisplay(summary.paid)} of ${formatMoneyDisplay(summary.required)}`;
   doneMetric.appendChild(doneLabel);
   doneMetric.appendChild(doneValue);
   doneMetric.appendChild(doneSub);
@@ -4250,14 +6794,14 @@ function renderMonthReview(baseList) {
     const name = nameMap.get(firstPayment.instance_id) || "Update";
     addRow(
       "First update",
-      `${name} on ${formatShortDate(firstPayment.paid_date)} (${formatMoney(firstPayment.amount)})`
+      `${name} on ${formatShortDate(firstPayment.paid_date)} (${formatMoneyDisplay(firstPayment.amount)})`
     );
   }
   if (lastPayment) {
     const name = nameMap.get(lastPayment.instance_id) || "Update";
     addRow(
       "Last update",
-      `${name} on ${formatShortDate(lastPayment.paid_date)} (${formatMoney(lastPayment.amount)})`
+      `${name} on ${formatShortDate(lastPayment.paid_date)} (${formatMoneyDisplay(lastPayment.amount)})`
     );
   }
 
@@ -4841,6 +7385,9 @@ function renderView() {
     if (AJL_WEB_MODE && els.previewReadonly && state.webMeta) {
       els.previewReadonly.checked = !!state.webMeta.readOnlyPreview;
     }
+    if (!AJL_WEB_MODE && els.diagnosticsOutput) {
+      runDiagnostics();
+    }
   }
 }
 
@@ -4873,6 +7420,7 @@ async function refreshAll() {
     renderDefaults();
     renderCategories();
     renderDashboard();
+    scheduleNudgeRefresh();
     renderTemplates();
     renderSetupCta();
     updateStorageHealth();
@@ -4921,6 +7469,7 @@ function bindEvents() {
   els.essentialsToggle.addEventListener("change", () => {
     state.essentialsOnly = els.essentialsToggle.checked;
     renderDashboard();
+    scheduleNudgeRefresh();
   });
 
   if (els.navToday) {
@@ -4941,6 +7490,9 @@ function bindEvents() {
     els.navSetup.addEventListener("click", () => {
       state.view = "setup";
       renderView();
+      if (!AJL_WEB_MODE) {
+        runDiagnostics();
+      }
     });
   }
 
@@ -4961,6 +7513,9 @@ function bindEvents() {
   if (els.shareCreate) {
     els.shareCreate.addEventListener("click", () => createShareLink());
   }
+  if (els.shareRefresh) {
+    els.shareRefresh.addEventListener("click", () => refreshSharedNow());
+  }
   if (els.shareRegenerate) {
     els.shareRegenerate.addEventListener("click", () => regenerateShareLink());
   }
@@ -4969,6 +7524,43 @@ function bindEvents() {
   }
   if (els.shareLive) {
     els.shareLive.addEventListener("change", () => updateShareMode());
+  }
+  if (els.shareExpiry) {
+    els.shareExpiry.addEventListener("change", () => updateShareExpiry());
+  }
+  if (els.shareExpiryCustom) {
+    els.shareExpiryCustom.addEventListener("change", () => {
+      if (getShareExpiryPresetValue() === "custom") {
+        updateShareExpiry();
+      }
+    });
+  }
+  if (els.shareOwnerLabel) {
+    els.shareOwnerLabel.addEventListener("change", () => updateShareOwnerLabel());
+    els.shareOwnerLabel.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        updateShareOwnerLabel();
+      }
+    });
+  }
+  const syncSharePrivacy = () => {
+    state.shareOptions.includeAmounts = !!els.shareIncludeAmounts?.checked;
+    state.shareOptions.includeNotes = !!els.shareIncludeNotes?.checked;
+    state.shareOptions.includeCategories = !!els.shareIncludeCategories?.checked;
+    saveShareOptions();
+    if (state.shareInfo && state.shareInfo.is_active) {
+      publishShare(buildSharePayload()).catch(() => {});
+    }
+  };
+  if (els.shareIncludeAmounts) {
+    els.shareIncludeAmounts.addEventListener("change", syncSharePrivacy);
+  }
+  if (els.shareIncludeNotes) {
+    els.shareIncludeNotes.addEventListener("change", syncSharePrivacy);
+  }
+  if (els.shareIncludeCategories) {
+    els.shareIncludeCategories.addEventListener("change", syncSharePrivacy);
   }
 
   if (els.backupOpen) {
@@ -4988,72 +7580,19 @@ function bindEvents() {
 
   if (els.markAllOverdue) {
     els.markAllOverdue.addEventListener("click", async () => {
-      const derived = deriveInstances();
-      const base = getBaseInstances(derived);
-      const today = getTodayDateString();
-      const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
-      const overdue = base.filter(
-        (item) =>
-          item.status_derived !== "skipped" &&
-          item.amount_remaining > 0 &&
-          currentMonth &&
-          item.due_date < today
-      );
-      if (overdue.length === 0) {
-        window.alert("No overdue items.");
-        return;
+      const result = await markQueueItemsDone("overdue", { confirm: true, toast: true });
+      if (!result.ok && result.done === 0 && result.message && result.message !== "Canceled.") {
+        window.alert(result.message);
       }
-      const preview = overdue.slice(0, 5).map((item) => item.name_snapshot).join(", ");
-      const suffix = overdue.length > 5 ? "…" : "";
-      const confirmed = window.confirm(`Mark ${overdue.length} overdue item(s) done?\n${preview}${suffix}`);
-      if (!confirmed) return;
-      const ids = overdue.map((item) => item.id);
-      for (const item of overdue) {
-        await markPaid(item.id, { silent: true });
-      }
-      showToast(`Marked ${overdue.length} overdue item(s) done.`, "Undo", async () => {
-        for (const id of ids) {
-          await markPending(id);
-        }
-      });
     });
   }
 
   if (els.markAllSoon) {
     els.markAllSoon.addEventListener("click", async () => {
-      const derived = deriveInstances();
-      const base = getBaseInstances(derived);
-      const today = getTodayDateString();
-      const currentMonth = isCurrentMonth(state.selectedYear, state.selectedMonth);
-      const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
-      const soonCutoff = new Date();
-      soonCutoff.setDate(soonCutoff.getDate() + Math.max(1, dueSoonDays));
-      const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
-      const dueSoon = base.filter(
-        (item) =>
-          item.status_derived !== "skipped" &&
-          item.amount_remaining > 0 &&
-          currentMonth &&
-          item.due_date >= today &&
-          item.due_date <= soonCutoffString
-      );
-      if (dueSoon.length === 0) {
-        window.alert("No due-soon items.");
-        return;
+      const result = await markQueueItemsDone("dueSoon", { confirm: true, toast: true });
+      if (!result.ok && result.done === 0 && result.message && result.message !== "Canceled.") {
+        window.alert(result.message);
       }
-      const preview = dueSoon.slice(0, 5).map((item) => item.name_snapshot).join(", ");
-      const suffix = dueSoon.length > 5 ? "…" : "";
-      const confirmed = window.confirm(`Mark ${dueSoon.length} due-soon item(s) done?\n${preview}${suffix}`);
-      if (!confirmed) return;
-      const ids = dueSoon.map((item) => item.id);
-      for (const item of dueSoon) {
-        await markPaid(item.id, { silent: true });
-      }
-      showToast(`Marked ${dueSoon.length} due-soon item(s) done.`, "Undo", async () => {
-        for (const id of ids) {
-          await markPending(id);
-        }
-      });
     });
   }
 
@@ -5581,6 +8120,31 @@ function bindEvents() {
     });
   }
 
+  if (els.diagnosticsRun) {
+    els.diagnosticsRun.addEventListener("click", async () => {
+      await runDiagnostics({ force: true });
+    });
+  }
+
+  if (els.diagnosticsClearCache) {
+    els.diagnosticsClearCache.addEventListener("click", async () => {
+      await clearDiagnosticsCache();
+    });
+  }
+
+  if (els.diagnosticsCopy) {
+    els.diagnosticsCopy.addEventListener("click", async () => {
+      const text = String(els.diagnosticsOutput?.textContent || "").trim();
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast("Diagnostics copied.");
+      } catch (err) {
+        showToast("Unable to copy diagnostics.");
+      }
+    });
+  }
+
   window.addEventListener("keydown", (event) => {
     const target = event.target;
     const isTyping =
@@ -5739,47 +8303,64 @@ function bindEvents() {
 
   if (els.llmAgentSend) {
     els.llmAgentSend.addEventListener("click", () => {
-      sendLlmAgent();
+      sendLlmAgent("drawer");
+    });
+  }
+
+  if (els.agentInlineSend) {
+    els.agentInlineSend.addEventListener("click", () => {
+      sendLlmAgent("inline");
+    });
+  }
+
+  if (els.agentInlineInput) {
+    els.agentInlineInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        sendLlmAgent("inline");
+      }
+    });
+  }
+
+  if (els.agentInlineOpen && els.assistantDrawer) {
+    els.agentInlineOpen.addEventListener("click", () => {
+      els.assistantDrawer.classList.remove("hidden");
+      focusAgentInput({ scroll: true });
+    });
+  }
+
+  if (els.agentInlineShortcuts && els.agentInlineShortcuts.length > 0) {
+    els.agentInlineShortcuts.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const text = String(chip.dataset.agentShortcut || "").trim();
+        if (!text || !els.agentInlineInput) return;
+        els.agentInlineInput.value = text;
+        sendLlmAgent("inline");
+      });
     });
   }
 
   if (els.llmAgentConfirm) {
-    els.llmAgentConfirm.addEventListener("click", async () => {
-      const pending = state.pendingAgentAction;
-      if (!pending) return;
-      els.llmAgentOutput.textContent = "Applying...";
-      let outcome = { ok: false, message: "No action applied." };
-      if (pending.kind === "command") {
-        outcome = await applyProposal(pending.proposal);
-      } else if (pending.kind === "intake") {
-        outcome = await applyIntakeTemplates(pending.templates || []);
-      }
-      await logAgentCommand({
-        user_text: pending.source_text || "",
-        kind: pending.kind || "command",
-        summary: pending.summary || "",
-        status: outcome?.ok ? "ok" : "error",
-        payload:
-          pending.kind === "intake"
-            ? { templates: pending.templates || [] }
-            : { proposal: pending.proposal || null },
-        result: outcome,
-      });
-      await loadCommandLog();
-      els.llmAgentOutput.textContent = "";
-      pushLlmMessage("assistant", outcome.message, pending.summary || "");
-      clearPendingAgentAction();
-      focusAgentInput();
+    els.llmAgentConfirm.addEventListener("click", () => {
+      confirmPendingAgentAction();
     });
   }
 
   if (els.llmAgentCancel) {
     els.llmAgentCancel.addEventListener("click", () => {
-      if (!state.pendingAgentAction) return;
-      clearPendingAgentAction();
-      els.llmAgentOutput.textContent = "";
-      pushLlmMessage("assistant", "Canceled.");
-      focusAgentInput();
+      cancelPendingAgentAction();
+    });
+  }
+
+  if (els.agentInlineConfirm) {
+    els.agentInlineConfirm.addEventListener("click", () => {
+      confirmPendingAgentAction();
+    });
+  }
+
+  if (els.agentInlineCancel) {
+    els.agentInlineCancel.addEventListener("click", () => {
+      cancelPendingAgentAction();
     });
   }
 
@@ -5808,7 +8389,7 @@ function bindEvents() {
     els.llmAgentInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        sendLlmAgent();
+        sendLlmAgent("drawer");
       }
     });
     els.llmAgentInput.addEventListener("focus", () => {
@@ -5901,11 +8482,9 @@ async function init() {
   const shareToken = getShareTokenFromPath();
   document.body.classList.toggle("web", AJL_WEB_MODE);
   document.body.classList.toggle("local", !AJL_WEB_MODE);
+  state.shareOwnerKey = loadShareOwnerKey();
+  state.shareOptions = loadShareOptions();
   if (shareToken) {
-    if (AJL_WEB_MODE) {
-      showSystemBanner("Shared links are available in the local app only.");
-      return;
-    }
     state.shareToken = shareToken;
     setReadOnlyMode(true);
     const now = new Date();
@@ -5914,6 +8493,11 @@ async function init() {
     bindEvents();
     renderView();
     await loadSharedView(shareToken);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && state.readOnly && state.shareToken) {
+        loadSharedView(state.shareToken, { silent: true }).catch(() => {});
+      }
+    });
     return;
   }
   if (await handleResetFlag()) return;
@@ -5923,6 +8507,7 @@ async function init() {
   state.lastAutoMonthKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
   state.essentialsOnly = els.essentialsToggle.checked;
   state.profileName = loadProfileName();
+  state.shareOwnerLabel = state.profileName || "";
   if (AJL_WEB_MODE) {
     state.webMeta = loadWebMeta();
     state.lastBackupAt = state.webMeta.lastBackupAt || null;
@@ -5933,10 +8518,6 @@ async function init() {
     state.lastBackupAt = loadLastBackupAt();
   }
   state.view = "today";
-  if (AJL_WEB_MODE) {
-    if (els.shareOpen) els.shareOpen.classList.add("hidden");
-    if (els.shareModal) els.shareModal.classList.add("hidden");
-  }
   if (flags.safe || crashGuard) {
     enterSafeMode(flags.safe ? "Safe mode requested." : "Repeated crashes detected.");
     state.view = "setup";
@@ -5950,12 +8531,13 @@ async function init() {
   if (AJL_WEB_MODE && state.webMeta?.readOnlyPreview) {
     applyReadOnlyPreview(true);
   }
-  if (!AJL_WEB_MODE) {
-    loadShareInfo().then((share) => {
-      state.shareInfo = share ? normalizeShareInfo(share) : null;
-      scheduleSharePublish();
-    });
-  }
+  loadShareInfo().then((share) => {
+    state.shareInfo = share ? normalizeShareInfo(share) : null;
+    if (state.shareInfo?.owner_label) {
+      state.shareOwnerLabel = state.shareInfo.owner_label;
+    }
+    scheduleSharePublish();
+  });
   if (els.fundMonths && els.fundCadence && els.fundCadence.value !== "custom_months") {
     els.fundMonths.disabled = true;
   }
