@@ -3,7 +3,9 @@
   const DB_KEY = "AJL_WEB_DB_V1";
   const META_KEY = "AJL_WEB_META_V1";
   const MAX_BYTES = 4_500_000;
-  const SHARE_BASE_URL = String(window.AJL_SHARE_BASE_URL || "").trim().replace(/\/+$/, "");
+  const SHARE_BASE_URL = String(window.AJL_SHARE_BASE_URL || "https://agent.aujourlejour.xyz")
+    .trim()
+    .replace(/\/+$/, "");
   const SHARE_VIEWER_BASE_URL = String(window.AJL_SHARE_VIEWER_BASE_URL || window.location.origin || "")
     .trim()
     .replace(/\/+$/, "");

@@ -87,6 +87,10 @@ let sharePublishRetryCount = 0;
 let sharePublishDirty = false;
 let diagnosticsInFlight = false;
 let lastDiagnosticsAt = 0;
+let shannonInFlight = false;
+let shannonPollTimer = null;
+let shannonLastRunId = "";
+let shannonLastRunning = false;
 let scrollShadowBound = false;
 let storageFailureHandled = false;
 const MAX_LLM_INSTANCES = 20;
@@ -96,7 +100,10 @@ const MAX_LLM_DUE = 6;
 const NUDGE_CACHE_TTL_MS = 45_000;
 const AGENT_DUPLICATE_WINDOW_MS = 1200;
 const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
-const SHARE_BASE_URL_CONFIG = String(window.AJL_SHARE_BASE_URL || "").trim().replace(/\/+$/, "");
+const DEFAULT_SHARE_BASE_URL = AJL_WEB_MODE ? "https://agent.aujourlejour.xyz" : "";
+const SHARE_BASE_URL_CONFIG = String(window.AJL_SHARE_BASE_URL || DEFAULT_SHARE_BASE_URL)
+  .trim()
+  .replace(/\/+$/, "");
 const PROFILE_NAME_KEY = "ajl_profile_name";
 const BACKUP_LAST_KEY = "ajl_last_backup_at";
 const LOCAL_EDIT_COUNT_KEY = "ajl_local_edit_count";
@@ -323,6 +330,7 @@ const els = {
   navToday: document.getElementById("nav-today"),
   navReview: document.getElementById("nav-review"),
   navSetup: document.getElementById("nav-setup"),
+  navJanitor: document.getElementById("nav-janitor"),
   shareOpen: document.getElementById("share-open"),
   shareModal: document.getElementById("share-modal"),
   shareClose: document.getElementById("share-close"),
@@ -364,6 +372,12 @@ const els = {
   diagnosticsClearCache: document.getElementById("diagnostics-clear-cache"),
   diagnosticsCopy: document.getElementById("diagnostics-copy"),
   diagnosticsOutput: document.getElementById("diagnostics-output"),
+  shannonRun: document.getElementById("shannon-run"),
+  shannonRefresh: document.getElementById("shannon-refresh"),
+  shannonCopy: document.getElementById("shannon-copy"),
+  shannonStatus: document.getElementById("shannon-status"),
+  shannonSummary: document.getElementById("shannon-summary"),
+  shannonOutput: document.getElementById("shannon-output"),
   previewReadonly: document.getElementById("preview-readonly"),
   setupCta: document.getElementById("setup-cta"),
   ctaImport: document.getElementById("cta-import"),
@@ -381,6 +395,7 @@ const els = {
   todayView: document.getElementById("today-view"),
   reviewView: document.getElementById("review-view"),
   setupView: document.getElementById("setup-view"),
+  janitorView: document.getElementById("janitor-view"),
   requiredAmount: document.getElementById("required-amount"),
   paidAmount: document.getElementById("paid-amount"),
   remainingAmount: document.getElementById("remaining-amount"),
@@ -6522,6 +6537,207 @@ async function clearDiagnosticsCache() {
   await runDiagnostics({ force: true });
 }
 
+function setShannonBusy(busy) {
+  const next = !!busy;
+  if (els.shannonRun) els.shannonRun.disabled = next;
+  if (els.shannonRefresh) els.shannonRefresh.disabled = next;
+}
+
+function stopShannonPolling() {
+  if (shannonPollTimer) {
+    clearInterval(shannonPollTimer);
+    shannonPollTimer = null;
+  }
+}
+
+function startShannonPolling() {
+  if (shannonPollTimer) return;
+  shannonPollTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadShannonStatus({ silent: true }).catch(() => {});
+  }, 1500);
+}
+
+function formatShannonOutputLines(lines) {
+  if (!Array.isArray(lines) || lines.length === 0) return "No Janitor run yet.";
+  return lines
+    .map((entry) => {
+      const at = entry?.at ? new Date(entry.at).toLocaleTimeString() : "--:--:--";
+      const source = String(entry?.source || "stdout").toUpperCase();
+      const line = String(entry?.line || "");
+      return `[${at}] [${source}] ${line}`;
+    })
+    .join("\n");
+}
+
+function formatShannonDuration(durationMs) {
+  const value = Number(durationMs || 0);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value < 1000) return `${Math.round(value)} ms`;
+  const seconds = value / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainSec = Math.round(seconds % 60);
+  return `${minutes}m ${remainSec}s`;
+}
+
+function renderShannonState(snapshot) {
+  if (!els.shannonStatus || !els.shannonOutput) return;
+  const stateData = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const running = !!stateData.running;
+  const runId = String(stateData.run_id || "");
+  const profile = String(stateData.profile || "full");
+  const phase = stateData.phase ? String(stateData.phase) : "";
+  const exitCode =
+    stateData.exit_code === null || stateData.exit_code === undefined ? "—" : String(stateData.exit_code);
+  const logLines = Number(stateData.log_lines || 0);
+  const startedAt = stateData.started_at ? formatDateTime(stateData.started_at) : "—";
+  const finishedAt = stateData.finished_at ? formatDateTime(stateData.finished_at) : "—";
+  const pid = stateData.pid ? ` PID ${stateData.pid}.` : "";
+
+  if (running) {
+    const phaseLabel = phase ? ` (${phase})` : "";
+    els.shannonStatus.textContent = `Running Janitor ${profile}${phaseLabel}…${pid} Started ${startedAt}.`;
+  } else if (runId) {
+    els.shannonStatus.textContent = `Last run ${runId.slice(0, 8)}… finished ${finishedAt} (exit ${exitCode}).`;
+  } else {
+    els.shannonStatus.textContent = "Idle.";
+  }
+
+  const summary = stateData.report?.summary || null;
+  if (els.shannonSummary) {
+    if (summary && typeof summary === "object") {
+      const duration = formatShannonDuration(summary.duration_ms);
+      const severity = summary.by_severity || {};
+      const total = Number(summary.total || 0);
+      const passed = Number(summary.passed || 0);
+      const failed = Number(summary.failed || 0);
+      const profileSummary = summary.by_profile;
+      const sevLine = `B:${Number(severity.BLOCKER || 0)} H:${Number(severity.HIGH || 0)} M:${Number(
+        severity.MEDIUM || 0
+      )}`;
+      let profileLine = "";
+      if (profileSummary && typeof profileSummary === "object") {
+        const functionalPassed = Number(profileSummary.functional?.passed || 0);
+        const functionalTotal = Number(profileSummary.functional?.total || 0);
+        const adversarialPassed = Number(profileSummary.adversarial?.passed || 0);
+        const adversarialTotal = Number(profileSummary.adversarial?.total || 0);
+        profileLine = ` · Functional ${functionalPassed}/${functionalTotal}, Adversarial ${adversarialPassed}/${adversarialTotal}`;
+      }
+      els.shannonSummary.textContent = `Report: ${passed}/${total} passed, ${failed} failed${
+        duration ? ` in ${duration}` : ""
+      }${profileLine} · ${sevLine}`;
+    } else if (runId) {
+      els.shannonSummary.textContent = `Log lines: ${logLines}.`;
+    } else {
+      els.shannonSummary.textContent = "";
+    }
+  }
+
+  els.shannonOutput.textContent = formatShannonOutputLines(stateData.logs_tail);
+  if (running) {
+    startShannonPolling();
+  } else {
+    stopShannonPolling();
+  }
+}
+
+async function loadShannonStatus(options = {}) {
+  if (AJL_WEB_MODE || !els.shannonOutput) return;
+  const force = options.force === true;
+  const silent = options.silent === true;
+  if (!force && shannonInFlight) return;
+  shannonInFlight = true;
+  setShannonBusy(true);
+  if (!silent) els.shannonStatus.textContent = "Loading Janitor status...";
+  try {
+    const res = await apiFetch("/api/system/janitor/status", {}, { silent: true });
+    const requestId = getRequestIdFromResponse(res);
+    if (!res.ok) {
+      const payload = await res.json().catch(() => null);
+      const baseMessage = getErrorMessage(payload, `Unable to load Janitor status (${res.status}).`);
+      const message = requestId ? `${baseMessage} (ref: ${requestId})` : baseMessage;
+      els.shannonStatus.textContent = message;
+      if (!silent) showSystemBanner(message);
+      return;
+    }
+    const payload = await readApiData(res);
+    const stateData = payload?.state || payload || {};
+    renderShannonState(stateData);
+    const runId = String(stateData.run_id || "");
+    const running = !!stateData.running;
+    if (runId && runId !== shannonLastRunId) {
+      shannonLastRunId = runId;
+      shannonLastRunning = running;
+      if (!silent && running) showToast("Janitor started.");
+    } else if (runId && shannonLastRunning && !running) {
+      shannonLastRunning = false;
+      if (!silent) showToast(`Janitor finished (exit ${stateData.exit_code ?? "?"}).`);
+    } else {
+      shannonLastRunning = running;
+    }
+  } finally {
+    shannonInFlight = false;
+    setShannonBusy(false);
+  }
+}
+
+async function runShannonMode() {
+  if (AJL_WEB_MODE || !els.shannonOutput) return;
+  if (shannonInFlight) return;
+  shannonInFlight = true;
+  setShannonBusy(true);
+  try {
+    els.shannonStatus.textContent = "Starting Janitor...";
+    const res = await apiFetch(
+      "/api/system/janitor/run",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: "full" }),
+      },
+      { silent: true }
+    );
+    const requestId = getRequestIdFromResponse(res);
+    const payload = await readApiData(res);
+    if (!res.ok) {
+      const baseMessage = getErrorMessage(payload, `Unable to run Janitor (${res.status}).`);
+      const message = requestId ? `${baseMessage} (ref: ${requestId})` : baseMessage;
+      els.shannonStatus.textContent = message;
+      showSystemBanner(message);
+      return;
+    }
+    renderShannonState(payload?.state || {});
+    showToast("Janitor started.");
+    await loadShannonStatus({ force: true, silent: true });
+  } finally {
+    shannonInFlight = false;
+    setShannonBusy(false);
+  }
+}
+
+async function copyShannonOutput() {
+  if (AJL_WEB_MODE || !els.shannonOutput) return;
+  const lines = [
+    String(els.shannonStatus?.textContent || "").trim(),
+    String(els.shannonSummary?.textContent || "").trim(),
+    "",
+    String(els.shannonOutput?.textContent || "").trim(),
+  ]
+    .filter((line, idx, arr) => !(idx === arr.length - 1 && !line))
+    .join("\n");
+  if (!lines.trim()) {
+    showToast("Nothing to copy yet.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(lines);
+    showToast("Janitor output copied.");
+  } catch (err) {
+    showToast("Unable to copy Janitor output.");
+  }
+}
+
 function maybeShowFirstRunWizard() {
   if (!AJL_WEB_MODE || !state.webMeta || !els.wizardModal) return;
   if (state.webMeta.hasCompletedOnboarding) return;
@@ -7355,17 +7571,23 @@ function renderDashboard() {
 }
 
 function renderView() {
+  if (state.view === "janitor" && AJL_WEB_MODE) {
+    state.view = "setup";
+  }
   const isToday = state.view === "today";
   const isReview = state.view === "review";
   const isSetup = state.view === "setup";
+  const isJanitor = state.view === "janitor";
 
   if (els.todayView) els.todayView.classList.toggle("hidden", !isToday);
   if (els.reviewView) els.reviewView.classList.toggle("hidden", !isReview);
   if (els.setupView) els.setupView.classList.toggle("hidden", !isSetup);
+  if (els.janitorView) els.janitorView.classList.toggle("hidden", !isJanitor);
 
   if (els.navToday) els.navToday.classList.toggle("active", isToday);
   if (els.navReview) els.navReview.classList.toggle("active", isReview);
   if (els.navSetup) els.navSetup.classList.toggle("active", isSetup);
+  if (els.navJanitor) els.navJanitor.classList.toggle("active", isJanitor);
 
   updateSplitView(true);
   if (!isToday && els.detailsDrawer) {
@@ -7373,6 +7595,9 @@ function renderView() {
   }
   if (!isToday && els.detailsPane) {
     els.detailsPane.classList.add("hidden");
+  }
+  if (!isJanitor) {
+    stopShannonPolling();
   }
   if (isSetup) {
     renderDefaults();
@@ -7385,9 +7610,10 @@ function renderView() {
     if (AJL_WEB_MODE && els.previewReadonly && state.webMeta) {
       els.previewReadonly.checked = !!state.webMeta.readOnlyPreview;
     }
-    if (!AJL_WEB_MODE && els.diagnosticsOutput) {
-      runDiagnostics();
-    }
+  }
+  if (isJanitor && !AJL_WEB_MODE) {
+    if (els.diagnosticsOutput) runDiagnostics();
+    if (els.shannonOutput) loadShannonStatus({ silent: true }).catch(() => {});
   }
 }
 
@@ -7490,9 +7716,14 @@ function bindEvents() {
     els.navSetup.addEventListener("click", () => {
       state.view = "setup";
       renderView();
-      if (!AJL_WEB_MODE) {
-        runDiagnostics();
-      }
+    });
+  }
+
+  if (els.navJanitor) {
+    els.navJanitor.addEventListener("click", () => {
+      if (AJL_WEB_MODE) return;
+      state.view = "janitor";
+      renderView();
     });
   }
 
@@ -8145,6 +8376,24 @@ function bindEvents() {
     });
   }
 
+  if (els.shannonRun) {
+    els.shannonRun.addEventListener("click", async () => {
+      await runShannonMode();
+    });
+  }
+
+  if (els.shannonRefresh) {
+    els.shannonRefresh.addEventListener("click", async () => {
+      await loadShannonStatus({ force: true });
+    });
+  }
+
+  if (els.shannonCopy) {
+    els.shannonCopy.addEventListener("click", async () => {
+      await copyShannonOutput();
+    });
+  }
+
   window.addEventListener("keydown", (event) => {
     const target = event.target;
     const isTyping =
@@ -8540,6 +8789,9 @@ async function init() {
   });
   if (els.fundMonths && els.fundCadence && els.fundCadence.value !== "custom_months") {
     els.fundMonths.disabled = true;
+  }
+  if (!AJL_WEB_MODE && els.shannonOutput) {
+    loadShannonStatus({ silent: true }).catch(() => {});
   }
   updateSplitView(true);
   window.addEventListener("resize", () => {

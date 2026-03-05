@@ -1,0 +1,11 @@
+{
+  "allow": [
+    "MIT",
+    "ISC",
+    "BSD-2-CLAUSE",
+    "BSD-3-CLAUSE",
+    "APACHE-2.0",
+    "0BSD",
+    "CC-BY-4.0"
+  ]
+}

@@ -23,5 +23,41 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run QA
-        run: npm run qa:strict
+      - name: Sync check
+        run: npm run sync:web:check
+
+      - name: Run Janitor (functional)
+        run: npm run janitor:functional
+
+      - name: Run Janitor (adversarial)
+        run: npm run janitor:adversarial
+
+      - name: Run Janitor (property)
+        run: npm run janitor:property
+
+      - name: Run Janitor (hygiene)
+        run: npm run janitor:hygiene
+
+      - name: Upload adversarial report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: janitor-security-report
+          path: reports/janitor-security.json
+          if-no-files-found: warn
+
+      - name: Upload property report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: janitor-property-report
+          path: reports/janitor-property.json
+          if-no-files-found: warn
+
+      - name: Upload functional report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: janitor-functional-report
+          path: reports/janitor-functional.json
+          if-no-files-found: warn

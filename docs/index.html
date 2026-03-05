@@ -5,10 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Au Jour Le Jour — Essentials tracker</title>
     <meta name="description" content="Essentials bill tracker." />
-    <script>
-      window.AJL_SHARE_BASE_URL = window.AJL_SHARE_BASE_URL || "https://agent.aujourlejour.xyz";
-      window.AJL_SHARE_VIEWER_BASE_URL = window.AJL_SHARE_VIEWER_BASE_URL || "https://aujourlejour.xyz";
-    </script>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -38,6 +34,7 @@
           <button id="nav-today" class="tab-btn active">Today</button>
           <button id="nav-review" class="tab-btn">Review</button>
           <button id="nav-setup" class="tab-btn">Setup</button>
+          <button id="nav-janitor" class="tab-btn local-only">Janitor</button>
         </nav>
       </div>
     </header>
@@ -362,17 +359,6 @@ cd AuJourLeJour
           </div>
         </section>
 
-        <section id="diagnostics-section" class="setup-block local-only">
-          <div class="block-title">Diagnostics</div>
-          <div class="block-sub">Run a local runtime and Mamdou health snapshot.</div>
-          <div class="backup-actions">
-            <button id="diagnostics-run" class="ghost-btn">Run diagnostics</button>
-            <button id="diagnostics-clear-cache" class="ghost-btn">Clear Mamdou cache</button>
-            <button id="diagnostics-copy" class="ghost-btn">Copy JSON</button>
-          </div>
-          <pre id="diagnostics-output" class="diagnostics-output">No diagnostics run yet.</pre>
-        </section>
-
         <section class="setup-block">
           <div class="block-title">Defaults</div>
           <div class="block-sub">Period view, sort order, and due-soon window.</div>
@@ -502,6 +488,51 @@ cd AuJourLeJour
             <button id="reset-local-inline" class="ghost-btn danger">Reset local data</button>
             <button id="start-safe-mode" class="ghost-btn">Start in safe mode</button>
           </div>
+        </section>
+      </section>
+
+      <section id="janitor-view" class="view hidden local-only">
+        <div class="janitor-hero">
+          <div>
+            <div class="page-title">Janitor</div>
+            <div class="page-sub">Run adversarial QA with live logs and runtime diagnostics.</div>
+          </div>
+          <div class="janitor-pill-row">
+            <div class="janitor-pill">Security profile: adversarial</div>
+            <div class="janitor-pill">Output: real-time</div>
+          </div>
+        </div>
+
+        <section id="janitor-section" class="card janitor-card">
+          <div class="card-header janitor-header">
+            <div>
+              <div class="card-title">Janitor Run</div>
+              <div class="card-sub">Executes the adversarial Janitor profile against the local runtime.</div>
+            </div>
+            <div class="janitor-actions">
+              <button id="shannon-run" class="btn-small btn-primary">Run Janitor</button>
+              <button id="shannon-refresh" class="ghost-btn">Refresh</button>
+              <button id="shannon-copy" class="ghost-btn">Copy output</button>
+            </div>
+          </div>
+          <div id="shannon-status" class="janitor-status">Idle.</div>
+          <div id="shannon-summary" class="meta"></div>
+          <pre id="shannon-output" class="diagnostics-output janitor-output">No Janitor run yet.</pre>
+        </section>
+
+        <section id="diagnostics-section" class="card janitor-card">
+          <div class="card-header janitor-header">
+            <div>
+              <div class="card-title">Runtime Diagnostics</div>
+              <div class="card-sub">Local runtime, Mamdou connectivity, and share health snapshot.</div>
+            </div>
+            <div class="janitor-actions">
+              <button id="diagnostics-run" class="ghost-btn">Run diagnostics</button>
+              <button id="diagnostics-clear-cache" class="ghost-btn">Clear Mamdou cache</button>
+              <button id="diagnostics-copy" class="ghost-btn">Copy JSON</button>
+            </div>
+          </div>
+          <pre id="diagnostics-output" class="diagnostics-output janitor-output">No diagnostics run yet.</pre>
         </section>
       </section>
     </main>

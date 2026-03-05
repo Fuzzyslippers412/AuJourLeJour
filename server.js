@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs");
+const { spawn } = require("child_process");
 const express = require("express");
 const Database = require("better-sqlite3");
 const { randomUUID, createHash } = require("crypto");
@@ -20,15 +21,30 @@ const SHARE_RELAY_BASE_URL = String(process.env.SHARE_RELAY_BASE_URL || "").trim
 const SHARE_VIEWER_BASE_URL = String(process.env.SHARE_VIEWER_BASE_URL || "").trim().replace(/\/+$/, "");
 const BACKUP_RETENTION_DAYS = Math.max(3, Number(process.env.AJL_BACKUP_RETENTION_DAYS || 30));
 const MUTATION_RATE_PER_MIN = Math.max(20, Number(process.env.AJL_MUTATION_RATE_PER_MIN || 240));
+const MUTATION_RATE_WINDOW_MS = Math.max(1000, Number(process.env.AJL_MUTATION_RATE_WINDOW_MS || 60000));
+const SHARE_LOOKUP_RATE_LIMIT = Math.max(10, Number(process.env.AJL_SHARE_LOOKUP_RATE_LIMIT || 60));
+const SHARE_LOOKUP_IP_RATE_LIMIT = Math.max(
+  SHARE_LOOKUP_RATE_LIMIT,
+  Number(process.env.AJL_SHARE_LOOKUP_IP_RATE_LIMIT || SHARE_LOOKUP_RATE_LIMIT * 2)
+);
+const SHARE_LOOKUP_WINDOW_MS = Math.max(1000, Number(process.env.AJL_SHARE_LOOKUP_WINDOW_MS || 60000));
 const LOCAL_API_KEY = String(process.env.AJL_LOCAL_API_KEY || "").trim();
 const LLM_CACHE_TTL_MS = Math.max(0, Number(process.env.AJL_LLM_CACHE_TTL_MS || 15000));
 const LLM_ROUTE_TIMEOUT_MS = Math.max(3000, Number(process.env.AJL_LLM_ROUTE_TIMEOUT_MS || 22000));
+const REQUEST_TIMEOUT_MS = Math.max(5000, Number(process.env.AJL_REQUEST_TIMEOUT_MS || 15000));
+const TRUST_PROXY_HEADERS = process.env.AJL_TRUST_PROXY === "1";
+const JSON_BODY_LIMIT = String(process.env.AJL_JSON_BODY_LIMIT || "256kb");
 
 const dataDir = process.env.AJL_DATA_DIR || path.join(__dirname, "data");
 const dbFile = process.env.AJL_DB_PATH || path.join(dataDir, "au_jour_le_jour.sqlite");
 const backupDir = process.env.AJL_BACKUP_DIR || path.join(dataDir, "backups");
 const lockFile = process.env.AJL_LOCK_FILE || path.join(dataDir, "server.lock");
 const disableLock = process.env.AJL_DISABLE_LOCK === "1";
+const janitorFunctionalScriptPath = path.join(__dirname, "scripts", "janitor.js");
+const janitorAdversarialScriptPath = path.join(__dirname, "scripts", "janitor_adversarial.js");
+const janitorFunctionalReportPath = path.join(__dirname, "reports", "janitor-functional.json");
+const janitorAdversarialReportPath = path.join(__dirname, "reports", "janitor-security.json");
+const SHANNON_MAX_LOG_LINES = 1200;
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(backupDir, { recursive: true });
 
@@ -58,6 +74,189 @@ const metrics = {
 };
 let llmLatencySamples = 0;
 const llmCache = new Map();
+const shannonState = {
+  running: false,
+  run_id: null,
+  started_at: null,
+  finished_at: null,
+  exit_code: null,
+  pid: null,
+  logs: [],
+  report: null,
+  error: null,
+  profile: "full",
+  phase: null,
+};
+
+const routeRegistry = [];
+const routeSecurityOverrides = new Map();
+
+function routeKey(method, pathValue) {
+  return `${String(method || "").toUpperCase()} ${String(pathValue || "")}`;
+}
+
+function setRouteSecurityMeta(method, pathValue, meta) {
+  routeSecurityOverrides.set(routeKey(method, pathValue), meta || {});
+}
+
+function inferRouteSecurityMeta(method, pathValue) {
+  const methodUpper = String(method || "").toUpperCase();
+  const pathText = String(pathValue || "");
+  const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(methodUpper);
+  const isShare = pathText.startsWith("/api/shares");
+  const isPublicShareRead = methodUpper === "GET" && /^\/api\/shares\/:token$/.test(pathText);
+  const isOwnerManagedShare = isShare && !isPublicShareRead;
+  const isInternal = pathText.startsWith("/internal/");
+  const isApi = pathText.startsWith("/api/");
+  return {
+    mutation: isMutation,
+    auth:
+      isPublicShareRead
+        ? "share_token"
+        : isOwnerManagedShare
+          ? "owner"
+          : isMutation && (isApi || isInternal)
+            ? "local_key"
+            : "none",
+    csrf_protected: isOwnerManagedShare && isMutation,
+    json_body: isMutation && (isApi || isInternal),
+    cors: isInternal || pathText.startsWith("/api/v1/") ? "public" : "same-origin",
+  };
+}
+
+function registerRouteMeta(method, pathValue) {
+  if (typeof pathValue !== "string" || !pathValue.startsWith("/")) return;
+  const key = routeKey(method, pathValue);
+  const merged = {
+    method: String(method || "").toUpperCase(),
+    path: pathValue,
+    ...inferRouteSecurityMeta(method, pathValue),
+    ...(routeSecurityOverrides.get(key) || {}),
+  };
+  routeRegistry.push(merged);
+}
+
+const originalRouteFns = {
+  get: app.get.bind(app),
+  post: app.post.bind(app),
+  put: app.put.bind(app),
+  patch: app.patch.bind(app),
+  delete: app.delete.bind(app),
+};
+
+["get", "post", "put", "patch", "delete"].forEach((name) => {
+  const original = originalRouteFns[name];
+  app[name] = function patchedRoute(pathValue, ...handlers) {
+    if (typeof pathValue === "string" && handlers.length > 0) {
+      registerRouteMeta(name, pathValue);
+    }
+    return original(pathValue, ...handlers);
+  };
+});
+
+function getRouteRegistry() {
+  const dedup = new Map();
+  routeRegistry.forEach((row) => {
+    if (!row || !row.method || !row.path) return;
+    dedup.set(routeKey(row.method, row.path), row);
+  });
+  return Array.from(dedup.values()).sort((a, b) => {
+    const byPath = String(a.path).localeCompare(String(b.path));
+    if (byPath !== 0) return byPath;
+    return String(a.method).localeCompare(String(b.method));
+  });
+}
+
+function appendShannonLog(source, line) {
+  const text = String(line || "").replace(/\r/g, "").trimEnd();
+  if (!text) return;
+  const entry = {
+    at: new Date().toISOString(),
+    source: source === "stderr" ? "stderr" : "stdout",
+    line: text.slice(0, 4000),
+  };
+  shannonState.logs.push(entry);
+  if (shannonState.logs.length > SHANNON_MAX_LOG_LINES) {
+    shannonState.logs.splice(0, shannonState.logs.length - SHANNON_MAX_LOG_LINES);
+  }
+}
+
+function loadJanitorReportFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch (err) {
+    return null;
+  }
+}
+
+function buildJanitorCombinedReport(profile) {
+  const functional = loadJanitorReportFile(janitorFunctionalReportPath);
+  const adversarial = loadJanitorReportFile(janitorAdversarialReportPath);
+  if (!functional && !adversarial) return null;
+
+  if (profile === "adversarial") return adversarial;
+  if (!functional && adversarial) return adversarial;
+  if (functional && !adversarial) return functional;
+
+  const functionalSummary = functional?.summary || {};
+  const adversarialSummary = adversarial?.summary || {};
+  const total = Number(functionalSummary.total || 0) + Number(adversarialSummary.total || 0);
+  const passed = Number(functionalSummary.passed || 0) + Number(adversarialSummary.passed || 0);
+  const failed = Number(functionalSummary.failed || 0) + Number(adversarialSummary.failed || 0);
+  const durationMs =
+    Number(functionalSummary.duration_ms || 0) + Number(adversarialSummary.duration_ms || 0);
+
+  return {
+    profile: "janitor-full",
+    generated_at: nowIso(),
+    summary: {
+      total,
+      passed,
+      failed,
+      duration_ms: durationMs,
+      by_profile: {
+        functional: functionalSummary,
+        adversarial: adversarialSummary,
+      },
+      by_severity: adversarialSummary.by_severity || null,
+    },
+  };
+}
+
+function getShannonStatusPayload() {
+  const report = shannonState.running
+    ? null
+    : shannonState.report || buildJanitorCombinedReport(shannonState.profile || "full");
+  return {
+    running: !!shannonState.running,
+    run_id: shannonState.run_id || null,
+    started_at: shannonState.started_at || null,
+    finished_at: shannonState.finished_at || null,
+    exit_code: shannonState.exit_code,
+    pid: shannonState.pid || null,
+    error: shannonState.error || null,
+    profile: shannonState.profile || "full",
+    phase: shannonState.phase || null,
+    report_paths: {
+      functional: janitorFunctionalReportPath,
+      adversarial: janitorAdversarialReportPath,
+    },
+    report:
+      report && typeof report === "object"
+        ? {
+            profile: report.profile || null,
+            generated_at: report.generated_at || null,
+            summary: report.summary || null,
+          }
+        : null,
+    log_lines: shannonState.logs.length,
+    logs_tail: shannonState.logs.slice(-250),
+  };
+}
 
 function ensureSingleInstance() {
   try {
@@ -462,7 +661,13 @@ function parseCookies(req) {
   return raw.split(";").reduce((acc, part) => {
     const [key, ...rest] = part.trim().split("=");
     if (!key) return acc;
-    acc[key] = decodeURIComponent(rest.join("="));
+    const valueRaw = rest.join("=");
+    try {
+      acc[key] = decodeURIComponent(valueRaw);
+    } catch (err) {
+      // Never throw from cookie parsing on malformed values.
+      acc[key] = valueRaw;
+    }
     return acc;
   }, {});
 }
@@ -487,9 +692,52 @@ function ensureOwnerCookie(req, res) {
   );
 }
 
+function extractRequestOrigin(req) {
+  const originRaw = String(req.headers.origin || "").trim();
+  if (originRaw) return originRaw;
+  const refererRaw = String(req.headers.referer || "").trim();
+  if (!refererRaw) return "";
+  try {
+    const parsed = new URL(refererRaw);
+    return parsed.origin;
+  } catch (err) {
+    return "";
+  }
+}
+
+function getRequestHostOrigin(req) {
+  const proto = String(
+    req.headers["x-forwarded-proto"] ||
+      (req.secure ? "https" : req.protocol || "http")
+  )
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  const host = String(req.headers.host || "").trim();
+  if (!host) return "";
+  return `${proto}://${host}`;
+}
+
+function isAllowedSameOriginRequest(req) {
+  const requestOrigin = extractRequestOrigin(req);
+  if (!requestOrigin) return true;
+  const hostOrigin = getRequestHostOrigin(req);
+  if (!hostOrigin) return true;
+  return requestOrigin === hostOrigin;
+}
+
 function requireOwner(req, res) {
   const secret = getOwnerSecret();
-  const headerSecret = String(req.headers["x-ajl-share-owner"] || "").trim();
+  const rawHeader = req.headers["x-ajl-share-owner"];
+  if (Array.isArray(rawHeader)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return false;
+  }
+  const headerSecret = String(rawHeader || "").trim();
+  if (headerSecret.includes(",") || /\s/.test(headerSecret)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return false;
+  }
   if (headerSecret && headerSecret === secret) {
     return true;
   }
@@ -668,28 +916,59 @@ function getViewerBaseUrl(req) {
   return shareRuntime.getViewerBaseUrl(req);
 }
 
-const shareLookup = new Map();
-function pruneShareLookup(nowTs) {
-  if (shareLookup.size < 1000) return;
-  for (const [key, entry] of shareLookup.entries()) {
+const shareLookupByActor = new Map();
+const shareLookupByIp = new Map();
+
+function pruneRateMap(map, nowTs) {
+  if (map.size < 1000) return;
+  for (const [key, entry] of map.entries()) {
     if (!entry || typeof entry.ts !== "number" || nowTs - entry.ts > 5 * 60 * 1000) {
-      shareLookup.delete(key);
+      map.delete(key);
     }
   }
 }
 
-function rateLimitShareLookup(req, res) {
-  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
-  const now = Date.now();
-  pruneShareLookup(now);
-  const entry = shareLookup.get(ip) || { count: 0, ts: now };
-  if (now - entry.ts > 60000) {
+function consumeWindowedBucket(map, key, limit, windowMs, nowTs) {
+  const entry = map.get(key) || { count: 0, ts: nowTs };
+  if (nowTs - entry.ts > windowMs) {
     entry.count = 0;
-    entry.ts = now;
+    entry.ts = nowTs;
   }
   entry.count += 1;
-  shareLookup.set(ip, entry);
-  if (entry.count > 60) {
+  map.set(key, entry);
+  if (entry.count <= limit) {
+    return { limited: false, retryAfterSec: 0 };
+  }
+  const retryAfterSec = Math.max(1, Math.ceil((windowMs - (nowTs - entry.ts)) / 1000));
+  return { limited: true, retryAfterSec };
+}
+
+function rateLimitShareLookup(req, res) {
+  const ip = extractClientIp(req);
+  const token = String(req.params?.token || req.path || "").slice(0, 64);
+  const actorKey = `${ip}|${token}`;
+  const now = Date.now();
+  pruneRateMap(shareLookupByActor, now);
+  pruneRateMap(shareLookupByIp, now);
+
+  const actorLimit = consumeWindowedBucket(
+    shareLookupByActor,
+    actorKey,
+    SHARE_LOOKUP_RATE_LIMIT,
+    SHARE_LOOKUP_WINDOW_MS,
+    now
+  );
+  const ipLimit = consumeWindowedBucket(
+    shareLookupByIp,
+    ip,
+    SHARE_LOOKUP_IP_RATE_LIMIT,
+    SHARE_LOOKUP_WINDOW_MS,
+    now
+  );
+
+  if (actorLimit.limited || ipLimit.limited) {
+    const retryAfterSec = Math.max(actorLimit.retryAfterSec, ipLimit.retryAfterSec, 1);
+    res.setHeader("Retry-After", String(retryAfterSec));
     res.status(429).json({ error: "Too many requests" });
     return false;
   }
@@ -885,7 +1164,51 @@ migrateLegacyPayments();
 ensureDailyBackup();
 pruneOauthDeviceSessions();
 
-app.use(express.json({ limit: "2mb" }));
+app.use((req, res, next) => {
+  req.setTimeout(REQUEST_TIMEOUT_MS);
+  res.setTimeout(REQUEST_TIMEOUT_MS);
+  next();
+});
+
+app.use((req, res, next) => {
+  const hasTransferEncoding = req.headers["transfer-encoding"] !== undefined;
+  const hasContentLength = req.headers["content-length"] !== undefined;
+  if (hasTransferEncoding && hasContentLength) {
+    return res.status(400).json({
+      error: { code: "BAD_REQUEST", message: "Conflicting Transfer-Encoding and Content-Length." },
+    });
+  }
+  next();
+});
+
+app.use((req, res, next) => {
+  const hasMethodOverrideHeader = req.headers["x-http-method-override"] !== undefined;
+  const hasMethodOverrideQuery = req.query && req.query._method !== undefined;
+  if (hasMethodOverrideHeader || hasMethodOverrideQuery) {
+    return res.status(400).json({
+      error: { code: "METHOD_OVERRIDE_NOT_ALLOWED", message: "HTTP method override is not allowed." },
+    });
+  }
+  next();
+});
+
+app.use((req, res, next) => {
+  const isApiLike = req.path.startsWith("/api/") || req.path.startsWith("/internal/");
+  const needsJsonType = ["POST", "PUT", "PATCH"].includes(req.method) && isApiLike;
+  if (!needsJsonType) return next();
+  const hasBody =
+    Number(req.headers["content-length"] || 0) > 0 || req.headers["transfer-encoding"] !== undefined;
+  if (!hasBody) return next();
+  const contentType = String(req.headers["content-type"] || "").toLowerCase();
+  if (!contentType.includes("application/json")) {
+    return res.status(415).json({
+      error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Content-Type must be application/json." },
+    });
+  }
+  next();
+});
+
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 app.use((req, res, next) => {
   const incoming = String(req.headers["x-request-id"] || "").trim();
   const requestId = incoming || randomUUID();
@@ -897,6 +1220,12 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
   res.setHeader("Referrer-Policy", "no-referrer");
+  if (!(req.path.startsWith("/api/") || req.path.startsWith("/internal/"))) {
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
+    );
+  }
   next();
 });
 app.use((req, res, next) => {
@@ -922,6 +1251,16 @@ app.use((req, res, next) => {
     }
   }
   if (!allowMutationRequest(req, res)) return;
+  next();
+});
+app.use((req, res, next) => {
+  const isShareMutation = req.path.startsWith("/api/shares") && ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+  if (!isShareMutation) return next();
+  if (!isAllowedSameOriginRequest(req)) {
+    return res.status(403).json({
+      error: { code: "CSRF_BLOCKED", message: "Cross-site request blocked." },
+    });
+  }
   next();
 });
 app.use((req, res, next) => {
@@ -954,12 +1293,28 @@ function nowIso() {
 
 const mutationRate = new Map();
 
+function normalizeIpForRateLimit(value) {
+  const raw = String(value || "").split(",")[0].trim().replace(/^["']+|["']+$/g, "");
+  if (!raw) return "";
+  if (raw.length > 256) return "";
+  if (raw.startsWith("[")) {
+    const end = raw.indexOf("]");
+    if (end > 1) return raw.slice(1, end);
+  }
+  if (raw.includes(".") && raw.includes(":")) {
+    const parts = raw.split(":");
+    if (parts.length === 2 && /^\d+$/.test(parts[1])) return parts[0];
+  }
+  return raw;
+}
+
 function extractClientIp(req) {
-  return (
-    String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
-    req.socket.remoteAddress ||
-    "unknown"
-  );
+  const fromForwarded = TRUST_PROXY_HEADERS
+    ? normalizeIpForRateLimit(req.headers["x-forwarded-for"])
+    : "";
+  const fromRemote = normalizeIpForRateLimit(req.socket?.remoteAddress || req.ip || "");
+  const selected = fromForwarded || fromRemote || "unknown";
+  return selected.slice(0, 128);
 }
 
 function pruneMutationRate(nowMs) {
@@ -979,17 +1334,21 @@ function isMutationRequest(req) {
 
 function allowMutationRequest(req, res) {
   const ip = extractClientIp(req);
+  const ownerHeader = String(req.headers["x-ajl-share-owner"] || "").trim().slice(0, 32);
+  const actorKey = `${ip}|${ownerHeader}|${req.path}`;
   const nowMs = Date.now();
   pruneMutationRate(nowMs);
-  const entry = mutationRate.get(ip) || { count: 0, ts: nowMs };
-  if (nowMs - entry.ts > 60_000) {
+  const entry = mutationRate.get(actorKey) || { count: 0, ts: nowMs };
+  if (nowMs - entry.ts > MUTATION_RATE_WINDOW_MS) {
     entry.count = 0;
     entry.ts = nowMs;
   }
   entry.count += 1;
-  mutationRate.set(ip, entry);
+  mutationRate.set(actorKey, entry);
   if (entry.count > MUTATION_RATE_PER_MIN) {
     metrics.mutation_limited += 1;
+    const retryAfterSec = Math.max(1, Math.ceil((MUTATION_RATE_WINDOW_MS - (nowMs - entry.ts)) / 1000));
+    res.setHeader("Retry-After", String(retryAfterSec));
     res.status(429).json({ error: "Too many mutation requests. Please retry shortly." });
     return false;
   }
@@ -4086,10 +4445,176 @@ app.post("/api/system/diagnostics/clear-llm-cache", (req, res) => {
   });
 });
 
+app.get("/api/system/routes", (req, res) => {
+  res.json({
+    ok: true,
+    routes: getRouteRegistry(),
+  });
+});
+
+app.get("/api/system/janitor/status", (req, res) => {
+  res.json({ ok: true, state: getShannonStatusPayload() });
+});
+
+app.get("/api/system/shannon/status", (req, res) => {
+  res.json({ ok: true, state: getShannonStatusPayload() });
+});
+
+app.get("/api/system/janitor/report", (req, res) => {
+  const report = buildJanitorCombinedReport(shannonState.profile || "full");
+  if (!report) return res.status(404).json({ error: "No Janitor report found." });
+  res.json({ ok: true, report });
+});
+
+app.get("/api/system/shannon/report", (req, res) => {
+  const report = buildJanitorCombinedReport(shannonState.profile || "full");
+  if (!report) return res.status(404).json({ error: "No Janitor report found." });
+  res.json({ ok: true, report });
+});
+
+function runJanitorScript(scriptPath, runId, tag) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd: __dirname,
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    shannonState.pid = child.pid || null;
+    appendShannonLog("stdout", `[run ${runId}] ${tag} started (pid ${shannonState.pid || "?"}).`);
+
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+    const consumeChunk = (source, chunk) => {
+      const text = String(chunk || "");
+      if (source === "stderr") {
+        stderrBuffer += text;
+        const lines = stderrBuffer.split(/\r?\n/);
+        stderrBuffer = lines.pop() || "";
+        lines.forEach((line) => appendShannonLog("stderr", line));
+        return;
+      }
+      stdoutBuffer += text;
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+      lines.forEach((line) => appendShannonLog("stdout", line));
+    };
+
+    if (child.stdout) child.stdout.on("data", (chunk) => consumeChunk("stdout", chunk));
+    if (child.stderr) child.stderr.on("data", (chunk) => consumeChunk("stderr", chunk));
+
+    child.on("error", (err) => {
+      const message = String(err?.message || err || "Unknown process error");
+      appendShannonLog("stderr", `[run ${runId}] ${tag} process error: ${message}`);
+      resolve({ code: -1, error: message });
+    });
+
+    child.on("close", (code) => {
+      if (stdoutBuffer) appendShannonLog("stdout", stdoutBuffer);
+      if (stderrBuffer) appendShannonLog("stderr", stderrBuffer);
+      const exitCode = Number.isInteger(code) ? code : -1;
+      appendShannonLog(
+        exitCode === 0 ? "stdout" : "stderr",
+        `[run ${runId}] ${tag} finished (exit ${exitCode}).`
+      );
+      resolve({ code: exitCode, error: null });
+    });
+  });
+}
+
+function startJanitorRun(profile) {
+  const normalizedProfile = profile === "adversarial" ? "adversarial" : "full";
+  const runId = randomUUID();
+  [janitorFunctionalReportPath, janitorAdversarialReportPath].forEach((filePath) => {
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (err) {
+      // ignore cleanup errors
+    }
+  });
+  shannonState.running = true;
+  shannonState.run_id = runId;
+  shannonState.started_at = new Date().toISOString();
+  shannonState.finished_at = null;
+  shannonState.exit_code = null;
+  shannonState.pid = null;
+  shannonState.error = null;
+  shannonState.report = null;
+  shannonState.logs = [];
+  shannonState.profile = normalizedProfile;
+  shannonState.phase = normalizedProfile === "adversarial" ? "adversarial" : "functional";
+  appendShannonLog("stdout", `[run ${runId}] Janitor ${normalizedProfile} run started.`);
+
+  void (async () => {
+    let exitCode = 0;
+    try {
+      if (normalizedProfile === "full") {
+        const functional = await runJanitorScript(
+          janitorFunctionalScriptPath,
+          runId,
+          "functional"
+        );
+        if (functional.code !== 0) {
+          throw new Error(`Functional Janitor failed (exit ${functional.code})`);
+        }
+      }
+
+      shannonState.phase = "adversarial";
+      const adversarial = await runJanitorScript(
+        janitorAdversarialScriptPath,
+        runId,
+        "adversarial"
+      );
+      if (adversarial.code !== 0) {
+        throw new Error(`Adversarial Janitor failed (exit ${adversarial.code})`);
+      }
+
+      appendShannonLog("stdout", `[run ${runId}] Janitor run completed successfully.`);
+    } catch (err) {
+      exitCode = 1;
+      shannonState.error = String(err?.message || err || "Unknown Janitor failure");
+      appendShannonLog("stderr", `[run ${runId}] ${shannonState.error}`);
+    } finally {
+      shannonState.running = false;
+      shannonState.phase = null;
+      shannonState.finished_at = new Date().toISOString();
+      shannonState.exit_code = exitCode;
+      shannonState.pid = null;
+      shannonState.report = buildJanitorCombinedReport(normalizedProfile);
+    }
+  })();
+}
+
+function handleJanitorRunRequest(req, res) {
+  const profileRaw = String(req.body?.profile || "").trim().toLowerCase();
+  const profile = profileRaw === "adversarial" ? "adversarial" : "full";
+  if (!fs.existsSync(janitorAdversarialScriptPath)) {
+    return res.status(500).json({ error: "Janitor adversarial script missing." });
+  }
+  if (profile === "full" && !fs.existsSync(janitorFunctionalScriptPath)) {
+    return res.status(500).json({ error: "Janitor functional script missing." });
+  }
+  if (shannonState.running) {
+    return res.status(409).json({
+      error: "Janitor is already running.",
+      state: getShannonStatusPayload(),
+    });
+  }
+  startJanitorRun(profile);
+  return res.json({ ok: true, started: true, state: getShannonStatusPayload() });
+}
+
+app.post("/api/system/janitor/run", (req, res) => handleJanitorRunRequest(req, res));
+
+app.post("/api/system/shannon/run", (req, res) => {
+  req.body = { ...(req.body || {}), profile: req.body?.profile || "full" };
+  return handleJanitorRunRequest(req, res);
+});
+
 app.get("/api/system/diagnostics", (req, res) => {
   expireStaleShares();
   const oauth = getQwenOauthSettings();
   const oauthConnected = !!(oauth && !qwenOauth.isTokenExpired(oauth));
+  const janitorReport = shannonState.report || buildJanitorCombinedReport(shannonState.profile || "full");
   const activeShare = db
     .prepare(
       "SELECT token, mode, owner_label, expires_at, last_published_at, updated_at FROM shares WHERE is_active = 1 ORDER BY datetime(updated_at) DESC LIMIT 1"
@@ -4115,8 +4640,15 @@ app.get("/api/system/diagnostics", (req, res) => {
     },
     limits: {
       mutation_rate_per_min: MUTATION_RATE_PER_MIN,
+      mutation_rate_window_ms: MUTATION_RATE_WINDOW_MS,
+      share_lookup_rate_limit: SHARE_LOOKUP_RATE_LIMIT,
+      share_lookup_ip_rate_limit: SHARE_LOOKUP_IP_RATE_LIMIT,
+      share_lookup_window_ms: SHARE_LOOKUP_WINDOW_MS,
       llm_cache_ttl_ms: LLM_CACHE_TTL_MS,
       llm_route_timeout_ms: LLM_ROUTE_TIMEOUT_MS,
+      request_timeout_ms: REQUEST_TIMEOUT_MS,
+      json_body_limit: JSON_BODY_LIMIT,
+      trust_proxy_headers: TRUST_PROXY_HEADERS,
       backup_retention_days: BACKUP_RETENTION_DAYS,
       local_api_key_enabled: LOCAL_API_KEY.length > 0,
     },
@@ -4148,10 +4680,51 @@ app.get("/api/system/diagnostics", (req, res) => {
           }
         : null,
     },
+    janitor: {
+      running: !!shannonState.running,
+      run_id: shannonState.run_id || null,
+      profile: shannonState.profile || "full",
+      phase: shannonState.phase || null,
+      started_at: shannonState.started_at || null,
+      finished_at: shannonState.finished_at || null,
+      exit_code: shannonState.exit_code,
+      log_lines: shannonState.logs.length,
+      report_generated_at: janitorReport?.generated_at || null,
+    },
     storage: {
       db_file: path.basename(dbFile),
       backup_files: backupCount,
     },
+  });
+});
+
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  if (res.headersSent) return next(err);
+  if (err && (err.type === "entity.too.large" || err.status === 413)) {
+    return res.status(413).json({
+      error: {
+        code: "PAYLOAD_TOO_LARGE",
+        message: "Request payload too large.",
+      },
+      request_id: req?.requestId || null,
+    });
+  }
+  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+    return res.status(400).json({
+      error: {
+        code: "INVALID_JSON",
+        message: "Invalid JSON body.",
+      },
+      request_id: req?.requestId || null,
+    });
+  }
+  return res.status(500).json({
+    error: {
+      code: "INTERNAL_ERROR",
+      message: "Internal server error.",
+    },
+    request_id: req?.requestId || null,
   });
 });
 
@@ -4175,6 +4748,8 @@ if (require.main === module) {
 module.exports = {
   app,
   db,
+  getRouteRegistry,
+  setRouteSecurityMeta,
   close: () => {
     try {
       db.close();

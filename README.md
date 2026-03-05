@@ -173,6 +173,24 @@ Automated suite:
 npm run janitor
 ```
 
+Functional profile only:
+
+```sh
+npm run janitor:functional
+```
+
+Adversarial security profile only (Janitor adversarial):
+
+```sh
+npm run janitor:adversarial
+```
+
+Security report output:
+
+```text
+reports/janitor-security.json
+```
+
 Full consistency + QA:
 
 ```sh
