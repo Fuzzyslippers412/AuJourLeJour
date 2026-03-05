@@ -68,6 +68,14 @@ const state = {
   integrityStatus: "unknown",
   dataVersion: 0,
   summaryCache: null,
+  janitorReport: null,
+  janitorSelectedId: "",
+  janitorFilter: {
+    status: "all",
+    severity: "all",
+    suite: "all",
+    search: "",
+  },
   agentBusy: false,
   lastAgentInput: "",
   lastAgentSubmittedAt: 0,
@@ -91,6 +99,7 @@ let shannonInFlight = false;
 let shannonPollTimer = null;
 let shannonLastRunId = "";
 let shannonLastRunning = false;
+let janitorReportInFlight = false;
 let scrollShadowBound = false;
 let storageFailureHandled = false;
 const MAX_LLM_INSTANCES = 20;
@@ -378,6 +387,16 @@ const els = {
   shannonStatus: document.getElementById("shannon-status"),
   shannonSummary: document.getElementById("shannon-summary"),
   shannonOutput: document.getElementById("shannon-output"),
+  janitorVerdict: document.getElementById("janitor-verdict"),
+  janitorSuiteSummary: document.getElementById("janitor-suite-summary"),
+  janitorSearch: document.getElementById("janitor-search"),
+  janitorFilterStatus: document.getElementById("janitor-filter-status"),
+  janitorFilterSeverity: document.getElementById("janitor-filter-severity"),
+  janitorFilterSuite: document.getElementById("janitor-filter-suite"),
+  janitorFindingsCount: document.getElementById("janitor-findings-count"),
+  janitorFindingsList: document.getElementById("janitor-findings-list"),
+  janitorDetailContent: document.getElementById("janitor-detail-content"),
+  janitorCopyRepro: document.getElementById("janitor-copy-repro"),
   previewReadonly: document.getElementById("preview-readonly"),
   setupCta: document.getElementById("setup-cta"),
   ctaImport: document.getElementById("cta-import"),
@@ -6570,6 +6589,297 @@ function formatShannonOutputLines(lines) {
     .join("\n");
 }
 
+function janitorSeverityRank(value) {
+  const severity = String(value || "").toUpperCase();
+  if (severity === "BLOCKER") return 0;
+  if (severity === "HIGH") return 1;
+  if (severity === "MEDIUM") return 2;
+  return 3;
+}
+
+function normalizeJanitorResults(report) {
+  if (!report || typeof report !== "object" || !Array.isArray(report.results)) return [];
+  const defaultSuite = String(report.profile || "").includes("functional") ? "functional" : "adversarial";
+  return report.results.map((row, idx) => {
+    const source = row && typeof row === "object" ? row : {};
+    const title = String(source.title || source.name || `Check ${idx + 1}`);
+    const suite = String(source.suite || defaultSuite || "adversarial");
+    return {
+      id: String(source.id || `${suite}_${idx + 1}`),
+      title,
+      suite,
+      status: String(source.status || "unknown"),
+      severity: String(source.severity || (suite === "adversarial" ? "HIGH" : "MEDIUM")).toUpperCase(),
+      attack: source.attack || title,
+      expected: source.expected || "",
+      actual: source.actual || source.error || "",
+      error: source.error || "",
+      request: source.request || null,
+      response_meta: source.response_meta || null,
+      repro_curl: source.repro_curl || "",
+      seed: source.seed ?? null,
+    };
+  });
+}
+
+function classifyJanitorCategory(result) {
+  const haystack = `${result.title} ${result.attack} ${result.expected}`.toLowerCase();
+  if (/idor|auth|privilege|owner|least privilege|csrf|token cannot mutate/.test(haystack)) {
+    return "Access control";
+  }
+  if (/content-type|json|prototype|unicode|encoded|method override|cl\/te|path-traversal|fuzz/.test(haystack)) {
+    return "Input parsing";
+  }
+  if (/cors|csp|security headers|xss/.test(haystack)) {
+    return "Web security";
+  }
+  if (/rate limit|flood|retry-after|spoofing/.test(haystack)) {
+    return "Abuse resistance";
+  }
+  if (/idempot|invariant|concurrency|parallel mutation|replay/.test(haystack)) {
+    return "Ledger invariants";
+  }
+  if (/redact|leak|diagnostics/.test(haystack)) {
+    return "Data leakage";
+  }
+  return "General";
+}
+
+function getJanitorReportSummary(report) {
+  const summary = report?.summary && typeof report.summary === "object" ? report.summary : {};
+  return {
+    total: Number(summary.total || 0),
+    passed: Number(summary.passed || 0),
+    failed: Number(summary.failed || 0),
+    durationMs: Number(summary.duration_ms || 0),
+    bySeverity: summary.by_severity && typeof summary.by_severity === "object" ? summary.by_severity : {},
+  };
+}
+
+function getJanitorSuiteSummary(report, results) {
+  if (report?.suites && typeof report.suites === "object") {
+    return {
+      functional: report.suites.functional || null,
+      adversarial: report.suites.adversarial || null,
+    };
+  }
+  const bySuite = {
+    functional: { total: 0, passed: 0, failed: 0 },
+    adversarial: { total: 0, passed: 0, failed: 0 },
+  };
+  results.forEach((row) => {
+    const suite = row.suite === "functional" ? "functional" : "adversarial";
+    bySuite[suite].total += 1;
+    if (row.status === "passed") bySuite[suite].passed += 1;
+    if (row.status === "failed") bySuite[suite].failed += 1;
+  });
+  return bySuite;
+}
+
+function filterJanitorResults(results) {
+  const filter = state.janitorFilter || {};
+  const statusFilter = String(filter.status || "all");
+  const severityFilter = String(filter.severity || "all").toUpperCase();
+  const suiteFilter = String(filter.suite || "all").toLowerCase();
+  const search = String(filter.search || "").trim().toLowerCase();
+  return results.filter((row) => {
+    if (statusFilter !== "all" && row.status !== statusFilter) return false;
+    if (severityFilter !== "ALL" && row.severity !== severityFilter) return false;
+    if (suiteFilter !== "all" && row.suite !== suiteFilter) return false;
+    if (!search) return true;
+    const haystack = `${row.title} ${row.attack} ${row.expected} ${row.actual} ${row.suite}`.toLowerCase();
+    return haystack.includes(search);
+  });
+}
+
+function renderJanitorVerdict(stateData, report, results) {
+  if (!els.janitorVerdict) return;
+  const verdictEl = els.janitorVerdict;
+  verdictEl.classList.remove("neutral", "pass", "warn", "fail");
+  if (stateData.running) {
+    verdictEl.classList.add("warn");
+    verdictEl.textContent = "Audit running. Results update in real time.";
+    return;
+  }
+  if (!report || !results.length) {
+    verdictEl.classList.add("neutral");
+    verdictEl.textContent = "Run Janitor to generate an audit verdict.";
+    return;
+  }
+  const failed = results.filter((row) => row.status === "failed");
+  const blockerFails = failed.filter((row) => row.severity === "BLOCKER").length;
+  if (failed.length === 0) {
+    verdictEl.classList.add("pass");
+    verdictEl.textContent = "Ship-ready: all Janitor checks passed.";
+    return;
+  }
+  if (blockerFails > 0) {
+    verdictEl.classList.add("fail");
+    verdictEl.textContent = `Do not ship: ${blockerFails} blocker check${blockerFails === 1 ? "" : "s"} failed.`;
+    return;
+  }
+  verdictEl.classList.add("warn");
+  verdictEl.textContent = `Warning: ${failed.length} non-blocker check${failed.length === 1 ? "" : "s"} failed.`;
+}
+
+function renderJanitorSuiteSummary(report, results) {
+  if (!els.janitorSuiteSummary) return;
+  els.janitorSuiteSummary.innerHTML = "";
+  if (!report || !results.length) return;
+  const suites = getJanitorSuiteSummary(report, results);
+  ["functional", "adversarial"].forEach((suite) => {
+    const summary = suites[suite];
+    if (!summary) return;
+    const total = Number(summary.total || 0);
+    const passed = Number(summary.passed || 0);
+    const failed = Number(summary.failed || 0);
+    const card = document.createElement("div");
+    card.className = "janitor-suite-card";
+    const label = document.createElement("div");
+    label.className = "janitor-suite-label";
+    label.textContent = suite === "functional" ? "Functional suite" : "Adversarial suite";
+    const value = document.createElement("div");
+    value.className = "janitor-suite-value";
+    value.textContent = `${passed}/${total} passed`;
+    const meta = document.createElement("div");
+    meta.className = "janitor-row-meta";
+    meta.textContent = failed > 0 ? `${failed} failed` : "No failures";
+    card.append(label, value, meta);
+    els.janitorSuiteSummary.appendChild(card);
+  });
+}
+
+function renderJanitorFindingDetail(result) {
+  if (!els.janitorDetailContent) return;
+  els.janitorDetailContent.innerHTML = "";
+  if (!result) {
+    const empty = document.createElement("div");
+    empty.className = "janitor-empty";
+    empty.textContent = "Select a check to inspect details.";
+    els.janitorDetailContent.appendChild(empty);
+    return;
+  }
+  const title = document.createElement("div");
+  title.className = "janitor-detail-title";
+  title.textContent = result.title;
+  const lines = [
+    ["Suite", result.suite],
+    ["Category", classifyJanitorCategory(result)],
+    ["Severity", result.severity],
+    ["Status", result.status],
+  ];
+  if (result.seed !== null && result.seed !== undefined && result.seed !== "") {
+    lines.push(["Seed", String(result.seed)]);
+  }
+  lines.forEach(([label, value]) => {
+    const line = document.createElement("div");
+    line.className = "janitor-detail-line";
+    const strong = document.createElement("strong");
+    strong.textContent = `${label}: `;
+    line.appendChild(strong);
+    line.appendChild(document.createTextNode(String(value || "—")));
+    els.janitorDetailContent.appendChild(line);
+  });
+
+  const addCodeBlock = (label, content) => {
+    if (!content) return;
+    const line = document.createElement("div");
+    line.className = "janitor-detail-line";
+    const strong = document.createElement("strong");
+    strong.textContent = `${label}:`;
+    line.appendChild(strong);
+    const pre = document.createElement("pre");
+    pre.className = "janitor-code";
+    pre.textContent = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+    line.appendChild(pre);
+    els.janitorDetailContent.appendChild(line);
+  };
+
+  addCodeBlock("Attack", result.attack);
+  addCodeBlock("Expected", result.expected);
+  addCodeBlock("Actual", result.actual || result.error);
+  if (result.request) addCodeBlock("Request", result.request);
+  if (result.response_meta) addCodeBlock("Response", result.response_meta);
+  if (result.repro_curl) addCodeBlock("Repro", result.repro_curl);
+}
+
+function renderJanitorFindings(report) {
+  if (!els.janitorFindingsList) return;
+  const allResults = normalizeJanitorResults(report);
+  const sorted = allResults.sort((a, b) => {
+    if (a.status !== b.status) return a.status === "failed" ? -1 : 1;
+    const severityDelta = janitorSeverityRank(a.severity) - janitorSeverityRank(b.severity);
+    if (severityDelta !== 0) return severityDelta;
+    return a.title.localeCompare(b.title);
+  });
+  const filtered = filterJanitorResults(sorted);
+  if (els.janitorFindingsCount) {
+    els.janitorFindingsCount.textContent = `${filtered.length} visible`;
+  }
+  if (!state.janitorSelectedId || !filtered.some((row) => row.id === state.janitorSelectedId)) {
+    state.janitorSelectedId = filtered[0]?.id || "";
+  }
+
+  els.janitorFindingsList.innerHTML = "";
+  if (!filtered.length) {
+    const empty = document.createElement("div");
+    empty.className = "janitor-empty";
+    empty.textContent = allResults.length
+      ? "No checks match current filters."
+      : "No Janitor report results available yet.";
+    els.janitorFindingsList.appendChild(empty);
+    renderJanitorFindingDetail(null);
+    return;
+  }
+
+  filtered.forEach((row) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "janitor-finding-row";
+    if (row.id === state.janitorSelectedId) {
+      button.classList.add("active");
+    }
+    button.addEventListener("click", () => {
+      state.janitorSelectedId = row.id;
+      renderJanitorFindings(state.janitorReport);
+    });
+
+    const top = document.createElement("div");
+    top.className = "janitor-row-top";
+    const title = document.createElement("div");
+    title.className = "janitor-row-title";
+    title.textContent = row.title;
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `janitor-badge ${row.status === "failed" ? "fail" : "pass"}`;
+    statusBadge.textContent = row.status;
+    top.append(title, statusBadge);
+
+    const meta = document.createElement("div");
+    meta.className = "janitor-row-meta";
+    const severityBadge = document.createElement("span");
+    severityBadge.className = `janitor-badge ${row.severity}`;
+    severityBadge.textContent = row.severity;
+    meta.append(
+      `${row.suite} • ${classifyJanitorCategory(row)} • `,
+      severityBadge
+    );
+
+    button.append(top, meta);
+    els.janitorFindingsList.appendChild(button);
+  });
+
+  const selected = filtered.find((row) => row.id === state.janitorSelectedId) || filtered[0];
+  renderJanitorFindingDetail(selected || null);
+}
+
+function renderJanitorDashboard(stateData) {
+  const report = state.janitorReport;
+  const results = normalizeJanitorResults(report);
+  renderJanitorVerdict(stateData, report, results);
+  renderJanitorSuiteSummary(report, results);
+  renderJanitorFindings(report);
+}
+
 function formatShannonDuration(durationMs) {
   const value = Number(durationMs || 0);
   if (!Number.isFinite(value) || value <= 0) return "";
@@ -6635,10 +6945,40 @@ function renderShannonState(snapshot) {
   }
 
   els.shannonOutput.textContent = formatShannonOutputLines(stateData.logs_tail);
+  renderJanitorDashboard(stateData);
   if (running) {
     startShannonPolling();
   } else {
     stopShannonPolling();
+  }
+}
+
+async function loadJanitorReport(options = {}) {
+  if (AJL_WEB_MODE) return;
+  if (janitorReportInFlight) return;
+  janitorReportInFlight = true;
+  const silent = options.silent === true;
+  try {
+    const res = await apiFetch("/api/system/janitor/report", {}, { silent: true });
+    if (res.status === 404) {
+      state.janitorReport = null;
+      renderJanitorDashboard({ running: false });
+      return;
+    }
+    const requestId = getRequestIdFromResponse(res);
+    if (!res.ok) {
+      const payload = await res.json().catch(() => null);
+      const baseMessage = getErrorMessage(payload, `Unable to load Janitor report (${res.status}).`);
+      const message = requestId ? `${baseMessage} (ref: ${requestId})` : baseMessage;
+      if (!silent) showSystemBanner(message);
+      return;
+    }
+    const payload = await readApiData(res);
+    const report = payload?.report || payload || null;
+    state.janitorReport = report && typeof report === "object" ? report : null;
+    renderJanitorDashboard({ running: false });
+  } finally {
+    janitorReportInFlight = false;
   }
 }
 
@@ -6664,6 +7004,9 @@ async function loadShannonStatus(options = {}) {
     const payload = await readApiData(res);
     const stateData = payload?.state || payload || {};
     renderShannonState(stateData);
+    if (!stateData.running) {
+      await loadJanitorReport({ silent: true });
+    }
     const runId = String(stateData.run_id || "");
     const running = !!stateData.running;
     if (runId && runId !== shannonLastRunId) {
@@ -6708,6 +7051,8 @@ async function runShannonMode() {
       return;
     }
     renderShannonState(payload?.state || {});
+    state.janitorReport = null;
+    renderJanitorDashboard(payload?.state || {});
     showToast("Janitor started.");
     await loadShannonStatus({ force: true, silent: true });
   } finally {
@@ -6736,6 +7081,39 @@ async function copyShannonOutput() {
   } catch (err) {
     showToast("Unable to copy Janitor output.");
   }
+}
+
+async function copyJanitorRepro() {
+  if (AJL_WEB_MODE) return;
+  const results = normalizeJanitorResults(state.janitorReport);
+  const selected = results.find((row) => row.id === state.janitorSelectedId);
+  if (!selected || !selected.repro_curl) {
+    showToast("No repro command for selected check.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(String(selected.repro_curl));
+    showToast("Repro command copied.");
+  } catch (err) {
+    showToast("Unable to copy repro command.");
+  }
+}
+
+function syncJanitorFilterControls() {
+  if (els.janitorFilterStatus) els.janitorFilterStatus.value = state.janitorFilter.status;
+  if (els.janitorFilterSeverity) els.janitorFilterSeverity.value = state.janitorFilter.severity;
+  if (els.janitorFilterSuite) els.janitorFilterSuite.value = state.janitorFilter.suite;
+  if (els.janitorSearch && els.janitorSearch.value !== state.janitorFilter.search) {
+    els.janitorSearch.value = state.janitorFilter.search;
+  }
+}
+
+function applyJanitorFilterUpdate() {
+  state.janitorFilter.status = String(els.janitorFilterStatus?.value || "all");
+  state.janitorFilter.severity = String(els.janitorFilterSeverity?.value || "all");
+  state.janitorFilter.suite = String(els.janitorFilterSuite?.value || "all");
+  state.janitorFilter.search = String(els.janitorSearch?.value || "").trim();
+  renderJanitorFindings(state.janitorReport);
 }
 
 function maybeShowFirstRunWizard() {
@@ -7612,8 +7990,12 @@ function renderView() {
     }
   }
   if (isJanitor && !AJL_WEB_MODE) {
+    syncJanitorFilterControls();
     if (els.diagnosticsOutput) runDiagnostics();
-    if (els.shannonOutput) loadShannonStatus({ silent: true }).catch(() => {});
+    if (els.shannonOutput) {
+      loadShannonStatus({ silent: true }).catch(() => {});
+      loadJanitorReport({ silent: true }).catch(() => {});
+    }
   }
 }
 
@@ -8391,6 +8773,32 @@ function bindEvents() {
   if (els.shannonCopy) {
     els.shannonCopy.addEventListener("click", async () => {
       await copyShannonOutput();
+    });
+  }
+
+  if (els.janitorCopyRepro) {
+    els.janitorCopyRepro.addEventListener("click", async () => {
+      await copyJanitorRepro();
+    });
+  }
+
+  if (els.janitorFilterStatus) {
+    els.janitorFilterStatus.addEventListener("change", () => applyJanitorFilterUpdate());
+  }
+
+  if (els.janitorFilterSeverity) {
+    els.janitorFilterSeverity.addEventListener("change", () => applyJanitorFilterUpdate());
+  }
+
+  if (els.janitorFilterSuite) {
+    els.janitorFilterSuite.addEventListener("change", () => applyJanitorFilterUpdate());
+  }
+
+  if (els.janitorSearch) {
+    let janitorSearchTimer = null;
+    els.janitorSearch.addEventListener("input", () => {
+      if (janitorSearchTimer) clearTimeout(janitorSearchTimer);
+      janitorSearchTimer = setTimeout(() => applyJanitorFilterUpdate(), 160);
     });
   }
 

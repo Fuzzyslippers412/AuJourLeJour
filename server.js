@@ -193,12 +193,56 @@ function loadJanitorReportFile(filePath) {
   }
 }
 
+function normalizeJanitorResultRow(row, suite, index) {
+  const source = row && typeof row === "object" ? row : {};
+  const title = String(source.title || source.name || `Check ${Number(index) + 1}`);
+  return {
+    id: String(source.id || `${suite}_${Number(index) + 1}`),
+    suite,
+    title,
+    name: title,
+    severity: source.severity || (suite === "adversarial" ? "HIGH" : "MEDIUM"),
+    status: String(source.status || "unknown"),
+    attack: source.attack || title,
+    expected: source.expected || null,
+    actual: source.actual || (source.error ? String(source.error) : null),
+    error: source.error || null,
+    request: source.request || null,
+    response_meta: source.response_meta || null,
+    repro_curl: source.repro_curl || "",
+    seed: source.seed || null,
+  };
+}
+
+function normalizeJanitorReport(report, suite) {
+  if (!report || typeof report !== "object") return null;
+  const summary = report.summary && typeof report.summary === "object" ? report.summary : {};
+  const rawResults = Array.isArray(report.results) ? report.results : [];
+  return {
+    profile: String(report.profile || `janitor-${suite}`),
+    generated_at: report.generated_at || null,
+    summary: {
+      total: Number(summary.total || rawResults.length || 0),
+      passed: Number(summary.passed || 0),
+      failed: Number(summary.failed || 0),
+      duration_ms: Number(summary.duration_ms || 0),
+      by_severity: summary.by_severity || null,
+    },
+    results: rawResults.map((row, idx) => normalizeJanitorResultRow(row, suite, idx)),
+  };
+}
+
 function buildJanitorCombinedReport(profile) {
-  const functional = loadJanitorReportFile(janitorFunctionalReportPath);
-  const adversarial = loadJanitorReportFile(janitorAdversarialReportPath);
+  const functional = normalizeJanitorReport(loadJanitorReportFile(janitorFunctionalReportPath), "functional");
+  const adversarial = normalizeJanitorReport(
+    loadJanitorReportFile(janitorAdversarialReportPath),
+    "adversarial"
+  );
   if (!functional && !adversarial) return null;
 
-  if (profile === "adversarial") return adversarial;
+  if (profile === "adversarial") {
+    return adversarial;
+  }
   if (!functional && adversarial) return adversarial;
   if (functional && !adversarial) return functional;
 
@@ -224,6 +268,14 @@ function buildJanitorCombinedReport(profile) {
       },
       by_severity: adversarialSummary.by_severity || null,
     },
+    suites: {
+      functional: functionalSummary,
+      adversarial: adversarialSummary,
+    },
+    results: [
+      ...(Array.isArray(functional?.results) ? functional.results : []),
+      ...(Array.isArray(adversarial?.results) ? adversarial.results : []),
+    ],
   };
 }
 

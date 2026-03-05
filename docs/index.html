@@ -507,7 +507,7 @@ cd AuJourLeJour
           <div class="card-header janitor-header">
             <div>
               <div class="card-title">Janitor Run</div>
-              <div class="card-sub">Executes the adversarial Janitor profile against the local runtime.</div>
+              <div class="card-sub">Runs functional + adversarial checks and explains exactly what was audited.</div>
             </div>
             <div class="janitor-actions">
               <button id="shannon-run" class="btn-small btn-primary">Run Janitor</button>
@@ -516,8 +516,65 @@ cd AuJourLeJour
             </div>
           </div>
           <div id="shannon-status" class="janitor-status">Idle.</div>
+          <div id="janitor-verdict" class="janitor-verdict neutral">Run Janitor to generate an audit verdict.</div>
           <div id="shannon-summary" class="meta"></div>
-          <pre id="shannon-output" class="diagnostics-output janitor-output">No Janitor run yet.</pre>
+
+          <div class="janitor-audit-map">
+            <div class="janitor-audit-item">Access control</div>
+            <div class="janitor-audit-item">Input parsing</div>
+            <div class="janitor-audit-item">Web security headers</div>
+            <div class="janitor-audit-item">Rate limiting</div>
+            <div class="janitor-audit-item">Ledger invariants</div>
+            <div class="janitor-audit-item">Data leak redaction</div>
+          </div>
+
+          <div id="janitor-suite-summary" class="janitor-suite-summary"></div>
+
+          <div class="janitor-filter-bar">
+            <input id="janitor-search" class="compact-input janitor-search" type="text" placeholder="Search checks..." />
+            <select id="janitor-filter-status" class="select">
+              <option value="all">All status</option>
+              <option value="failed">Failed</option>
+              <option value="passed">Passed</option>
+            </select>
+            <select id="janitor-filter-severity" class="select">
+              <option value="all">All severity</option>
+              <option value="BLOCKER">BLOCKER</option>
+              <option value="HIGH">HIGH</option>
+              <option value="MEDIUM">MEDIUM</option>
+            </select>
+            <select id="janitor-filter-suite" class="select">
+              <option value="all">All suites</option>
+              <option value="adversarial">Adversarial</option>
+              <option value="functional">Functional</option>
+            </select>
+          </div>
+
+          <div class="janitor-grid">
+            <div class="janitor-findings">
+              <div class="janitor-findings-header">
+                <span>Checks</span>
+                <span id="janitor-findings-count" class="meta">0 visible</span>
+              </div>
+              <div id="janitor-findings-list" class="janitor-findings-list">
+                <div class="janitor-empty">No Janitor run yet.</div>
+              </div>
+            </div>
+            <div class="janitor-detail">
+              <div class="janitor-findings-header">
+                <span>Selected check</span>
+                <button id="janitor-copy-repro" class="ghost-btn btn-small">Copy repro</button>
+              </div>
+              <div id="janitor-detail-content" class="janitor-detail-content">
+                <div class="janitor-empty">Select a check to inspect details.</div>
+              </div>
+            </div>
+          </div>
+
+          <details class="janitor-raw">
+            <summary>Raw terminal log</summary>
+            <pre id="shannon-output" class="diagnostics-output janitor-output">No Janitor run yet.</pre>
+          </details>
         </section>
 
         <section id="diagnostics-section" class="card janitor-card">

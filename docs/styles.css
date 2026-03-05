@@ -967,6 +967,15 @@ body.scrolled .status-bar {
   background: #fff;
 }
 
+.compact-input {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--text);
+  min-height: 36px;
+}
+
 .page-title {
   font-size: 20px;
   font-weight: 600;
@@ -1029,6 +1038,250 @@ body.scrolled .status-bar {
   padding: 10px 12px;
   color: var(--text);
   font-size: 13px;
+}
+
+.janitor-verdict {
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.janitor-verdict.neutral {
+  border: 1px solid var(--border);
+  background: #f8fafc;
+  color: var(--muted);
+}
+
+.janitor-verdict.pass {
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.janitor-verdict.warn {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.janitor-verdict.fail {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.janitor-audit-map {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.janitor-audit-item {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+}
+
+.janitor-suite-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.janitor-suite-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+
+.janitor-suite-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.janitor-suite-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.janitor-filter-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+
+.janitor-search {
+  min-width: 220px;
+  flex: 1;
+}
+
+.janitor-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.4fr) minmax(260px, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.janitor-findings,
+.janitor-detail {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+}
+
+.janitor-findings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.janitor-findings-list {
+  overflow: auto;
+  max-height: 420px;
+}
+
+.janitor-finding-row {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+  text-align: left;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.janitor-finding-row:hover {
+  background: #f8fafc;
+}
+
+.janitor-finding-row.active {
+  background: #eef2ff;
+}
+
+.janitor-row-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.janitor-row-title {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.janitor-row-meta {
+  font-size: 11px;
+  color: var(--muted-2);
+}
+
+.janitor-badge {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.janitor-badge.fail {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.janitor-badge.pass {
+  border-color: #bbf7d0;
+  color: #15803d;
+  background: #f0fdf4;
+}
+
+.janitor-badge.BLOCKER {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.janitor-badge.HIGH {
+  border-color: #fde68a;
+  color: #92400e;
+  background: #fffbeb;
+}
+
+.janitor-badge.MEDIUM {
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.janitor-detail-content {
+  padding: 12px;
+  overflow: auto;
+  max-height: 420px;
+  font-size: 12px;
+}
+
+.janitor-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.janitor-detail-line {
+  margin-bottom: 8px;
+  color: var(--muted);
+}
+
+.janitor-detail-line strong {
+  color: var(--text);
+}
+
+.janitor-code {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.janitor-empty {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.janitor-raw {
+  margin-top: 12px;
+}
+
+.janitor-raw > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 8px;
 }
 
 .janitor-output {
@@ -1720,6 +1973,10 @@ body.landing #zero-state {
 
   .janitor-actions {
     justify-content: flex-start;
+  }
+
+  .janitor-grid {
+    grid-template-columns: 1fr;
   }
 }
 
