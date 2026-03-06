@@ -1040,6 +1040,32 @@ body.scrolled .status-bar {
   font-size: 13px;
 }
 
+.janitor-runtime-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.janitor-runtime-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted-2);
+  min-width: 280px;
+}
+
+.janitor-runtime-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 32px;
+}
+
 .janitor-verdict {
   border-radius: 10px;
   padding: 10px 12px;
@@ -1213,6 +1239,12 @@ body.scrolled .status-bar {
   border-color: #bbf7d0;
   color: #15803d;
   background: #f0fdf4;
+}
+
+.janitor-badge.neutral {
+  border-color: #cbd5e1;
+  color: #475569;
+  background: #f8fafc;
 }
 
 .janitor-badge.BLOCKER {
@@ -1739,6 +1771,22 @@ body.landing #zero-state {
   justify-content: flex-end;
 }
 
+.assistant-provider-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.assistant-provider-row .select {
+  flex: 1;
+  min-width: 0;
+}
+
+.assistant-provider-key-row {
+  margin-top: 8px;
+}
+
 .assistant-actions-row {
   display: flex;
   gap: 8px;
@@ -1975,6 +2023,11 @@ body.landing #zero-state {
     justify-content: flex-start;
   }
 
+  .janitor-runtime-label {
+    min-width: 220px;
+    flex: 1 1 220px;
+  }
+
   .janitor-grid {
     grid-template-columns: 1fr;
   }
@@ -2012,6 +2065,18 @@ body.landing #zero-state {
   }
   .drawer-panel {
     width: 100%;
+  }
+  .janitor-runtime-controls {
+    align-items: stretch;
+  }
+  .janitor-runtime-label {
+    min-width: 100%;
+  }
+  .assistant-provider-row {
+    flex-wrap: wrap;
+  }
+  .assistant-provider-row .select {
+    min-width: 100%;
   }
 
 }

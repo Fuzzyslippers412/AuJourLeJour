@@ -15,6 +15,7 @@ const state = {
   lastNudgeAt: 0,
   nudgeInFlight: false,
   llmStatus: { status: "unknown", auth_url: null, error: null },
+  llmProviders: null,
   llmChecked: false,
   qwenAuth: { connected: false, status: "unknown", session_id: null, verification_uri_complete: null, interval_seconds: null },
   llmHistory: [],
@@ -76,6 +77,8 @@ const state = {
     suite: "all",
     search: "",
   },
+  janitorRuntimeBase: "",
+  janitorRuntimeRequired: false,
   agentBusy: false,
   lastAgentInput: "",
   lastAgentSubmittedAt: 0,
@@ -128,6 +131,8 @@ const PWA_DB_PREFIX = "ajl_pwa";
 const WEB_META_KEY = "auj_web_meta";
 const BACKUP_REMINDER_THRESHOLD = 25;
 const STORAGE_HEALTH_WARNING_BYTES = 4_000_000;
+const JANITOR_RUNTIME_BASE_KEY = "ajl_janitor_runtime_base";
+const JANITOR_RUNTIME_REQUIRED_KEY = "ajl_janitor_runtime_required";
 
 function looksLikeStorageError(err) {
   const message = String(err?.message || err || "");
@@ -377,16 +382,33 @@ const els = {
   storageHealth: document.getElementById("storage-health"),
   lanUrl: document.getElementById("lan-url"),
   lanCopy: document.getElementById("lan-copy"),
+  setupAgentStatus: document.getElementById("setup-agent-status"),
+  setupAgentProvider: document.getElementById("setup-agent-provider"),
+  setupAgentModel: document.getElementById("setup-agent-model"),
+  setupAgentKeyRow: document.getElementById("setup-agent-key-row"),
+  setupAgentKey: document.getElementById("setup-agent-key"),
+  setupAgentBaseRow: document.getElementById("setup-agent-base-row"),
+  setupAgentBase: document.getElementById("setup-agent-base"),
+  setupAgentStart: document.getElementById("setup-agent-start"),
+  setupAgentOpen: document.getElementById("setup-agent-open"),
+  setupAgentSaveProvider: document.getElementById("setup-agent-save-provider"),
+  setupAgentConnectKey: document.getElementById("setup-agent-connect-key"),
+  setupAgentTest: document.getElementById("setup-agent-test"),
+  setupAgentRefresh: document.getElementById("setup-agent-refresh"),
+  setupAgentDisconnect: document.getElementById("setup-agent-disconnect"),
   diagnosticsRun: document.getElementById("diagnostics-run"),
   diagnosticsClearCache: document.getElementById("diagnostics-clear-cache"),
   diagnosticsCopy: document.getElementById("diagnostics-copy"),
   diagnosticsOutput: document.getElementById("diagnostics-output"),
   shannonRun: document.getElementById("shannon-run"),
+  shannonRunLlmRuntime: document.getElementById("shannon-run-llm-runtime"),
   shannonRefresh: document.getElementById("shannon-refresh"),
   shannonCopy: document.getElementById("shannon-copy"),
   shannonStatus: document.getElementById("shannon-status"),
   shannonSummary: document.getElementById("shannon-summary"),
   shannonOutput: document.getElementById("shannon-output"),
+  janitorRuntimeBase: document.getElementById("janitor-runtime-base"),
+  janitorRuntimeRequired: document.getElementById("janitor-runtime-required"),
   janitorVerdict: document.getElementById("janitor-verdict"),
   janitorSuiteSummary: document.getElementById("janitor-suite-summary"),
   janitorSearch: document.getElementById("janitor-search"),
@@ -530,6 +552,12 @@ const els = {
   assistantConnectionTitle: document.getElementById("assistant-connection-title"),
   assistantConnectionBody: document.getElementById("assistant-connection-body"),
   assistantConnectionAction: document.getElementById("assistant-connection-action"),
+  assistantProviderSelect: document.getElementById("assistant-provider-select"),
+  assistantProviderConnect: document.getElementById("assistant-provider-connect"),
+  assistantProviderSetup: document.getElementById("assistant-provider-setup"),
+  assistantProviderKeyRow: document.getElementById("assistant-provider-key-row"),
+  assistantProviderKey: document.getElementById("assistant-provider-key"),
+  assistantProviderHint: document.getElementById("assistant-provider-hint"),
   agentInlineConnection: document.getElementById("agent-inline-connection"),
   agentInlineOpen: document.getElementById("agent-inline-open"),
   agentInlineInput: document.getElementById("agent-inline-input"),
@@ -652,6 +680,70 @@ function saveShareOptions() {
         includeNotes: state.shareOptions.includeNotes !== false,
         includeCategories: state.shareOptions.includeCategories !== false,
       })
+    );
+  } catch (err) {
+    // ignore
+  }
+}
+
+function normalizeJanitorRuntimeBase(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol)) return raw;
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch (err) {
+    return raw;
+  }
+}
+
+function validateJanitorRuntimeBase(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return { ok: true, value: "" };
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return { ok: false, error: "Runtime base URL must use http or https." };
+    }
+    return { ok: true, value: `${parsed.protocol}//${parsed.host}` };
+  } catch (err) {
+    return { ok: false, error: "Runtime base URL must be a valid absolute URL." };
+  }
+}
+
+function loadJanitorRuntimeBase() {
+  try {
+    const raw = localStorage.getItem(JANITOR_RUNTIME_BASE_KEY) || "";
+    return normalizeJanitorRuntimeBase(raw);
+  } catch (err) {
+    return "";
+  }
+}
+
+function loadJanitorRuntimeRequired() {
+  try {
+    const raw = localStorage.getItem(JANITOR_RUNTIME_REQUIRED_KEY);
+    if (!raw) return false;
+    const value = String(raw).trim().toLowerCase();
+    return value === "1" || value === "true";
+  } catch (err) {
+    return false;
+  }
+}
+
+function saveJanitorRuntimeSettings() {
+  try {
+    const base = normalizeJanitorRuntimeBase(state.janitorRuntimeBase);
+    state.janitorRuntimeBase = base;
+    if (!base) {
+      localStorage.removeItem(JANITOR_RUNTIME_BASE_KEY);
+    } else {
+      localStorage.setItem(JANITOR_RUNTIME_BASE_KEY, base);
+    }
+    localStorage.setItem(
+      JANITOR_RUNTIME_REQUIRED_KEY,
+      state.janitorRuntimeRequired ? "1" : "0"
     );
   } catch (err) {
     // ignore
@@ -1323,6 +1415,8 @@ async function handleResetFlag() {
         localStorage.removeItem(BACKUP_LAST_KEY);
         localStorage.removeItem(LOCAL_EDIT_COUNT_KEY);
         localStorage.removeItem(LOCAL_BACKUP_REMINDER_KEY);
+        localStorage.removeItem(JANITOR_RUNTIME_BASE_KEY);
+        localStorage.removeItem(JANITOR_RUNTIME_REQUIRED_KEY);
       } catch (err) {
         // ignore
       }
@@ -1461,9 +1555,367 @@ async function loadQwenAuthStatus() {
     } else if (!state.qwenAuth.session_id) {
       await resumeQwenAuth();
     }
+    if (state.llmProviders?.providers?.["qwen-oauth"]) {
+      state.llmProviders.providers["qwen-oauth"] = {
+        ...state.llmProviders.providers["qwen-oauth"],
+        connected: !!data.connected,
+        last_error: data.connected ? null : state.llmProviders.providers["qwen-oauth"]?.last_error || null,
+      };
+    }
   } catch (err) {
     state.qwenAuth.status = "error";
   }
+}
+
+function providerDisplayName(provider) {
+  const key = String(provider || "").toLowerCase();
+  if (key === "openai") return "OpenAI";
+  if (key === "anthropic") return "Anthropic";
+  return "Qwen OAuth";
+}
+
+function getActiveProviderName() {
+  return String(state.llmProviders?.active_provider || "qwen-oauth").toLowerCase();
+}
+
+function getProviderConnectionState(provider) {
+  const key = String(provider || "").toLowerCase();
+  const row = state.llmProviders?.providers?.[key] || {};
+  const qwenPending = state.qwenAuth?.status === "pending";
+  if (key === "qwen-oauth") {
+    const connected = !!state.qwenAuth?.connected;
+    return {
+      provider: key,
+      label: providerDisplayName(key),
+      connected,
+      configured: connected,
+      pending: qwenPending,
+      authUrl: state.qwenAuth?.verification_uri_complete || state.llmStatus?.auth_url || "",
+      lastError: String(row.last_error || state.qwenAuth?.error || state.llmStatus?.error || ""),
+      model: row.model || defaultModelForProvider(key),
+      baseUrl: "",
+    };
+  }
+  return {
+    provider: key,
+    label: providerDisplayName(key),
+    connected: !!row.connected,
+    configured: !!row.configured,
+    pending: false,
+    authUrl: "",
+    lastError: String(row.last_error || ""),
+    model: row.model || defaultModelForProvider(key),
+    baseUrl: String(row.base_url || ""),
+    keyHint: row.key_hint || "",
+  };
+}
+
+function getActiveMamdouConnectionState() {
+  const activeProvider = getActiveProviderName();
+  return getProviderConnectionState(activeProvider);
+}
+
+function isActiveMamdouConnected() {
+  const active = getActiveMamdouConnectionState();
+  return !!active.connected;
+}
+
+function openSetupAgentSection() {
+  state.view = "setup";
+  renderView();
+  document.getElementById("setup-agent")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function connectMamdouFlow(providerInput) {
+  if (AJL_WEB_MODE) {
+    return { ok: false, message: "Mamdou is available in the local app only." };
+  }
+  await loadLlmProviderStatus({ silent: true });
+  const requestedProvider = normalizeMamdouProviderInput(providerInput || "");
+  const targetProvider = requestedProvider || getActiveProviderName();
+  const targetState = getProviderConnectionState(targetProvider);
+  const modelOverride = targetState.model || defaultModelForProvider(targetProvider);
+
+  if (requestedProvider) {
+    const switched = await activateMamdouProvider(targetProvider, modelOverride, { silent: true });
+    if (!switched.ok && targetProvider !== "qwen-oauth") {
+      openSetupAgentSection();
+      if (els.setupAgentProvider) els.setupAgentProvider.value = targetProvider;
+      if (els.setupAgentModel) els.setupAgentModel.value = modelOverride;
+      renderSetupAgentConnection();
+      return {
+        ok: false,
+        message: `${providerDisplayName(targetProvider)} key is not configured yet. Open Setup and connect your key.`,
+      };
+    }
+    if (switched.ok) {
+      await loadLlmProviderStatus({ silent: true });
+    }
+  }
+
+  const activeProvider = requestedProvider || getActiveProviderName();
+  const activeState = getProviderConnectionState(activeProvider);
+  if (activeProvider === "qwen-oauth") {
+    if (state.qwenAuth?.connected) {
+      renderAssistantConnection();
+      renderSetupAgentConnection();
+      return { ok: true, message: "Mamdou is already connected via Qwen." };
+    }
+    await startQwenAuth();
+    renderAssistantConnection();
+    renderSetupAgentConnection();
+    if (state.qwenAuth?.verification_uri_complete) {
+      return {
+        ok: true,
+        message: "Started Qwen login. Open login and authorize Mamdou.",
+        authUrl: state.qwenAuth.verification_uri_complete,
+      };
+    }
+    return { ok: false, message: state.qwenAuth?.error || "Unable to start Mamdou login." };
+  }
+
+  if (!activeState.configured) {
+    openSetupAgentSection();
+    if (els.setupAgentProvider) els.setupAgentProvider.value = activeProvider;
+    if (els.setupAgentModel) {
+      els.setupAgentModel.value = activeState.model || defaultModelForProvider(activeProvider);
+    }
+    renderSetupAgentConnection();
+    return {
+      ok: false,
+      message: `${activeState.label} key is not configured. Connect key in Setup.`,
+    };
+  }
+
+  const tested = await apiFetch(
+    "/api/llm/providers/test",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: activeProvider }),
+    },
+    { silent: true }
+  );
+  if (!tested.ok) {
+    const payload = await readApiData(tested).catch(() => null);
+    const errorMessage = getErrorMessage(payload, `Unable to connect via ${activeState.label}.`);
+    openSetupAgentSection();
+    renderSetupAgentConnection();
+    return { ok: false, message: errorMessage };
+  }
+
+  await loadLlmProviderStatus({ silent: true });
+  await loadQwenAuthStatus();
+  renderAssistantConnection();
+  renderSetupAgentConnection();
+  return { ok: true, message: `Mamdou connected via ${activeState.label}.` };
+}
+
+async function connectMamdouFromAssistant() {
+  if (AJL_WEB_MODE) {
+    showSystemBanner("Mamdou is available in the local app only.");
+    return;
+  }
+  const provider =
+    normalizeMamdouProviderInput(els.assistantProviderSelect?.value || "") || "qwen-oauth";
+  if (provider !== "qwen-oauth") {
+    const keyText = String(els.assistantProviderKey?.value || "").trim();
+    if (keyText) {
+      const keyConnect = await connectMamdouApiKey(
+        provider,
+        keyText,
+        defaultModelForProvider(provider),
+        "",
+        { silent: true }
+      );
+      if (!keyConnect.ok) {
+        showSystemBanner(keyConnect.error || `Unable to connect ${providerDisplayName(provider)}.`);
+        renderAssistantConnection();
+        return;
+      }
+      if (els.assistantProviderKey) {
+        els.assistantProviderKey.value = "";
+      }
+      await loadLlmProviderStatus({ silent: true });
+    }
+  }
+  const result = await connectMamdouFlow(provider);
+  if (result.ok) {
+    showToast(result.message || "Mamdou connected.");
+    if (result.authUrl) {
+      try {
+        window.open(result.authUrl, "_blank", "noopener");
+      } catch (err) {
+        // ignore popup failures
+      }
+    }
+  } else {
+    showSystemBanner(result.message || "Unable to connect Mamdou.");
+  }
+  if (!result.ok && /setup/i.test(String(result.message || ""))) {
+    openSetupAgentSection();
+  }
+  renderAssistantConnection();
+  renderSetupAgentConnection();
+  renderNudges();
+}
+
+function defaultModelForProvider(provider) {
+  const key = String(provider || "").toLowerCase();
+  if (key === "openai") return "gpt-4o-mini";
+  if (key === "anthropic") return "claude-3-5-sonnet-latest";
+  return "qwen3-coder-plus";
+}
+
+async function loadLlmProviderStatus(options = {}) {
+  if (AJL_WEB_MODE) return;
+  const silent = options.silent === true;
+  try {
+    const res = await apiFetch("/api/llm/providers/status", {}, { silent: true });
+    if (!res.ok) return;
+    const payload = await readApiData(res);
+    if (!payload || typeof payload !== "object") return;
+    state.llmProviders = payload;
+    const active = String(payload.active_provider || "qwen-oauth");
+    const activeConfig = payload.providers?.[active] || {};
+    if (els.setupAgentProvider) {
+      els.setupAgentProvider.value = active;
+    }
+    if (els.setupAgentModel) {
+      els.setupAgentModel.value = String(activeConfig.model || defaultModelForProvider(active));
+    }
+    if (els.setupAgentBase) {
+      const base = activeConfig.base_url || "";
+      els.setupAgentBase.value = String(base);
+    }
+    renderSetupAgentConnection();
+  } catch (err) {
+    if (!silent) showSystemBanner("Unable to load Mamdou provider status.");
+  }
+}
+
+async function activateMamdouProvider(providerInput, modelInput, options = {}) {
+  if (AJL_WEB_MODE) return { ok: false, error: "Mamdou is unavailable in web mode." };
+  const provider = String(providerInput || "").trim().toLowerCase();
+  if (!["qwen-oauth", "openai", "anthropic"].includes(provider)) {
+    return { ok: false, error: "Unsupported provider." };
+  }
+  const model = String(modelInput || "").trim();
+  const res = await apiFetch(
+    "/api/llm/providers/select",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider,
+        model: model || undefined,
+      }),
+    },
+    { silent: true }
+  );
+  const payload = await readApiData(res).catch(() => null);
+  if (!res.ok) {
+    const message = getErrorMessage(payload, `Unable to set provider (${res.status}).`);
+    if (!options.silent) showSystemBanner(message);
+    return { ok: false, error: message, payload };
+  }
+  state.llmProviders = payload?.state || state.llmProviders;
+  if (els.setupAgentProvider) els.setupAgentProvider.value = provider;
+  if (els.setupAgentModel && model) els.setupAgentModel.value = model;
+  return { ok: true, provider, payload };
+}
+
+async function saveLlmProviderSelection() {
+  if (AJL_WEB_MODE || !els.setupAgentProvider) return;
+  const provider = String(els.setupAgentProvider.value || "qwen-oauth");
+  const model = String(els.setupAgentModel?.value || "").trim();
+  const result = await activateMamdouProvider(provider, model);
+  if (!result?.ok) return;
+  showToast(`Mamdou provider set to ${provider}.`);
+  renderSetupAgentConnection();
+}
+
+async function connectProviderApiKey() {
+  if (AJL_WEB_MODE || !els.setupAgentProvider) return;
+  const provider = String(els.setupAgentProvider.value || "").toLowerCase();
+  if (!["openai", "anthropic"].includes(provider)) {
+    showSystemBanner("Select OpenAI or Anthropic to connect with API key.");
+    return;
+  }
+  const apiKey = String(els.setupAgentKey?.value || "").trim();
+  if (!apiKey) {
+    showSystemBanner("API key is required.");
+    return;
+  }
+  const model = String(els.setupAgentModel?.value || "").trim() || defaultModelForProvider(provider);
+  const baseUrl = String(els.setupAgentBase?.value || "").trim();
+  const result = await connectMamdouApiKey(provider, apiKey, model, baseUrl, { silent: false });
+  if (!result.ok) return;
+  if (els.setupAgentKey) els.setupAgentKey.value = "";
+  showToast(`Mamdou connected via ${provider}.`);
+  await loadQwenAuthStatus();
+  renderNudges();
+  renderSetupAgentConnection();
+}
+
+async function connectMamdouApiKey(providerInput, apiKeyInput, modelInput, baseUrlInput, options = {}) {
+  const provider = String(providerInput || "").toLowerCase();
+  const apiKey = String(apiKeyInput || "").trim();
+  const model = String(modelInput || "").trim() || defaultModelForProvider(provider);
+  const baseUrl = String(baseUrlInput || "").trim();
+  if (!["openai", "anthropic"].includes(provider)) {
+    return { ok: false, error: "Provider must be OpenAI or Anthropic." };
+  }
+  if (!apiKey) {
+    return { ok: false, error: "API key is required." };
+  }
+  const res = await apiFetch(
+    "/api/llm/providers/connect/api-key",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider,
+        api_key: apiKey,
+        model,
+        base_url: baseUrl || undefined,
+      }),
+    },
+    { silent: true }
+  );
+  const payload = await readApiData(res).catch(() => null);
+  if (!res.ok) {
+    const message = getErrorMessage(payload, `Unable to connect provider key (${res.status}).`);
+    if (!options.silent) showSystemBanner(message);
+    return { ok: false, error: message, payload };
+  }
+  state.llmProviders = payload?.state || state.llmProviders;
+  return { ok: true, provider, payload };
+}
+
+async function testActiveProviderConnection() {
+  if (AJL_WEB_MODE || !els.setupAgentProvider) return;
+  const provider = String(els.setupAgentProvider.value || "qwen-oauth");
+  const res = await apiFetch(
+    "/api/llm/providers/test",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+    },
+    { silent: true }
+  );
+  const payload = await readApiData(res).catch(() => null);
+  if (!res.ok) {
+    const message = getErrorMessage(payload, `Mamdou test failed (${res.status}).`);
+    showSystemBanner(message);
+    return;
+  }
+  showToast(`Mamdou test passed for ${provider}.`);
+  await loadLlmProviderStatus({ silent: true });
+  await loadQwenAuthStatus();
+  renderNudges();
+  renderSetupAgentConnection();
 }
 
 async function resumeQwenAuth() {
@@ -2729,8 +3181,33 @@ function parseFastShareIntent(input) {
   return null;
 }
 
+function normalizeMamdouProviderInput(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value) return "";
+  if (["qwen", "qwen-oauth", "qwen oauth", "qwenoauth"].includes(value)) return "qwen-oauth";
+  if (["openai", "gpt", "chatgpt"].includes(value)) return "openai";
+  if (["anthropic", "claude"].includes(value)) return "anthropic";
+  return "";
+}
+
 function parseFastAssistantIntent(input) {
   const text = String(input || "").trim().toLowerCase();
+  const providerMatch =
+    text.match(/^(?:connect|start|login)\s+(?:assistant|mamdou|agent)\s+(?:with|to|using)\s+([a-z0-9\- ]+)$/) ||
+    text.match(/^(?:connect|start|login)\s+(qwen|openai|anthropic|claude|gpt)\s+(?:assistant|mamdou|agent)$/) ||
+    text.match(/^(?:use|switch(?:\s+to)?)\s+(qwen|openai|anthropic|claude|gpt)\s+(?:for\s+)?(?:assistant|mamdou|agent)?$/);
+  if (providerMatch) {
+    const provider = normalizeMamdouProviderInput(providerMatch[1]);
+    if (provider) {
+      return {
+        intent: "START_AGENT_AUTH",
+        confidence: 0.98,
+        needs_confirmation: false,
+        target: { type: "none", name: null },
+        payload: { provider },
+      };
+    }
+  }
   if (/^(?:open|show)\s+(?:assistant|mamdou|agent)$/.test(text)) {
     return {
       intent: "SHOW_ASSISTANT",
@@ -3496,7 +3973,8 @@ async function fetchNudges(events) {
     period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
     essentialsOnly: state.essentialsOnly,
     events,
-    connected: !!state.qwenAuth?.connected,
+    provider: getActiveProviderName(),
+    connected: isActiveMamdouConnected(),
   });
   if (
     state.lastNudgeKey === eventKey &&
@@ -3504,7 +3982,7 @@ async function fetchNudges(events) {
   ) {
     return;
   }
-  if (state.qwenAuth && state.qwenAuth.connected === false) {
+  if (!isActiveMamdouConnected()) {
     state.nudges = [];
     state.lastNudgeKey = eventKey;
     state.lastNudgeAt = Date.now();
@@ -3922,20 +4400,27 @@ async function applyProposal(proposal) {
     return { ok: true, message: "Not free yet for this month." };
   }
   if (intent === "START_AGENT_AUTH") {
-    if (AJL_WEB_MODE) {
-      return { ok: false, message: "Mamdou is available in the local app only." };
-    }
-    if (state.qwenAuth?.connected) {
+    const result = await connectMamdouFlow(proposal.payload?.provider || "");
+    if (result.ok) {
       els.assistantDrawer?.classList.remove("hidden");
-      return { ok: true, message: "Mamdou is already connected." };
+      if (result.authUrl) {
+        return { ok: true, message: result.message };
+      }
+      return { ok: true, message: result.message };
     }
-    await startQwenAuth();
+    if (result.message && result.message.toLowerCase().includes("setup")) {
+      openSetupAgentSection();
+    }
     renderAssistantConnection();
-    els.assistantDrawer?.classList.remove("hidden");
-    if (state.qwenAuth?.verification_uri_complete) {
-      return { ok: true, message: "Opened Mamdou login flow." };
+    renderSetupAgentConnection();
+    if (result.authUrl) {
+      return { ok: true, message: result.message };
     }
-    return { ok: false, message: state.qwenAuth?.error || "Unable to start Mamdou login." };
+    if (!result.ok) {
+      return { ok: false, message: result.message || "Unable to connect Mamdou." };
+    }
+    els.assistantDrawer?.classList.remove("hidden");
+    return { ok: true, message: result.message || "Mamdou connected." };
   }
   if (intent === "SHOW_SHARE") {
     await openShareModal();
@@ -4480,10 +4965,19 @@ async function sendLlmAgent(source = "drawer") {
   }
   if (state.qwenAuth && state.qwenAuth.status === "disabled") {
     setAgentStatus("Mamdou is available in the local app only.");
+    pushLlmMessage("assistant", "Mamdou is disabled in this build.");
     return;
   }
-  if (state.qwenAuth && !state.qwenAuth.connected) {
-    setAgentStatus("Connect Mamdou first.");
+  const activeConnection = getActiveMamdouConnectionState();
+  if (!activeConnection.connected) {
+    const label = activeConnection.label || "provider";
+    const guidance =
+      activeConnection.provider === "qwen-oauth"
+        ? "Use Connect Mamdou to start Qwen login."
+        : `Connect ${label} in Setup or paste key in the Mamdou drawer.`;
+    const message = `Connect Mamdou first (${label}). ${guidance}`;
+    setAgentStatus(message);
+    pushLlmMessage("assistant", message);
     return;
   }
   if (state.pendingAgentAction) {
@@ -4865,7 +5359,13 @@ function summarizeProposal(proposal) {
   if (intent === "REGENERATE_SHARE") return "Regenerate share link";
   if (intent === "COPY_SHARE") return "Copy share link";
   if (intent === "SHOW_ASSISTANT") return "Open Mamdou";
-  if (intent === "START_AGENT_AUTH") return "Start Mamdou login";
+  if (intent === "START_AGENT_AUTH") {
+    const provider = normalizeMamdouProviderInput(proposal.payload?.provider || "");
+    if (provider === "openai") return "Connect Mamdou with OpenAI";
+    if (provider === "anthropic") return "Connect Mamdou with Anthropic";
+    if (provider === "qwen-oauth") return "Start Mamdou Qwen login";
+    return "Start Mamdou login";
+  }
   if (intent === "LOCAL_SUMMARY_REMAINING") return "Show remaining this month";
   if (intent === "LOCAL_SUMMARY_OVERDUE") return "Show overdue count";
   if (intent === "LOCAL_SUMMARY_DUE_SOON") return "Show due-soon count";
@@ -4903,59 +5403,142 @@ function canAutoExecuteProposal(proposal) {
 
 function renderAssistantConnection() {
   if (!els.assistantConnection || !els.assistantConnectionTitle || !els.assistantConnectionBody || !els.assistantConnectionAction) {
+    renderSetupAgentConnection();
     return;
+  }
+  if (els.assistantProviderConnect) {
+    els.assistantProviderConnect.disabled = false;
+  }
+  if (els.assistantProviderSelect) {
+    els.assistantProviderSelect.disabled = false;
+  }
+  if (els.assistantProviderSetup) {
+    els.assistantProviderSetup.disabled = false;
   }
   if (AJL_WEB_MODE) {
     els.assistantConnectionTitle.textContent = "Mamdou unavailable";
     els.assistantConnectionBody.textContent = "Mamdou is available in the local app only.";
     els.assistantConnectionAction.innerHTML = "";
+    if (els.assistantProviderHint) {
+      els.assistantProviderHint.textContent = "Local-only feature.";
+    }
+    if (els.assistantProviderConnect) {
+      els.assistantProviderConnect.disabled = true;
+    }
+    if (els.assistantProviderSelect) {
+      els.assistantProviderSelect.disabled = true;
+    }
+    if (els.assistantProviderSetup) {
+      els.assistantProviderSetup.disabled = true;
+    }
+    if (els.assistantProviderKeyRow) {
+      els.assistantProviderKeyRow.classList.add("hidden");
+    }
     if (els.agentInlineConnection) {
       els.agentInlineConnection.textContent = "Mamdou unavailable on web.";
     }
+    renderSetupAgentConnection();
     return;
   }
   const actionWrap = els.assistantConnectionAction;
   actionWrap.innerHTML = "";
+  const activeProvider = getActiveProviderName();
+  const connection = getProviderConnectionState(activeProvider);
+  const selectedProvider =
+    normalizeMamdouProviderInput(els.assistantProviderSelect?.value || "") || activeProvider;
+  const selectedState = getProviderConnectionState(selectedProvider);
 
-  const status = state.qwenAuth?.status || "unknown";
-  const connected = !!state.qwenAuth?.connected;
-  const authUrl = state.qwenAuth?.verification_uri_complete || state.llmStatus?.auth_url || null;
-  const errorText = state.qwenAuth?.error || state.llmStatus?.error || "";
+  if (els.assistantProviderSelect) {
+    if (!normalizeMamdouProviderInput(els.assistantProviderSelect.value || "")) {
+      els.assistantProviderSelect.value = activeProvider;
+    }
+  }
+  if (els.assistantProviderKeyRow) {
+    const showKey = selectedProvider !== "qwen-oauth";
+    els.assistantProviderKeyRow.classList.toggle("hidden", !showKey);
+  }
+  if (els.assistantProviderKey) {
+    if (selectedProvider === "openai") {
+      els.assistantProviderKey.placeholder = selectedState.configured
+        ? "Optional: replace OpenAI API key (saved locally, encrypted)"
+        : "Paste OpenAI API key (saved locally, encrypted)";
+    } else if (selectedProvider === "anthropic") {
+      els.assistantProviderKey.placeholder = selectedState.configured
+        ? "Optional: replace Anthropic API key (saved locally, encrypted)"
+        : "Paste Anthropic API key (saved locally, encrypted)";
+    } else {
+      els.assistantProviderKey.placeholder = "Paste provider API key (saved locally, encrypted)";
+      els.assistantProviderKey.value = "";
+    }
+  }
 
   let title = "Connect Mamdou";
   let body = "Use Mamdou login to enable insights.";
   let action = null;
 
-  if (status === "disabled") {
+  if (state.qwenAuth?.status === "disabled") {
     title = "Mamdou unavailable";
     body = "Use the local app to connect Mamdou.";
-  } else if (connected) {
+  } else if (connection.connected) {
     title = "Agent connected";
-    body = "Mamdou is ready.";
-  } else if (status === "pending" && authUrl) {
+    body = `Mamdou is ready via ${connection.label}.`;
+  } else if (connection.provider === "qwen-oauth" && connection.pending && connection.authUrl) {
     title = "Authorize Mamdou";
     body = "Authorize in browser, then return here.";
-    action = { type: "link", label: "Open login", href: authUrl };
-  } else if (state.llmStatus?.status === "auth_required" && authUrl) {
+    action = { type: "link", label: "Open login", href: connection.authUrl };
+  } else if (connection.provider === "qwen-oauth" && state.llmStatus?.status === "auth_required" && connection.authUrl) {
     title = "Mamdou login required";
     body = "Complete device authorization.";
-    action = { type: "link", label: "Complete login", href: authUrl };
-  } else if (status === "expired") {
+    action = { type: "link", label: "Complete login", href: connection.authUrl };
+  } else if (connection.provider === "qwen-oauth" && state.qwenAuth?.status === "expired") {
     title = "Login expired";
     body = "Start Mamdou login again.";
     action = { type: "button", label: "Start login", onClick: startQwenAuth };
-  } else if (status === "error") {
+  } else if (connection.provider === "qwen-oauth" && state.qwenAuth?.status === "error") {
     title = "Mamdou error";
-    body = errorText || "Unable to start Mamdou auth.";
+    body = connection.lastError || "Unable to start Mamdou auth.";
     action = { type: "button", label: "Retry", onClick: startQwenAuth };
-  } else if (!connected) {
+  } else if (connection.provider !== "qwen-oauth" && !connection.configured) {
+    title = "Connect Mamdou";
+    body = `Add your ${connection.label} API key in Setup.`;
+    action = { type: "button", label: "Open Setup", onClick: openSetupAgentSection };
+  } else if (connection.provider !== "qwen-oauth" && connection.lastError) {
+    title = "Mamdou error";
+    body = connection.lastError;
+    action = { type: "button", label: "Open Setup", onClick: openSetupAgentSection };
+  } else if (connection.provider !== "qwen-oauth") {
+    title = "Connect Mamdou";
+    body = `Activate ${connection.label} in Setup to continue.`;
+    action = { type: "button", label: "Open Setup", onClick: openSetupAgentSection };
+  } else if (!connection.connected) {
     action = { type: "button", label: "Start login", onClick: startQwenAuth };
   }
 
   els.assistantConnectionTitle.textContent = title;
   els.assistantConnectionBody.textContent = body;
   if (els.agentInlineConnection) {
-    els.agentInlineConnection.textContent = connected ? "Connected and ready for commands." : body;
+    els.agentInlineConnection.textContent = connection.connected ? "Connected and ready for commands." : body;
+  }
+  if (els.assistantProviderHint) {
+    if (selectedProvider === activeProvider) {
+      if (connection.connected) {
+        els.assistantProviderHint.textContent = `Active provider: ${connection.label}.`;
+      } else if (connection.provider === "qwen-oauth" && connection.pending) {
+        els.assistantProviderHint.textContent = "Qwen authorization pending.";
+      } else if (connection.provider !== "qwen-oauth" && !connection.configured) {
+        els.assistantProviderHint.textContent = `${connection.label} key not configured yet. Paste key and connect, or open Setup.`;
+      } else if (connection.lastError) {
+        els.assistantProviderHint.textContent = connection.lastError;
+      } else {
+        els.assistantProviderHint.textContent = "Connect Mamdou to enable commands.";
+      }
+    } else if (selectedProvider !== "qwen-oauth" && !selectedState.configured) {
+      els.assistantProviderHint.textContent = `${selectedState.label} key not configured. Paste key here or open Setup.`;
+    } else if (selectedProvider !== "qwen-oauth" && selectedState.configured) {
+      els.assistantProviderHint.textContent = `${selectedState.label} is ready. Click Connect Mamdou to switch provider.`;
+    } else {
+      els.assistantProviderHint.textContent = `Selected provider: ${selectedState.label}. Click Connect Mamdou to switch.`;
+    }
   }
 
   if (action) {
@@ -4975,6 +5558,112 @@ function renderAssistantConnection() {
       actionWrap.appendChild(btn);
     }
   }
+  if (els.assistantProviderConnect) {
+    const hasInlineKey = String(els.assistantProviderKey?.value || "").trim().length > 0;
+    const needsKey = selectedProvider !== "qwen-oauth" && !selectedState.configured && !hasInlineKey;
+    els.assistantProviderConnect.disabled = needsKey;
+    if (selectedProvider === "qwen-oauth") {
+      els.assistantProviderConnect.textContent = connection.connected ? "Reconnect Qwen" : "Connect Mamdou";
+    } else {
+      els.assistantProviderConnect.textContent = hasInlineKey
+        ? `Save key & connect ${selectedState.label}`
+        : `Connect ${selectedState.label}`;
+    }
+  }
+  renderSetupAgentConnection();
+}
+
+function renderSetupAgentConnection() {
+  if (
+    AJL_WEB_MODE ||
+    !els.setupAgentStatus ||
+    !els.setupAgentProvider ||
+    !els.setupAgentModel ||
+    !els.setupAgentKeyRow ||
+    !els.setupAgentBaseRow ||
+    !els.setupAgentConnectKey ||
+    !els.setupAgentStart ||
+    !els.setupAgentOpen ||
+    !els.setupAgentSaveProvider ||
+    !els.setupAgentTest ||
+    !els.setupAgentRefresh ||
+    !els.setupAgentDisconnect
+  ) {
+    return;
+  }
+  const selectedProvider = String(els.setupAgentProvider.value || "qwen-oauth").toLowerCase();
+  const activeProvider = String(state.llmProviders?.active_provider || "qwen-oauth").toLowerCase();
+  const connection = getProviderConnectionState(selectedProvider);
+  const isActive = selectedProvider === activeProvider;
+  const selectedIsQwen = selectedProvider === "qwen-oauth";
+
+  els.setupAgentKeyRow.classList.toggle("hidden", selectedIsQwen);
+  els.setupAgentBaseRow.classList.toggle("hidden", selectedIsQwen);
+  els.setupAgentConnectKey.classList.toggle("hidden", selectedIsQwen);
+  els.setupAgentStart.classList.add("hidden");
+  els.setupAgentOpen.classList.add("hidden");
+  els.setupAgentDisconnect.classList.add("hidden");
+  els.setupAgentSaveProvider.classList.remove("hidden");
+  els.setupAgentTest.classList.remove("hidden");
+  els.setupAgentRefresh.disabled = false;
+  els.setupAgentSaveProvider.disabled = false;
+  els.setupAgentTest.disabled = false;
+  els.setupAgentConnectKey.disabled = false;
+
+  if (state.qwenAuth?.status === "disabled") {
+    els.setupAgentStatus.textContent = "Mamdou is unavailable in this build.";
+    return;
+  }
+  if (!els.setupAgentModel.value.trim()) {
+    els.setupAgentModel.value = String(connection.model || defaultModelForProvider(selectedProvider));
+  }
+  if (!selectedIsQwen && !els.setupAgentBase.value.trim() && connection.baseUrl) {
+    els.setupAgentBase.value = connection.baseUrl;
+  }
+
+  if (!isActive) {
+    if (selectedIsQwen && !connection.connected) {
+      els.setupAgentStatus.textContent = 'Selected provider: qwen-oauth. Click "Set provider", then "Start login".';
+    } else if (!selectedIsQwen && !connection.configured) {
+      els.setupAgentStatus.textContent = `Selected provider: ${selectedProvider}. Enter API key, click "Connect key", then "Set provider".`;
+    } else {
+      els.setupAgentStatus.textContent = `Selected provider: ${selectedProvider}. Click "Set provider" to activate it.`;
+    }
+  } else if (connection.connected) {
+    els.setupAgentStatus.textContent = `Agent connected via ${providerDisplayName(selectedProvider)}. Mamdou is ready.`;
+    els.setupAgentDisconnect.classList.remove("hidden");
+  } else if (selectedIsQwen && connection.pending) {
+    els.setupAgentStatus.textContent = "Qwen authorization pending. Complete login in browser, then refresh.";
+  } else if (!selectedIsQwen && !connection.configured) {
+    els.setupAgentStatus.textContent = `Enter ${selectedProvider} API key and click "Connect key".`;
+  } else if (selectedIsQwen && state.qwenAuth?.status === "expired") {
+    els.setupAgentStatus.textContent = "Login expired. Start Mamdou login again.";
+  } else if (selectedIsQwen && state.qwenAuth?.status === "error") {
+    els.setupAgentStatus.textContent = connection.lastError || "Unable to connect Mamdou right now.";
+  } else if (!selectedIsQwen && connection.lastError) {
+    els.setupAgentStatus.textContent = connection.lastError;
+  } else if (!connection.connected) {
+    els.setupAgentStatus.textContent = "Connect Mamdou to enable agent commands.";
+  }
+
+  if (selectedIsQwen) {
+    if (connection.connected) {
+      els.setupAgentDisconnect.classList.remove("hidden");
+      return;
+    }
+    if (connection.pending && connection.authUrl) {
+      els.setupAgentOpen.href = connection.authUrl;
+      els.setupAgentOpen.classList.remove("hidden");
+      els.setupAgentStart.classList.remove("hidden");
+      return;
+    }
+    els.setupAgentStart.classList.remove("hidden");
+    return;
+  }
+
+  if (connection.connected || connection.configured) {
+    els.setupAgentDisconnect.classList.remove("hidden");
+  }
 }
 
 
@@ -4983,6 +5672,9 @@ function renderNudges() {
   if (!els.nudgesList) return;
   els.nudgesList.innerHTML = "";
   let hasStatusRow = false;
+
+  const activeProvider = getActiveProviderName();
+  const connection = getProviderConnectionState(activeProvider);
 
   if (state.qwenAuth && state.qwenAuth.status === "disabled") {
     const row = document.createElement("div");
@@ -4999,53 +5691,62 @@ function renderNudges() {
     row.appendChild(left);
     els.nudgesList.appendChild(row);
     hasStatusRow = true;
-  } else if (state.qwenAuth && !state.qwenAuth.connected) {
+  } else if (!connection.connected) {
     const row = document.createElement("div");
     row.className = "list-item";
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = "Connect Mamdou";
+    title.textContent = `Connect Mamdou (${connection.label})`;
     const body = document.createElement("div");
     body.className = "meta";
-    if (state.qwenAuth.status === "pending" && state.qwenAuth.verification_uri_complete) {
+    if (connection.provider === "qwen-oauth" && connection.pending && connection.authUrl) {
       body.textContent = "Authorize in browser, then return here.";
-    } else if (state.qwenAuth.status === "error") {
-      body.textContent = state.qwenAuth.error || "Unable to start Mamdou auth.";
-    } else if (state.qwenAuth.status === "expired") {
+    } else if (connection.provider === "qwen-oauth" && state.qwenAuth.status === "error") {
+      body.textContent = connection.lastError || "Unable to start Mamdou auth.";
+    } else if (connection.provider === "qwen-oauth" && state.qwenAuth.status === "expired") {
       body.textContent = "Login expired. Start again.";
+    } else if (connection.provider !== "qwen-oauth" && !connection.configured) {
+      body.textContent = `Add your ${connection.label} API key in Setup.`;
     } else {
-      body.textContent = "Use Mamdou login to enable insights.";
+      body.textContent = "Use Setup to finish Mamdou connection.";
     }
     left.appendChild(title);
     left.appendChild(body);
 
-    if (state.qwenAuth.verification_uri_complete) {
+    if (connection.provider === "qwen-oauth" && connection.authUrl) {
       const link = document.createElement("a");
       link.className = "btn-small";
-      link.href = state.qwenAuth.verification_uri_complete;
+      link.href = connection.authUrl;
       link.target = "_blank";
       link.rel = "noopener";
       link.textContent = "Open login";
       row.appendChild(left);
       row.appendChild(link);
-    } else {
+    } else if (connection.provider === "qwen-oauth") {
       const action = document.createElement("button");
       action.className = "btn-small";
       action.textContent = "Start login";
       action.addEventListener("click", () => startQwenAuth());
       row.appendChild(left);
       row.appendChild(action);
+    } else {
+      const action = document.createElement("button");
+      action.className = "btn-small";
+      action.textContent = "Open Setup";
+      action.addEventListener("click", () => openSetupAgentSection());
+      row.appendChild(left);
+      row.appendChild(action);
     }
     els.nudgesList.appendChild(row);
     hasStatusRow = true;
-  } else if (state.qwenAuth && state.qwenAuth.connected) {
+  } else {
     const row = document.createElement("div");
     row.className = "list-item";
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = "Mamdou ready.";
+    title.textContent = `Mamdou ready (${connection.label}).`;
     const body = document.createElement("div");
     body.className = "meta";
     body.textContent = "";
@@ -6559,7 +7260,10 @@ async function clearDiagnosticsCache() {
 function setShannonBusy(busy) {
   const next = !!busy;
   if (els.shannonRun) els.shannonRun.disabled = next;
+  if (els.shannonRunLlmRuntime) els.shannonRunLlmRuntime.disabled = next;
   if (els.shannonRefresh) els.shannonRefresh.disabled = next;
+  if (els.janitorRuntimeBase) els.janitorRuntimeBase.disabled = next;
+  if (els.janitorRuntimeRequired) els.janitorRuntimeRequired.disabled = next;
 }
 
 function stopShannonPolling() {
@@ -6599,17 +7303,20 @@ function janitorSeverityRank(value) {
 
 function normalizeJanitorResults(report) {
   if (!report || typeof report !== "object" || !Array.isArray(report.results)) return [];
-  const defaultSuite = String(report.profile || "").includes("functional") ? "functional" : "adversarial";
+  const profileLabel = String(report.profile || "").trim().toLowerCase();
+  const defaultSuite = profileLabel.startsWith("janitor-")
+    ? profileLabel.replace("janitor-", "")
+    : profileLabel || "general";
   return report.results.map((row, idx) => {
     const source = row && typeof row === "object" ? row : {};
     const title = String(source.title || source.name || `Check ${idx + 1}`);
-    const suite = String(source.suite || defaultSuite || "adversarial");
+    const suite = String(source.suite || defaultSuite || "general").toLowerCase();
     return {
       id: String(source.id || `${suite}_${idx + 1}`),
       title,
       suite,
       status: String(source.status || "unknown"),
-      severity: String(source.severity || (suite === "adversarial" ? "HIGH" : "MEDIUM")).toUpperCase(),
+      severity: String(source.severity || (suite === "functional" ? "MEDIUM" : "HIGH")).toUpperCase(),
       attack: source.attack || title,
       expected: source.expected || "",
       actual: source.actual || source.error || "",
@@ -6620,6 +7327,17 @@ function normalizeJanitorResults(report) {
       seed: source.seed ?? null,
     };
   });
+}
+
+function janitorSuiteLabel(suite) {
+  const key = String(suite || "").toLowerCase();
+  if (key === "functional") return "Functional suite";
+  if (key === "adversarial") return "Adversarial suite";
+  if (key === "property") return "Property suite";
+  if (key === "hygiene") return "Hygiene suite";
+  if (key === "llm") return "LLM suite";
+  if (key === "llm-runtime") return "LLM runtime suite";
+  return `${key} suite`;
 }
 
 function classifyJanitorCategory(result) {
@@ -6642,6 +7360,9 @@ function classifyJanitorCategory(result) {
   if (/redact|leak|diagnostics/.test(haystack)) {
     return "Data leakage";
   }
+  if (/llm|provider|advisor/.test(haystack)) {
+    return "LLM runtime";
+  }
   return "General";
 }
 
@@ -6658,17 +7379,19 @@ function getJanitorReportSummary(report) {
 
 function getJanitorSuiteSummary(report, results) {
   if (report?.suites && typeof report.suites === "object") {
-    return {
-      functional: report.suites.functional || null,
-      adversarial: report.suites.adversarial || null,
-    };
+    const out = {};
+    Object.entries(report.suites).forEach(([suite, summary]) => {
+      if (!summary || typeof summary !== "object") return;
+      out[String(suite).toLowerCase()] = summary;
+    });
+    return out;
   }
-  const bySuite = {
-    functional: { total: 0, passed: 0, failed: 0 },
-    adversarial: { total: 0, passed: 0, failed: 0 },
-  };
+  const bySuite = {};
   results.forEach((row) => {
-    const suite = row.suite === "functional" ? "functional" : "adversarial";
+    const suite = String(row.suite || "general").toLowerCase();
+    if (!bySuite[suite]) {
+      bySuite[suite] = { total: 0, passed: 0, failed: 0 };
+    }
     bySuite[suite].total += 1;
     if (row.status === "passed") bySuite[suite].passed += 1;
     if (row.status === "failed") bySuite[suite].failed += 1;
@@ -6707,7 +7430,13 @@ function renderJanitorVerdict(stateData, report, results) {
     return;
   }
   const failed = results.filter((row) => row.status === "failed");
+  const skipped = results.filter((row) => row.status === "skipped").length;
   const blockerFails = failed.filter((row) => row.severity === "BLOCKER").length;
+  if (skipped === results.length) {
+    verdictEl.classList.add("warn");
+    verdictEl.textContent = "Runtime checks skipped: start local app and connect Mamdou, then rerun.";
+    return;
+  }
   if (failed.length === 0) {
     verdictEl.classList.add("pass");
     verdictEl.textContent = "Ship-ready: all Janitor checks passed.";
@@ -6727,26 +7456,72 @@ function renderJanitorSuiteSummary(report, results) {
   els.janitorSuiteSummary.innerHTML = "";
   if (!report || !results.length) return;
   const suites = getJanitorSuiteSummary(report, results);
-  ["functional", "adversarial"].forEach((suite) => {
+  const suiteOrder = ["functional", "adversarial", "property", "hygiene", "llm", "llm-runtime"];
+  const suiteKeys = Object.keys(suites);
+  suiteKeys.sort((a, b) => {
+    const aIdx = suiteOrder.indexOf(a);
+    const bIdx = suiteOrder.indexOf(b);
+    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+    if (aIdx !== -1) return -1;
+    if (bIdx !== -1) return 1;
+    return a.localeCompare(b);
+  });
+  suiteKeys.forEach((suite) => {
     const summary = suites[suite];
     if (!summary) return;
     const total = Number(summary.total || 0);
     const passed = Number(summary.passed || 0);
     const failed = Number(summary.failed || 0);
+    const skipped = Number(summary.skipped || 0);
     const card = document.createElement("div");
     card.className = "janitor-suite-card";
     const label = document.createElement("div");
     label.className = "janitor-suite-label";
-    label.textContent = suite === "functional" ? "Functional suite" : "Adversarial suite";
+    label.textContent = janitorSuiteLabel(suite);
     const value = document.createElement("div");
     value.className = "janitor-suite-value";
     value.textContent = `${passed}/${total} passed`;
     const meta = document.createElement("div");
     meta.className = "janitor-row-meta";
-    meta.textContent = failed > 0 ? `${failed} failed` : "No failures";
+    if (failed > 0) {
+      meta.textContent = skipped > 0 ? `${failed} failed · ${skipped} skipped` : `${failed} failed`;
+    } else if (skipped > 0) {
+      meta.textContent = `${skipped} skipped`;
+    } else {
+      meta.textContent = "No failures";
+    }
     card.append(label, value, meta);
     els.janitorSuiteSummary.appendChild(card);
   });
+}
+
+function syncJanitorSuiteFilterOptions(results) {
+  if (!els.janitorFilterSuite) return;
+  const knownOrder = ["adversarial", "functional", "property", "hygiene", "llm", "llm-runtime"];
+  const suites = Array.from(new Set((results || []).map((row) => String(row.suite || "").toLowerCase()).filter(Boolean)));
+  suites.sort((a, b) => {
+    const aIdx = knownOrder.indexOf(a);
+    const bIdx = knownOrder.indexOf(b);
+    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+    if (aIdx !== -1) return -1;
+    if (bIdx !== -1) return 1;
+    return a.localeCompare(b);
+  });
+  const current = String(els.janitorFilterSuite.value || "all").toLowerCase();
+  const html = ['<option value="all">All suites</option>']
+    .concat(
+      suites.map((suite) => `<option value="${suite}">${janitorSuiteLabel(suite).replace(" suite", "")}</option>`)
+    )
+    .join("");
+  if (els.janitorFilterSuite.innerHTML !== html) {
+    els.janitorFilterSuite.innerHTML = html;
+  }
+  if (current !== "all" && suites.includes(current)) {
+    els.janitorFilterSuite.value = current;
+  } else if (current !== "all" && !suites.includes(current)) {
+    els.janitorFilterSuite.value = "all";
+    state.janitorFilter.suite = "all";
+  }
 }
 
 function renderJanitorFindingDetail(result) {
@@ -6801,13 +7576,92 @@ function renderJanitorFindingDetail(result) {
   if (result.request) addCodeBlock("Request", result.request);
   if (result.response_meta) addCodeBlock("Response", result.response_meta);
   if (result.repro_curl) addCodeBlock("Repro", result.repro_curl);
+
+  const detailText = `${result.id} ${result.title} ${result.actual} ${result.error}`.toLowerCase();
+  const isLlmRuntimeCase =
+    /llm-runtime|runtime_target_reachable|provider_connectivity_live|advisor_query_live/.test(detailText);
+
+  if (
+    !AJL_WEB_MODE &&
+    isLlmRuntimeCase &&
+    (result.status === "skipped" || /not reachable|unable to reach target/.test(detailText))
+  ) {
+    let runtimePort = 6709;
+    try {
+      const runtimeBase = String(state.janitorRuntimeBase || "").trim();
+      if (runtimeBase) {
+        const parsed = new URL(runtimeBase);
+        const parsedPort = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
+        if (Number.isInteger(parsedPort) && parsedPort > 0) {
+          runtimePort = parsedPort;
+        }
+      }
+    } catch (err) {
+      runtimePort = 6709;
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "assistant-actions";
+
+    const startBtn = document.createElement("button");
+    startBtn.type = "button";
+    startBtn.className = "btn-small";
+    startBtn.textContent = "Copy local start command";
+    startBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(`cd /path/to/AuJourLeJour && PORT=${runtimePort} ./start.sh`);
+        showToast("Start command copied.");
+      } catch (err) {
+        showToast("Unable to copy start command.");
+      }
+    });
+
+    const rerunBtn = document.createElement("button");
+    rerunBtn.type = "button";
+    rerunBtn.className = "btn-small";
+    rerunBtn.textContent = "Run LLM Runtime";
+    rerunBtn.addEventListener("click", async () => {
+      await runShannonMode("llm-runtime");
+    });
+
+    actions.append(startBtn, rerunBtn);
+    els.janitorDetailContent.appendChild(actions);
+  }
+
+  if (
+    !AJL_WEB_MODE &&
+    result.status === "failed" &&
+    /provider_connectivity_live|advisor_query_live|qwen|openai|anthropic|provider/i.test(
+      `${result.id} ${result.title} ${result.actual}`
+    )
+  ) {
+    const actions = document.createElement("div");
+    actions.className = "assistant-actions";
+    const openSetupBtn = document.createElement("button");
+    openSetupBtn.type = "button";
+    openSetupBtn.className = "btn-small";
+    openSetupBtn.textContent = "Open Mamdou setup";
+    openSetupBtn.addEventListener("click", () => {
+      openSetupAgentSection();
+    });
+    actions.appendChild(openSetupBtn);
+    els.janitorDetailContent.appendChild(actions);
+  }
 }
 
 function renderJanitorFindings(report) {
   if (!els.janitorFindingsList) return;
   const allResults = normalizeJanitorResults(report);
+  syncJanitorSuiteFilterOptions(allResults);
   const sorted = allResults.sort((a, b) => {
-    if (a.status !== b.status) return a.status === "failed" ? -1 : 1;
+    const statusRank = (value) => {
+      const key = String(value || "").toLowerCase();
+      if (key === "failed") return 0;
+      if (key === "skipped") return 1;
+      if (key === "passed") return 2;
+      return 3;
+    };
+    if (a.status !== b.status) return statusRank(a.status) - statusRank(b.status);
     const severityDelta = janitorSeverityRank(a.severity) - janitorSeverityRank(b.severity);
     if (severityDelta !== 0) return severityDelta;
     return a.title.localeCompare(b.title);
@@ -6850,7 +7704,9 @@ function renderJanitorFindings(report) {
     title.className = "janitor-row-title";
     title.textContent = row.title;
     const statusBadge = document.createElement("span");
-    statusBadge.className = `janitor-badge ${row.status === "failed" ? "fail" : "pass"}`;
+    const statusKey = String(row.status || "").toLowerCase();
+    const statusClass = statusKey === "failed" ? "fail" : statusKey === "passed" ? "pass" : "neutral";
+    statusBadge.className = `janitor-badge ${statusClass}`;
     statusBadge.textContent = row.status;
     top.append(title, statusBadge);
 
@@ -6894,6 +7750,13 @@ function formatShannonDuration(durationMs) {
 function renderShannonState(snapshot) {
   if (!els.shannonStatus || !els.shannonOutput) return;
   const stateData = snapshot && typeof snapshot === "object" ? snapshot : {};
+  if (typeof stateData.runtime_base === "string" && stateData.runtime_base.trim()) {
+    state.janitorRuntimeBase = normalizeJanitorRuntimeBase(stateData.runtime_base);
+  }
+  if (typeof stateData.runtime_required === "boolean") {
+    state.janitorRuntimeRequired = !!stateData.runtime_required;
+  }
+  syncJanitorRuntimeControls();
   const running = !!stateData.running;
   const runId = String(stateData.run_id || "");
   const profile = String(stateData.profile || "full");
@@ -6922,21 +7785,40 @@ function renderShannonState(snapshot) {
       const total = Number(summary.total || 0);
       const passed = Number(summary.passed || 0);
       const failed = Number(summary.failed || 0);
+      const skipped = Number(summary.skipped || 0);
       const profileSummary = summary.by_profile;
+      const runtimeBaseText = state.janitorRuntimeBase
+        ? state.janitorRuntimeBase
+        : "default";
+      const runtimeModeText = state.janitorRuntimeRequired ? "required" : "best-effort";
       const sevLine = `B:${Number(severity.BLOCKER || 0)} H:${Number(severity.HIGH || 0)} M:${Number(
         severity.MEDIUM || 0
       )}`;
       let profileLine = "";
       if (profileSummary && typeof profileSummary === "object") {
-        const functionalPassed = Number(profileSummary.functional?.passed || 0);
-        const functionalTotal = Number(profileSummary.functional?.total || 0);
-        const adversarialPassed = Number(profileSummary.adversarial?.passed || 0);
-        const adversarialTotal = Number(profileSummary.adversarial?.total || 0);
-        profileLine = ` · Functional ${functionalPassed}/${functionalTotal}, Adversarial ${adversarialPassed}/${adversarialTotal}`;
+        const order = ["functional", "adversarial", "property", "hygiene", "llm", "llm-runtime"];
+        const suites = Object.keys(profileSummary);
+        suites.sort((a, b) => {
+          const aIdx = order.indexOf(a);
+          const bIdx = order.indexOf(b);
+          if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+          if (aIdx !== -1) return -1;
+          if (bIdx !== -1) return 1;
+          return a.localeCompare(b);
+        });
+        const parts = suites.map((suite) => {
+          const passedCount = Number(profileSummary[suite]?.passed || 0);
+          const totalCount = Number(profileSummary[suite]?.total || 0);
+          const label = janitorSuiteLabel(suite).replace(" suite", "");
+          return `${label} ${passedCount}/${totalCount}`;
+        });
+        if (parts.length > 0) {
+          profileLine = ` · ${parts.join(", ")}`;
+        }
       }
       els.shannonSummary.textContent = `Report: ${passed}/${total} passed, ${failed} failed${
         duration ? ` in ${duration}` : ""
-      }${profileLine} · ${sevLine}`;
+      }${skipped > 0 ? `, ${skipped} skipped` : ""}${profileLine} · runtime ${runtimeBaseText} (${runtimeModeText}) · ${sevLine}`;
     } else if (runId) {
       els.shannonSummary.textContent = `Log lines: ${logLines}.`;
     } else {
@@ -7025,19 +7907,44 @@ async function loadShannonStatus(options = {}) {
   }
 }
 
-async function runShannonMode() {
+async function runShannonMode(profile = "full") {
   if (AJL_WEB_MODE || !els.shannonOutput) return;
   if (shannonInFlight) return;
+  const runProfile = profile === "llm-runtime" ? "llm-runtime" : "full";
+  const runtimeCandidate = String(
+    els.janitorRuntimeBase?.value ?? state.janitorRuntimeBase ?? ""
+  );
+  const runtimeValidated = validateJanitorRuntimeBase(runtimeCandidate);
+  if (!runtimeValidated.ok) {
+    showSystemBanner(runtimeValidated.error);
+    return;
+  }
+  const runtimeBase = runtimeValidated.value;
+  const runtimeRequired =
+    !!(els.janitorRuntimeRequired?.checked ?? state.janitorRuntimeRequired);
+  state.janitorRuntimeBase = runtimeBase;
+  state.janitorRuntimeRequired = runtimeRequired;
+  saveJanitorRuntimeSettings();
+  syncJanitorRuntimeControls();
+  const payload = {
+    profile: runProfile,
+    runtime_required: runtimeRequired,
+  };
+  if (runtimeBase) {
+    payload.runtime_base = runtimeBase;
+  }
   shannonInFlight = true;
   setShannonBusy(true);
   try {
-    els.shannonStatus.textContent = "Starting Janitor...";
+    els.shannonStatus.textContent = runProfile === "llm-runtime"
+      ? "Starting Janitor LLM runtime probe..."
+      : "Starting Janitor...";
     const res = await apiFetch(
       "/api/system/janitor/run",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: "full" }),
+        body: JSON.stringify(payload),
       },
       { silent: true }
     );
@@ -7053,7 +7960,7 @@ async function runShannonMode() {
     renderShannonState(payload?.state || {});
     state.janitorReport = null;
     renderJanitorDashboard(payload?.state || {});
-    showToast("Janitor started.");
+    showToast(runProfile === "llm-runtime" ? "Janitor LLM runtime probe started." : "Janitor started.");
     await loadShannonStatus({ force: true, silent: true });
   } finally {
     shannonInFlight = false;
@@ -7106,6 +8013,35 @@ function syncJanitorFilterControls() {
   if (els.janitorSearch && els.janitorSearch.value !== state.janitorFilter.search) {
     els.janitorSearch.value = state.janitorFilter.search;
   }
+}
+
+function syncJanitorRuntimeControls() {
+  if (els.janitorRuntimeBase && document.activeElement !== els.janitorRuntimeBase) {
+    els.janitorRuntimeBase.value = state.janitorRuntimeBase || "";
+  }
+  if (els.janitorRuntimeRequired) {
+    els.janitorRuntimeRequired.checked = !!state.janitorRuntimeRequired;
+  }
+}
+
+function applyJanitorRuntimeControlUpdate() {
+  const candidate = String(els.janitorRuntimeBase?.value ?? state.janitorRuntimeBase ?? "");
+  const validated = validateJanitorRuntimeBase(candidate);
+  if (!validated.ok) {
+    showSystemBanner(validated.error);
+    syncJanitorRuntimeControls();
+    return false;
+  }
+  if (els.janitorRuntimeBase) {
+    state.janitorRuntimeBase = validated.value;
+  }
+  if (els.janitorRuntimeRequired) {
+    state.janitorRuntimeRequired = !!els.janitorRuntimeRequired.checked;
+  }
+  saveJanitorRuntimeSettings();
+  syncJanitorRuntimeControls();
+  hideSystemBanner();
+  return true;
 }
 
 function applyJanitorFilterUpdate() {
@@ -7985,6 +8921,7 @@ function renderView() {
     renderSetupCta();
     updateStorageHealth();
     renderIntegrityStatus();
+    renderSetupAgentConnection();
     if (AJL_WEB_MODE && els.previewReadonly && state.webMeta) {
       els.previewReadonly.checked = !!state.webMeta.readOnlyPreview;
     }
@@ -8012,6 +8949,7 @@ async function refreshAll() {
       loadPayments(),
       loadActivityEvents(),
       loadFunds(),
+      loadLlmProviderStatus({ silent: true }),
       loadQwenAuthStatus(),
       loadCommandLog(),
       loadChatHistory(),
@@ -8484,6 +9422,10 @@ function bindEvents() {
         try {
           localStorage.removeItem(WEB_META_KEY);
           localStorage.removeItem(BACKUP_LAST_KEY);
+          localStorage.removeItem(LOCAL_EDIT_COUNT_KEY);
+          localStorage.removeItem(LOCAL_BACKUP_REMINDER_KEY);
+          localStorage.removeItem(JANITOR_RUNTIME_BASE_KEY);
+          localStorage.removeItem(JANITOR_RUNTIME_REQUIRED_KEY);
         } catch (err) {
           // ignore
         }
@@ -8720,6 +9662,36 @@ function bindEvents() {
     });
   }
 
+  if (els.assistantProviderSelect) {
+    els.assistantProviderSelect.addEventListener("change", () => {
+      renderAssistantConnection();
+    });
+  }
+
+  if (els.assistantProviderKey) {
+    els.assistantProviderKey.addEventListener("input", () => {
+      renderAssistantConnection();
+    });
+  }
+
+  if (els.assistantProviderConnect) {
+    els.assistantProviderConnect.addEventListener("click", async () => {
+      await connectMamdouFromAssistant();
+    });
+  }
+
+  if (els.assistantProviderSetup) {
+    els.assistantProviderSetup.addEventListener("click", () => {
+      openSetupAgentSection();
+      if (els.setupAgentProvider && els.assistantProviderSelect) {
+        const provider =
+          normalizeMamdouProviderInput(els.assistantProviderSelect.value || "") || "qwen-oauth";
+        els.setupAgentProvider.value = provider;
+      }
+      renderSetupAgentConnection();
+    });
+  }
+
   if (els.lanCopy) {
     els.lanCopy.addEventListener("click", async () => {
       const text = els.lanUrl?.textContent?.trim();
@@ -8730,6 +9702,93 @@ function bindEvents() {
       } catch (err) {
         showToast("Unable to copy LAN URL.");
       }
+    });
+  }
+
+  if (els.setupAgentStart) {
+    els.setupAgentStart.addEventListener("click", async () => {
+      await startQwenAuth();
+      renderSetupAgentConnection();
+    });
+  }
+
+  if (els.setupAgentProvider) {
+    els.setupAgentProvider.addEventListener("change", () => {
+      const provider = String(els.setupAgentProvider.value || "qwen-oauth").toLowerCase();
+      const providerState = state.llmProviders?.providers?.[provider] || {};
+      if (els.setupAgentModel) {
+        els.setupAgentModel.value = String(providerState.model || defaultModelForProvider(provider));
+      }
+      if (els.setupAgentBase) {
+        els.setupAgentBase.value = String(providerState.base_url || "");
+      }
+      if (els.setupAgentKey) {
+        els.setupAgentKey.value = "";
+      }
+      renderSetupAgentConnection();
+    });
+  }
+
+  if (els.setupAgentSaveProvider) {
+    els.setupAgentSaveProvider.addEventListener("click", async () => {
+      await saveLlmProviderSelection();
+      await loadQwenAuthStatus();
+      renderNudges();
+      renderSetupAgentConnection();
+    });
+  }
+
+  if (els.setupAgentConnectKey) {
+    els.setupAgentConnectKey.addEventListener("click", async () => {
+      await connectProviderApiKey();
+    });
+  }
+
+  if (els.setupAgentTest) {
+    els.setupAgentTest.addEventListener("click", async () => {
+      await testActiveProviderConnection();
+    });
+  }
+
+  if (els.setupAgentRefresh) {
+    els.setupAgentRefresh.addEventListener("click", async () => {
+      await loadLlmProviderStatus({ silent: true });
+      await loadQwenAuthStatus();
+      renderNudges();
+      renderSetupAgentConnection();
+      showToast("Mamdou connection refreshed.");
+    });
+  }
+
+  if (els.setupAgentDisconnect) {
+    els.setupAgentDisconnect.addEventListener("click", async () => {
+      const confirmed = window.confirm("Disconnect Mamdou on this device?");
+      if (!confirmed) return;
+      const provider = String(els.setupAgentProvider?.value || getActiveProviderName()).toLowerCase();
+      const res = await apiFetch(
+        `/api/llm/providers/disconnect?provider=${encodeURIComponent(provider)}`,
+        { method: "DELETE" },
+        { silent: true }
+      );
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        showSystemBanner(getErrorMessage(payload, `Unable to disconnect Mamdou (${res.status}).`));
+        return;
+      }
+      stopQwenPolling();
+      state.qwenAuth = {
+        connected: false,
+        status: "disconnected",
+        session_id: null,
+        verification_uri_complete: null,
+        interval_seconds: null,
+      };
+      state.llmStatus = { status: "unknown", auth_url: null, error: null };
+      await loadLlmProviderStatus({ silent: true });
+      await loadQwenAuthStatus();
+      renderNudges();
+      renderSetupAgentConnection();
+      showToast("Mamdou disconnected.");
     });
   }
 
@@ -8760,7 +9819,13 @@ function bindEvents() {
 
   if (els.shannonRun) {
     els.shannonRun.addEventListener("click", async () => {
-      await runShannonMode();
+      await runShannonMode("full");
+    });
+  }
+
+  if (els.shannonRunLlmRuntime) {
+    els.shannonRunLlmRuntime.addEventListener("click", async () => {
+      await runShannonMode("llm-runtime");
     });
   }
 
@@ -8773,6 +9838,18 @@ function bindEvents() {
   if (els.shannonCopy) {
     els.shannonCopy.addEventListener("click", async () => {
       await copyShannonOutput();
+    });
+  }
+
+  if (els.janitorRuntimeBase) {
+    els.janitorRuntimeBase.addEventListener("change", () => {
+      applyJanitorRuntimeControlUpdate();
+    });
+  }
+
+  if (els.janitorRuntimeRequired) {
+    els.janitorRuntimeRequired.addEventListener("change", () => {
+      applyJanitorRuntimeControlUpdate();
     });
   }
 
@@ -9165,6 +10242,9 @@ async function init() {
   state.essentialsOnly = els.essentialsToggle.checked;
   state.profileName = loadProfileName();
   state.shareOwnerLabel = state.profileName || "";
+  state.janitorRuntimeBase = loadJanitorRuntimeBase();
+  state.janitorRuntimeRequired = loadJanitorRuntimeRequired();
+  syncJanitorRuntimeControls();
   if (AJL_WEB_MODE) {
     state.webMeta = loadWebMeta();
     state.lastBackupAt = state.webMeta.lastBackupAt || null;

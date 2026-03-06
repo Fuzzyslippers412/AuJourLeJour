@@ -146,6 +146,9 @@
                 <button class="chip" data-agent-shortcut="show due soon">Due soon</button>
                 <button class="chip" data-agent-shortcut="show templates">Templates</button>
                 <button class="chip" data-agent-shortcut="show summary">Summary</button>
+                <button class="chip" data-agent-shortcut="connect mamdou">Connect</button>
+                <button class="chip" data-agent-shortcut="connect mamdou with openai">OpenAI</button>
+                <button class="chip" data-agent-shortcut="connect mamdou with anthropic">Anthropic</button>
               </div>
               <div id="agent-inline-status" class="assistant-inline-status meta"></div>
               <div id="agent-inline-actions" class="assistant-actions-row hidden">
@@ -359,6 +362,43 @@ cd AuJourLeJour
           </div>
         </section>
 
+        <section id="setup-agent" class="setup-block local-only">
+          <div class="block-title">Mamdou connection</div>
+          <div class="block-sub">Connect Mamdou during setup. Qwen OAuth is default; OpenAI/Anthropic keys are optional.</div>
+          <div id="setup-agent-status" class="meta">Checking connection...</div>
+          <div class="defaults-grid">
+            <label>
+              Provider
+              <select id="setup-agent-provider" class="select">
+                <option value="qwen-oauth">Qwen OAuth (Recommended)</option>
+                <option value="openai">OpenAI API key</option>
+                <option value="anthropic">Anthropic API key</option>
+              </select>
+            </label>
+            <label>
+              Model
+              <input id="setup-agent-model" type="text" placeholder="Auto default" />
+            </label>
+            <label class="setup-agent-key-row hidden" id="setup-agent-key-row">
+              API key
+              <input id="setup-agent-key" type="password" placeholder="Enter provider key" autocomplete="off" />
+            </label>
+            <label class="setup-agent-key-row hidden" id="setup-agent-base-row">
+              Base URL (optional)
+              <input id="setup-agent-base" type="text" placeholder="https://api.provider.com/v1" />
+            </label>
+          </div>
+          <div class="backup-actions">
+            <button id="setup-agent-start" class="ghost-btn">Start login</button>
+            <a id="setup-agent-open" class="ghost-btn hidden" target="_blank" rel="noopener">Open login</a>
+            <button id="setup-agent-save-provider" class="ghost-btn">Set provider</button>
+            <button id="setup-agent-connect-key" class="ghost-btn hidden">Connect key</button>
+            <button id="setup-agent-test" class="ghost-btn">Test connection</button>
+            <button id="setup-agent-refresh" class="ghost-btn">Refresh</button>
+            <button id="setup-agent-disconnect" class="ghost-btn danger">Disconnect</button>
+          </div>
+        </section>
+
         <section class="setup-block">
           <div class="block-title">Defaults</div>
           <div class="block-sub">Period view, sort order, and due-soon window.</div>
@@ -511,11 +551,28 @@ cd AuJourLeJour
             </div>
             <div class="janitor-actions">
               <button id="shannon-run" class="btn-small btn-primary">Run Janitor</button>
+              <button id="shannon-run-llm-runtime" class="btn-small">Run LLM Runtime</button>
               <button id="shannon-refresh" class="ghost-btn">Refresh</button>
               <button id="shannon-copy" class="ghost-btn">Copy output</button>
             </div>
           </div>
           <div id="shannon-status" class="janitor-status">Idle.</div>
+          <div class="janitor-runtime-controls">
+            <label class="janitor-runtime-label">
+              Runtime base URL
+              <input
+                id="janitor-runtime-base"
+                class="compact-input"
+                type="text"
+                placeholder="http://127.0.0.1:6709"
+                autocomplete="off"
+              />
+            </label>
+            <label class="janitor-runtime-check">
+              <input id="janitor-runtime-required" type="checkbox" />
+              Require live runtime
+            </label>
+          </div>
           <div id="janitor-verdict" class="janitor-verdict neutral">Run Janitor to generate an audit verdict.</div>
           <div id="shannon-summary" class="meta"></div>
 
@@ -526,6 +583,8 @@ cd AuJourLeJour
             <div class="janitor-audit-item">Rate limiting</div>
             <div class="janitor-audit-item">Ledger invariants</div>
             <div class="janitor-audit-item">Data leak redaction</div>
+            <div class="janitor-audit-item">LLM provider connectivity</div>
+            <div class="janitor-audit-item">LLM live runtime probe</div>
           </div>
 
           <div id="janitor-suite-summary" class="janitor-suite-summary"></div>
@@ -536,6 +595,7 @@ cd AuJourLeJour
               <option value="all">All status</option>
               <option value="failed">Failed</option>
               <option value="passed">Passed</option>
+              <option value="skipped">Skipped</option>
             </select>
             <select id="janitor-filter-severity" class="select">
               <option value="all">All severity</option>
@@ -547,6 +607,10 @@ cd AuJourLeJour
               <option value="all">All suites</option>
               <option value="adversarial">Adversarial</option>
               <option value="functional">Functional</option>
+              <option value="property">Property</option>
+              <option value="hygiene">Hygiene</option>
+              <option value="llm">LLM</option>
+              <option value="llm-runtime">LLM Runtime</option>
             </select>
           </div>
 
@@ -758,6 +822,25 @@ cd AuJourLeJour
             </div>
             <div id="assistant-connection-action" class="assistant-connection-action"></div>
           </div>
+          <div class="assistant-provider-row">
+            <select id="assistant-provider-select" class="select">
+              <option value="qwen-oauth">Qwen OAuth (default)</option>
+              <option value="openai">OpenAI API key</option>
+              <option value="anthropic">Anthropic API key</option>
+            </select>
+            <button id="assistant-provider-connect" class="btn-small btn-primary">Connect Mamdou</button>
+            <button id="assistant-provider-setup" class="ghost-btn small">Open Setup</button>
+          </div>
+          <div id="assistant-provider-key-row" class="assistant-provider-key-row hidden">
+            <input
+              id="assistant-provider-key"
+              class="compact-input"
+              type="password"
+              placeholder="Paste provider API key (saved locally, encrypted)"
+              autocomplete="off"
+            />
+          </div>
+          <div id="assistant-provider-hint" class="assistant-status meta"></div>
           <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Internet $90 on the 3rd” or “mark rent done”"></textarea>
           <div class="assistant-actions">
             <button id="llm-agent-send" class="btn-small btn-primary">Send</button>

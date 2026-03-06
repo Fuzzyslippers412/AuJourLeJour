@@ -3,7 +3,7 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const express = require("express");
 const Database = require("better-sqlite3");
-const { randomUUID, createHash } = require("crypto");
+const { randomUUID, createHash, randomBytes, createCipheriv, createDecipheriv } = require("crypto");
 const ledger = require("./ledger");
 const advisor = require("./advisor");
 const qwenOauth = require("./qwen_oauth");
@@ -42,9 +42,23 @@ const lockFile = process.env.AJL_LOCK_FILE || path.join(dataDir, "server.lock");
 const disableLock = process.env.AJL_DISABLE_LOCK === "1";
 const janitorFunctionalScriptPath = path.join(__dirname, "scripts", "janitor.js");
 const janitorAdversarialScriptPath = path.join(__dirname, "scripts", "janitor_adversarial.js");
+const janitorPropertyScriptPath = path.join(__dirname, "scripts", "janitor_property.js");
+const janitorHygieneScriptPath = path.join(__dirname, "scripts", "janitor_hygiene.js");
+const janitorLlmScriptPath = path.join(__dirname, "scripts", "janitor_llm.js");
+const janitorLlmRuntimeScriptPath = path.join(__dirname, "scripts", "janitor_llm_runtime.js");
 const janitorFunctionalReportPath = path.join(__dirname, "reports", "janitor-functional.json");
 const janitorAdversarialReportPath = path.join(__dirname, "reports", "janitor-security.json");
+const janitorPropertyReportPath = path.join(__dirname, "reports", "janitor-property.json");
+const janitorHygieneReportPath = path.join(__dirname, "reports", "janitor-hygiene.json");
+const janitorLlmReportPath = path.join(__dirname, "reports", "janitor-llm.json");
+const janitorLlmRuntimeReportPath = path.join(__dirname, "reports", "janitor-llm-runtime.json");
 const SHANNON_MAX_LOG_LINES = 1200;
+const OPENAI_DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const ANTHROPIC_DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-latest";
+const OPENAI_BASE_URL = String(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").trim().replace(/\/+$/, "");
+const ANTHROPIC_BASE_URL = String(process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com/v1")
+  .trim()
+  .replace(/\/+$/, "");
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(backupDir, { recursive: true });
 
@@ -86,7 +100,11 @@ const shannonState = {
   error: null,
   profile: "full",
   phase: null,
+  runtime_base: "",
+  runtime_required: false,
 };
+
+const providerSecretFile = path.join(dataDir, "provider.secret");
 
 const routeRegistry = [];
 const routeSecurityOverrides = new Map();
@@ -225,6 +243,7 @@ function normalizeJanitorReport(report, suite) {
       total: Number(summary.total || rawResults.length || 0),
       passed: Number(summary.passed || 0),
       failed: Number(summary.failed || 0),
+      skipped: Number(summary.skipped || 0),
       duration_ms: Number(summary.duration_ms || 0),
       by_severity: summary.by_severity || null,
     },
@@ -233,26 +252,59 @@ function normalizeJanitorReport(report, suite) {
 }
 
 function buildJanitorCombinedReport(profile) {
-  const functional = normalizeJanitorReport(loadJanitorReportFile(janitorFunctionalReportPath), "functional");
-  const adversarial = normalizeJanitorReport(
-    loadJanitorReportFile(janitorAdversarialReportPath),
-    "adversarial"
-  );
-  if (!functional && !adversarial) return null;
+  const suiteDefs = [
+    { name: "functional", reportPath: janitorFunctionalReportPath },
+    { name: "adversarial", reportPath: janitorAdversarialReportPath },
+    { name: "property", reportPath: janitorPropertyReportPath },
+    { name: "hygiene", reportPath: janitorHygieneReportPath },
+    { name: "llm", reportPath: janitorLlmReportPath },
+    { name: "llm-runtime", reportPath: janitorLlmRuntimeReportPath },
+  ];
+  const reports = suiteDefs
+    .map((suite) => ({
+      ...suite,
+      report: normalizeJanitorReport(loadJanitorReportFile(suite.reportPath), suite.name),
+    }))
+    .filter((entry) => entry.report);
 
-  if (profile === "adversarial") {
-    return adversarial;
+  if (reports.length === 0) return null;
+  const byName = new Map(reports.map((entry) => [entry.name, entry.report]));
+  if (profile && profile !== "full") {
+    const exact = byName.get(profile);
+    if (exact) return exact;
   }
-  if (!functional && adversarial) return adversarial;
-  if (functional && !adversarial) return functional;
 
-  const functionalSummary = functional?.summary || {};
-  const adversarialSummary = adversarial?.summary || {};
-  const total = Number(functionalSummary.total || 0) + Number(adversarialSummary.total || 0);
-  const passed = Number(functionalSummary.passed || 0) + Number(adversarialSummary.passed || 0);
-  const failed = Number(functionalSummary.failed || 0) + Number(adversarialSummary.failed || 0);
-  const durationMs =
-    Number(functionalSummary.duration_ms || 0) + Number(adversarialSummary.duration_ms || 0);
+  if (profile === "adversarial" && byName.get("adversarial")) {
+    return byName.get("adversarial");
+  }
+
+  const summaryByProfile = {};
+  const suites = {};
+  const severityTotals = {};
+  let total = 0;
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  let durationMs = 0;
+  const results = [];
+  reports.forEach(({ name, report }) => {
+    const summary = report.summary || {};
+    summaryByProfile[name] = summary;
+    suites[name] = summary;
+    total += Number(summary.total || 0);
+    passed += Number(summary.passed || 0);
+    failed += Number(summary.failed || 0);
+    skipped += Number(summary.skipped || 0);
+    durationMs += Number(summary.duration_ms || 0);
+    if (summary.by_severity && typeof summary.by_severity === "object") {
+      Object.entries(summary.by_severity).forEach(([severity, count]) => {
+        severityTotals[severity] = Number(severityTotals[severity] || 0) + Number(count || 0);
+      });
+    }
+    if (Array.isArray(report.results)) {
+      results.push(...report.results);
+    }
+  });
 
   return {
     profile: "janitor-full",
@@ -261,21 +313,13 @@ function buildJanitorCombinedReport(profile) {
       total,
       passed,
       failed,
+      skipped,
       duration_ms: durationMs,
-      by_profile: {
-        functional: functionalSummary,
-        adversarial: adversarialSummary,
-      },
-      by_severity: adversarialSummary.by_severity || null,
+      by_profile: summaryByProfile,
+      by_severity: Object.keys(severityTotals).length ? severityTotals : null,
     },
-    suites: {
-      functional: functionalSummary,
-      adversarial: adversarialSummary,
-    },
-    results: [
-      ...(Array.isArray(functional?.results) ? functional.results : []),
-      ...(Array.isArray(adversarial?.results) ? adversarial.results : []),
-    ],
+    suites,
+    results,
   };
 }
 
@@ -293,9 +337,15 @@ function getShannonStatusPayload() {
     error: shannonState.error || null,
     profile: shannonState.profile || "full",
     phase: shannonState.phase || null,
+    runtime_base: shannonState.runtime_base || null,
+    runtime_required: !!shannonState.runtime_required,
     report_paths: {
       functional: janitorFunctionalReportPath,
       adversarial: janitorAdversarialReportPath,
+      property: janitorPropertyReportPath,
+      hygiene: janitorHygieneReportPath,
+      llm: janitorLlmReportPath,
+      "llm-runtime": janitorLlmRuntimeReportPath,
     },
     report:
       report && typeof report === "object"
@@ -770,6 +820,60 @@ function getRequestHostOrigin(req) {
   return `${proto}://${host}`;
 }
 
+function isPrivateIpv4Host(hostname) {
+  const text = String(hostname || "").trim();
+  const parts = text.split(".");
+  if (parts.length !== 4) return false;
+  const nums = parts.map((part) => Number(part));
+  if (nums.some((num) => !Number.isInteger(num) || num < 0 || num > 255)) return false;
+  const [a, b] = nums;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 169 && b === 254) return true;
+  return false;
+}
+
+function isLocalRuntimeHost(hostname) {
+  const host = String(hostname || "").trim().toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host === "::1") return true;
+  const unwrapped = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (unwrapped === "::1") return true;
+  if (isPrivateIpv4Host(unwrapped)) return true;
+  return false;
+}
+
+function resolveJanitorRuntimeBase(req, rawValue) {
+  const fallback = `http://127.0.0.1:${PORT}`;
+  const text = String(rawValue || "").trim();
+  if (!text) return { ok: true, value: fallback };
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch (err) {
+    return { ok: false, error: "runtime_base must be a valid absolute URL." };
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return { ok: false, error: "runtime_base must use http or https." };
+  }
+  const host = String(parsed.hostname || "").toLowerCase();
+  const requestOrigin = getRequestHostOrigin(req);
+  let requestHost = "";
+  if (requestOrigin) {
+    try {
+      requestHost = String(new URL(requestOrigin).hostname || "").toLowerCase();
+    } catch (err) {
+      requestHost = "";
+    }
+  }
+  if (!isLocalRuntimeHost(host) && (!requestHost || host !== requestHost)) {
+    return { ok: false, error: "runtime_base host must be localhost, private IP, or current host." };
+  }
+  return { ok: true, value: `${parsed.protocol}//${parsed.host}` };
+}
+
 function isAllowedSameOriginRequest(req) {
   const requestOrigin = extractRequestOrigin(req);
   if (!requestOrigin) return true;
@@ -799,6 +903,12 @@ function requireOwner(req, res) {
     return false;
   }
   return true;
+}
+
+function hasValidOwnerCookie(req) {
+  const cookies = parseCookies(req);
+  const secret = getOwnerSecret();
+  return !!cookies.ajl_owner && cookies.ajl_owner === secret;
 }
 
 function generateShareToken() {
@@ -1298,7 +1408,8 @@ app.use((req, res, next) => {
   metrics.mutation_requests += 1;
   if (LOCAL_API_KEY) {
     const headerKey = String(req.headers["x-ajl-local-key"] || "").trim();
-    if (headerKey !== LOCAL_API_KEY) {
+    const ownerCookieValid = hasValidOwnerCookie(req);
+    if (headerKey !== LOCAL_API_KEY && !ownerCookieValid) {
       return res.status(401).json({ error: "Missing or invalid local API key." });
     }
   }
@@ -1776,6 +1887,307 @@ async function getQwenOauthFresh() {
   } catch (err) {
     return null;
   }
+}
+
+function defaultLlmProviderState() {
+  return {
+    active_provider: "qwen-oauth",
+    providers: {
+      "qwen-oauth": {
+        model: process.env.QWEN_OAUTH_MODEL || "qwen3-coder-plus",
+        connected: false,
+        connected_at: null,
+        last_error: null,
+      },
+      openai: {
+        model: OPENAI_DEFAULT_MODEL,
+        configured: false,
+        connected: false,
+        connected_at: null,
+        last_error: null,
+        key_hint: null,
+      },
+      anthropic: {
+        model: ANTHROPIC_DEFAULT_MODEL,
+        configured: false,
+        connected: false,
+        connected_at: null,
+        last_error: null,
+        key_hint: null,
+      },
+    },
+    updated_at: nowIso(),
+  };
+}
+
+function providerDisplayName(provider) {
+  const key = String(provider || "").toLowerCase();
+  if (key === "openai") return "OpenAI";
+  if (key === "anthropic") return "Anthropic";
+  return "Qwen OAuth";
+}
+
+function getLlmProviderState() {
+  const current = getMetaJson("llm_provider_state");
+  if (!current || typeof current !== "object") return defaultLlmProviderState();
+  const defaults = defaultLlmProviderState();
+  const merged = {
+    ...defaults,
+    ...current,
+    providers: {
+      ...defaults.providers,
+      ...(current.providers && typeof current.providers === "object" ? current.providers : {}),
+      "qwen-oauth": {
+        ...defaults.providers["qwen-oauth"],
+        ...(current.providers?.["qwen-oauth"] || {}),
+      },
+      openai: {
+        ...defaults.providers.openai,
+        ...(current.providers?.openai || {}),
+      },
+      anthropic: {
+        ...defaults.providers.anthropic,
+        ...(current.providers?.anthropic || {}),
+      },
+    },
+  };
+  const active = String(merged.active_provider || "qwen-oauth").toLowerCase();
+  if (!["qwen-oauth", "openai", "anthropic"].includes(active)) {
+    merged.active_provider = "qwen-oauth";
+  } else {
+    merged.active_provider = active;
+  }
+  return merged;
+}
+
+function setLlmProviderState(nextState) {
+  const value = {
+    ...nextState,
+    updated_at: nowIso(),
+  };
+  setMetaJson("llm_provider_state", value);
+  return value;
+}
+
+function getProviderSecretKey() {
+  const envSecret = String(process.env.AJL_PROVIDER_KEY_SECRET || "").trim();
+  if (envSecret) {
+    return createHash("sha256").update(envSecret).digest();
+  }
+  try {
+    if (fs.existsSync(providerSecretFile)) {
+      const raw = fs.readFileSync(providerSecretFile, "utf8").trim();
+      if (raw) return createHash("sha256").update(raw).digest();
+    }
+  } catch (err) {
+    // ignore read errors and regenerate
+  }
+  const rawSecret = randomBytes(48).toString("base64url");
+  try {
+    fs.writeFileSync(providerSecretFile, `${rawSecret}\n`, { mode: 0o600 });
+  } catch (err) {
+    // ignore write errors; key remains process-local fallback
+  }
+  return createHash("sha256").update(rawSecret).digest();
+}
+
+function encryptProviderSecret(plainText) {
+  const text = String(plainText || "");
+  if (!text) return "";
+  const key = getProviderSecretKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
+}
+
+function decryptProviderSecret(encryptedValue) {
+  const raw = String(encryptedValue || "");
+  if (!raw || !raw.startsWith("v1:")) return "";
+  const parts = raw.split(":");
+  if (parts.length !== 4) return "";
+  const [, ivRaw, tagRaw, dataRaw] = parts;
+  try {
+    const key = getProviderSecretKey();
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivRaw, "base64url"));
+    decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+    const clear = Buffer.concat([
+      decipher.update(Buffer.from(dataRaw, "base64url")),
+      decipher.final(),
+    ]);
+    return clear.toString("utf8");
+  } catch (err) {
+    return "";
+  }
+}
+
+function getProviderSecrets() {
+  const value = getMetaJson("llm_provider_secrets");
+  if (!value || typeof value !== "object") return {};
+  return value;
+}
+
+function setProviderSecrets(next) {
+  setMetaJson("llm_provider_secrets", next && typeof next === "object" ? next : {});
+}
+
+function getKeyHint(apiKey) {
+  const value = String(apiKey || "").trim();
+  if (!value) return null;
+  if (value.length <= 8) return `${value.slice(0, 2)}****`;
+  return `${value.slice(0, 4)}****${value.slice(-4)}`;
+}
+
+function getProviderCredential(provider) {
+  const secrets = getProviderSecrets();
+  const row = secrets && typeof secrets === "object" ? secrets[provider] : null;
+  if (!row || typeof row !== "object") return null;
+  const apiKey = decryptProviderSecret(row.api_key || "");
+  if (!apiKey) return null;
+  return {
+    api_key: apiKey,
+    key_hint: row.key_hint || getKeyHint(apiKey),
+    base_url: row.base_url || null,
+    model: row.model || null,
+    updated_at: row.updated_at || null,
+  };
+}
+
+function setProviderCredential(provider, credential) {
+  const secrets = getProviderSecrets();
+  const next = {
+    ...(secrets && typeof secrets === "object" ? secrets : {}),
+  };
+  if (!credential || !credential.api_key) {
+    delete next[provider];
+    setProviderSecrets(next);
+    return;
+  }
+  next[provider] = {
+    api_key: encryptProviderSecret(credential.api_key),
+    key_hint: getKeyHint(credential.api_key),
+    base_url: credential.base_url || null,
+    model: credential.model || null,
+    updated_at: nowIso(),
+  };
+  setProviderSecrets(next);
+}
+
+function validProviderName(value) {
+  return ["qwen-oauth", "openai", "anthropic"].includes(String(value || "").toLowerCase());
+}
+
+function normalizeProviderName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function validateApiKeyInput(provider, apiKeyRaw) {
+  const apiKey = String(apiKeyRaw || "").trim();
+  if (!apiKey) return { ok: false, error: "API key is required." };
+  if (provider === "openai" && !/^sk-[A-Za-z0-9_\-]{20,}$/.test(apiKey)) {
+    return { ok: false, error: "OpenAI key format looks invalid." };
+  }
+  if (provider === "anthropic" && !/^sk-ant-[A-Za-z0-9_\-]{20,}$/.test(apiKey)) {
+    return { ok: false, error: "Anthropic key format looks invalid." };
+  }
+  return { ok: true, apiKey };
+}
+
+async function testOpenAIConnection({ apiKey, model, baseUrl }) {
+  const endpoint = `${String(baseUrl || OPENAI_BASE_URL).replace(/\/+$/, "")}/chat/completions`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: model || OPENAI_DEFAULT_MODEL,
+      messages: [{ role: "user", content: "Respond with exactly: ok" }],
+      max_tokens: 8,
+      temperature: 0,
+    }),
+  });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const message = payload?.error?.message || `OpenAI test failed (${res.status}).`;
+    return { ok: false, error: message };
+  }
+  return { ok: true, model: payload?.model || model || OPENAI_DEFAULT_MODEL };
+}
+
+async function testAnthropicConnection({ apiKey, model, baseUrl }) {
+  const endpoint = `${String(baseUrl || ANTHROPIC_BASE_URL).replace(/\/+$/, "")}/messages`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: model || ANTHROPIC_DEFAULT_MODEL,
+      messages: [{ role: "user", content: "Respond with exactly: ok" }],
+      max_tokens: 8,
+      temperature: 0,
+    }),
+  });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const message = payload?.error?.message || `Anthropic test failed (${res.status}).`;
+    return { ok: false, error: message };
+  }
+  return { ok: true, model: payload?.model || model || ANTHROPIC_DEFAULT_MODEL };
+}
+
+async function testProviderConnection(provider, input) {
+  if (process.env.AJL_LLM_MOCK === "1") {
+    return { ok: true, model: input.model || (provider === "openai" ? OPENAI_DEFAULT_MODEL : ANTHROPIC_DEFAULT_MODEL) };
+  }
+  if (provider === "openai") return testOpenAIConnection(input);
+  if (provider === "anthropic") return testAnthropicConnection(input);
+  return { ok: false, error: "Unsupported provider for API-key test." };
+}
+
+async function buildProviderStatus() {
+  const state = getLlmProviderState();
+  const oauthFresh = await getQwenOauthFresh();
+  const qwenConnected = !!oauthFresh && !qwenOauth.isTokenExpired(oauthFresh);
+
+  state.providers["qwen-oauth"] = {
+    ...state.providers["qwen-oauth"],
+    connected: qwenConnected,
+    model: state.providers["qwen-oauth"]?.model || process.env.QWEN_OAUTH_MODEL || "qwen3-coder-plus",
+    last_error: qwenConnected ? null : state.providers["qwen-oauth"]?.last_error || null,
+  };
+
+  ["openai", "anthropic"].forEach((provider) => {
+    const credential = getProviderCredential(provider);
+    const configured = !!credential?.api_key;
+    const persistedConnected = !!state.providers?.[provider]?.connected;
+    state.providers[provider] = {
+      ...state.providers[provider],
+      configured,
+      connected: configured && persistedConnected,
+      key_hint: credential?.key_hint || state.providers[provider]?.key_hint || null,
+      model:
+        credential?.model ||
+        state.providers[provider]?.model ||
+        (provider === "openai" ? OPENAI_DEFAULT_MODEL : ANTHROPIC_DEFAULT_MODEL),
+      base_url:
+        credential?.base_url ||
+        state.providers[provider]?.base_url ||
+        (provider === "openai" ? OPENAI_BASE_URL : ANTHROPIC_BASE_URL),
+      last_error: state.providers[provider]?.last_error || null,
+    };
+  });
+
+  const active = normalizeProviderName(state.active_provider);
+  if (active === "qwen-oauth" && !qwenConnected) {
+    state.providers["qwen-oauth"].connected = false;
+  }
+  return state;
 }
 
 function deriveStatus(instance, amountPaid) {
@@ -2991,13 +3403,17 @@ app.post("/api/month-settings", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/llm/qwen/oauth/status", (req, res) => {
-  const oauth = getQwenOauthSettings();
+app.get("/api/llm/qwen/oauth/status", async (req, res) => {
+  const oauth = await getQwenOauthFresh();
   const connected = oauth && !qwenOauth.isTokenExpired(oauth);
+  const providerState = getLlmProviderState();
+  const activeProvider = normalizeProviderName(providerState.active_provider || "qwen-oauth");
   res.json({
     connected: !!connected,
     expires_at: oauth?.expiry_date || null,
     resource_url: oauth?.resource_url || null,
+    provider: "qwen-oauth",
+    active: activeProvider === "qwen-oauth",
   });
 });
 
@@ -3119,6 +3535,15 @@ app.post("/api/llm/qwen/oauth/poll", async (req, res) => {
     const tokenData = result.token || {};
     const oauthSettings = qwenOauth.buildOAuthSettings(tokenData);
     setQwenOauthSettings(oauthSettings);
+    const providerState = getLlmProviderState();
+    providerState.active_provider = "qwen-oauth";
+    providerState.providers["qwen-oauth"] = {
+      ...providerState.providers["qwen-oauth"],
+      connected: true,
+      connected_at: nowIso(),
+      last_error: null,
+    };
+    setLlmProviderState(providerState);
 
     db.prepare("UPDATE oauth_device_sessions SET status = 'approved', error = NULL WHERE id = ?").run(
       sessionId
@@ -3140,7 +3565,208 @@ app.post("/api/llm/qwen/oauth/poll", async (req, res) => {
 
 app.delete("/api/llm/qwen/oauth", (req, res) => {
   setMeta("qwen_oauth", "");
+  const providerState = getLlmProviderState();
+  providerState.providers["qwen-oauth"] = {
+    ...providerState.providers["qwen-oauth"],
+    connected: false,
+    connected_at: null,
+    last_error: null,
+  };
+  if (providerState.active_provider === "qwen-oauth") {
+    providerState.active_provider = "openai";
+    if (!getProviderCredential("openai")) {
+      providerState.active_provider = "anthropic";
+      if (!getProviderCredential("anthropic")) {
+        providerState.active_provider = "qwen-oauth";
+      }
+    }
+  }
+  setLlmProviderState(providerState);
   res.json({ ok: true });
+});
+
+app.get("/api/llm/providers/status", async (req, res) => {
+  const status = await buildProviderStatus();
+  setLlmProviderState(status);
+  const activeProvider = normalizeProviderName(status.active_provider || "qwen-oauth");
+  const activeRow = status.providers?.[activeProvider] || {};
+  res.json({
+    ok: true,
+    active_provider: activeProvider,
+    active_model: activeRow.model || null,
+    providers: status.providers,
+    updated_at: status.updated_at || null,
+  });
+});
+
+app.post("/api/llm/providers/select", async (req, res) => {
+  const provider = normalizeProviderName(req.body?.provider);
+  if (!validProviderName(provider)) {
+    return res.status(400).json({ error: "Unsupported provider." });
+  }
+  const state = await buildProviderStatus();
+  const next = { ...state, active_provider: provider };
+  if (req.body?.model !== undefined) {
+    const model = String(req.body.model || "").trim();
+    if (!model) return res.status(400).json({ error: "model is required when provided." });
+    next.providers[provider] = {
+      ...(next.providers[provider] || {}),
+      model,
+    };
+  }
+  if (provider !== "qwen-oauth") {
+    const credential = getProviderCredential(provider);
+    if (!credential) {
+      next.providers[provider] = {
+        ...(next.providers[provider] || {}),
+        connected: false,
+        configured: false,
+        last_error: "Provider key is not configured.",
+      };
+      setLlmProviderState(next);
+      return res.status(400).json({
+        error: "Provider key is not configured. Connect with API key first.",
+        state: next,
+      });
+    }
+    next.providers[provider] = {
+      ...(next.providers[provider] || {}),
+      configured: true,
+      connected: true,
+      last_error: null,
+    };
+  }
+  setLlmProviderState(next);
+  const output = await buildProviderStatus();
+  res.json({ ok: true, state: output });
+});
+
+app.post("/api/llm/providers/connect/api-key", async (req, res) => {
+  const provider = normalizeProviderName(req.body?.provider);
+  if (!["openai", "anthropic"].includes(provider)) {
+    return res.status(400).json({ error: "provider must be openai or anthropic." });
+  }
+  const validation = validateApiKeyInput(provider, req.body?.api_key);
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+  const model = String(req.body?.model || "").trim() || (provider === "openai" ? OPENAI_DEFAULT_MODEL : ANTHROPIC_DEFAULT_MODEL);
+  const baseUrl = String(req.body?.base_url || "").trim() || (provider === "openai" ? OPENAI_BASE_URL : ANTHROPIC_BASE_URL);
+  const testResult = await testProviderConnection(provider, {
+    apiKey: validation.apiKey,
+    model,
+    baseUrl,
+  });
+  if (!testResult.ok) {
+    const state = getLlmProviderState();
+    state.providers[provider] = {
+      ...(state.providers[provider] || {}),
+      configured: false,
+      connected: false,
+      last_error: testResult.error || "Connection test failed.",
+    };
+    setLlmProviderState(state);
+    return res.status(400).json({ error: testResult.error || "Connection test failed." });
+  }
+  setProviderCredential(provider, {
+    api_key: validation.apiKey,
+    model,
+    base_url: baseUrl,
+  });
+  const state = getLlmProviderState();
+  state.active_provider = provider;
+  state.providers[provider] = {
+    ...(state.providers[provider] || {}),
+    model: testResult.model || model,
+    configured: true,
+    connected: true,
+    connected_at: nowIso(),
+    key_hint: getKeyHint(validation.apiKey),
+    last_error: null,
+  };
+  setLlmProviderState(state);
+  const output = await buildProviderStatus();
+  res.json({ ok: true, provider, state: output });
+});
+
+app.post("/api/llm/providers/test", async (req, res) => {
+  const state = await buildProviderStatus();
+  const provider = normalizeProviderName(req.body?.provider || state.active_provider);
+  if (!validProviderName(provider)) {
+    return res.status(400).json({ error: "Unsupported provider." });
+  }
+  if (provider === "qwen-oauth") {
+    const oauth = await getQwenOauthFresh();
+    const connected = !!oauth && !qwenOauth.isTokenExpired(oauth);
+    return res.json({
+      ok: connected,
+      provider,
+      connected,
+      error: connected ? null : "Qwen login required.",
+    });
+  }
+  const credential = getProviderCredential(provider);
+  if (!credential) {
+    return res.status(400).json({ ok: false, provider, error: "Provider key not configured." });
+  }
+  const result = await testProviderConnection(provider, {
+    apiKey: credential.api_key,
+    model: credential.model || state.providers?.[provider]?.model || null,
+    baseUrl: credential.base_url || null,
+  });
+  if (!result.ok) {
+    const next = getLlmProviderState();
+    next.providers[provider] = {
+      ...(next.providers[provider] || {}),
+      connected: false,
+      last_error: result.error || "Provider test failed.",
+    };
+    setLlmProviderState(next);
+    return res.status(400).json({ ok: false, provider, error: result.error || "Provider test failed." });
+  }
+  const next = getLlmProviderState();
+  next.providers[provider] = {
+    ...(next.providers[provider] || {}),
+    connected: true,
+    connected_at: nowIso(),
+    last_error: null,
+    configured: true,
+  };
+  setLlmProviderState(next);
+  return res.json({ ok: true, provider, connected: true, model: result.model || null });
+});
+
+app.delete("/api/llm/providers/disconnect", (req, res) => {
+  const provider = normalizeProviderName(req.body?.provider || req.query.provider || "");
+  const state = getLlmProviderState();
+  const targets = provider ? [provider] : [state.active_provider];
+  for (const target of targets) {
+    if (!validProviderName(target)) continue;
+    if (target === "qwen-oauth") {
+      setMeta("qwen_oauth", "");
+      state.providers["qwen-oauth"] = {
+        ...(state.providers["qwen-oauth"] || {}),
+        connected: false,
+        connected_at: null,
+        last_error: null,
+      };
+      continue;
+    }
+    setProviderCredential(target, null);
+    state.providers[target] = {
+      ...(state.providers[target] || {}),
+      configured: false,
+      connected: false,
+      connected_at: null,
+      key_hint: null,
+      last_error: null,
+    };
+  }
+  if (!validProviderName(state.active_provider) || state.active_provider === provider) {
+    state.active_provider = "qwen-oauth";
+  }
+  setLlmProviderState(state);
+  res.json({ ok: true, state });
 });
 
 app.get("/api/sinking-funds", (req, res) => {
@@ -4267,21 +4893,45 @@ app.post("/internal/advisor/query", async (req, res) => {
     return res.status(400).json({ ok: false, error: "task required" });
   }
   try {
-    let provider = (process.env.LLM_PROVIDER || "qwen-oauth").toLowerCase();
+    const providerState = await buildProviderStatus();
+    let provider = normalizeProviderName(
+      providerState.active_provider || process.env.LLM_PROVIDER || "qwen-oauth"
+    );
+    if (!validProviderName(provider)) provider = "qwen-oauth";
     let oauth = null;
+    let providerCredentials = null;
+
     const oauthFresh = await getQwenOauthFresh();
-    if (oauthFresh) {
+    if (oauthFresh && provider === "qwen-oauth") {
       oauth = oauthFresh;
-      // Prefer OAuth once connected, even if env still points to qwen-cli.
-      if (provider === "qwen" || provider === "qwen-cli" || provider === "qwen-oauth") {
-        provider = "qwen-oauth";
-      }
     }
     if (provider === "qwen-oauth" && !oauth) {
+      const next = getLlmProviderState();
+      next.providers["qwen-oauth"] = {
+        ...(next.providers["qwen-oauth"] || {}),
+        connected: false,
+        last_error: "Qwen login required.",
+      };
+      setLlmProviderState(next);
       recordLlmLatency(Date.now() - startedAt, false);
-      return res.status(503).json({ ok: false, error: "Agent not connected" });
+      return res.status(503).json({ ok: false, error: "Agent not connected. Connect Mamdou in Setup." });
     }
-    const cacheProviderKey = `${provider}:${oauth ? "connected" : "anon"}`;
+    if (provider === "openai" || provider === "anthropic") {
+      const credential = getProviderCredential(provider);
+      if (!credential) {
+        recordLlmLatency(Date.now() - startedAt, false);
+        return res.status(503).json({
+          ok: false,
+          error: `${provider} key is not configured. Connect Mamdou in Setup.`,
+        });
+      }
+      providerCredentials = {
+        api_key: credential.api_key,
+        model: credential.model || providerState.providers?.[provider]?.model || null,
+        base_url: credential.base_url || null,
+      };
+    }
+    const cacheProviderKey = `${provider}:${oauth ? "connected" : providerCredentials ? "configured" : "anon"}`;
     const cached = getCachedLlmResult(task, payload, cacheProviderKey);
     if (cached) {
       recordLlmLatency(Date.now() - startedAt, true);
@@ -4292,12 +4942,34 @@ app.post("/internal/advisor/query", async (req, res) => {
     }
 
     const result = await runWithTimeout(
-      advisor.query(task, payload, { oauth, provider }),
+      advisor.query(task, payload, { oauth, provider, providerCredentials }),
       LLM_ROUTE_TIMEOUT_MS
     );
     if (!result.ok) {
+      const next = getLlmProviderState();
+      if (validProviderName(provider)) {
+        next.providers[provider] = {
+          ...(next.providers[provider] || {}),
+          connected: false,
+          last_error: String(result.error || "Provider query failed."),
+        };
+        setLlmProviderState(next);
+      }
       recordLlmLatency(Date.now() - startedAt, false);
       return res.status(503).json(result);
+    }
+    {
+      const next = getLlmProviderState();
+      if (validProviderName(provider)) {
+        next.active_provider = provider;
+        next.providers[provider] = {
+          ...(next.providers[provider] || {}),
+          connected: true,
+          connected_at: nowIso(),
+          last_error: null,
+        };
+        setLlmProviderState(next);
+      }
     }
     setCachedLlmResult(task, payload, cacheProviderKey, result);
     recordLlmLatency(Date.now() - startedAt, true);
@@ -4524,11 +5196,11 @@ app.get("/api/system/shannon/report", (req, res) => {
   res.json({ ok: true, report });
 });
 
-function runJanitorScript(scriptPath, runId, tag) {
+function runJanitorScript(scriptPath, runId, tag, envOverrides = null) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [scriptPath], {
       cwd: __dirname,
-      env: { ...process.env },
+      env: envOverrides ? { ...process.env, ...envOverrides } : { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     shannonState.pid = child.pid || null;
@@ -4573,10 +5245,23 @@ function runJanitorScript(scriptPath, runId, tag) {
   });
 }
 
-function startJanitorRun(profile) {
-  const normalizedProfile = profile === "adversarial" ? "adversarial" : "full";
+function startJanitorRun(profile, runtimeBaseUrl = "", runtimeRequired = false) {
+  const normalizedProfile = profile === "adversarial"
+    ? "adversarial"
+    : profile === "llm-runtime"
+      ? "llm-runtime"
+      : "full";
+  const runtimeBase = String(runtimeBaseUrl || "").trim();
+  const requireRuntime = runtimeRequired === true;
   const runId = randomUUID();
-  [janitorFunctionalReportPath, janitorAdversarialReportPath].forEach((filePath) => {
+  [
+    janitorFunctionalReportPath,
+    janitorAdversarialReportPath,
+    janitorPropertyReportPath,
+    janitorHygieneReportPath,
+    janitorLlmReportPath,
+    janitorLlmRuntimeReportPath,
+  ].forEach((filePath) => {
     try {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch (err) {
@@ -4593,7 +5278,14 @@ function startJanitorRun(profile) {
   shannonState.report = null;
   shannonState.logs = [];
   shannonState.profile = normalizedProfile;
-  shannonState.phase = normalizedProfile === "adversarial" ? "adversarial" : "functional";
+  shannonState.runtime_base = runtimeBase;
+  shannonState.runtime_required = requireRuntime;
+  shannonState.phase =
+    normalizedProfile === "adversarial"
+      ? "adversarial"
+      : normalizedProfile === "llm-runtime"
+        ? "llm-runtime"
+        : "functional";
   appendShannonLog("stdout", `[run ${runId}] Janitor ${normalizedProfile} run started.`);
 
   void (async () => {
@@ -4611,13 +5303,71 @@ function startJanitorRun(profile) {
       }
 
       shannonState.phase = "adversarial";
-      const adversarial = await runJanitorScript(
-        janitorAdversarialScriptPath,
-        runId,
-        "adversarial"
-      );
-      if (adversarial.code !== 0) {
-        throw new Error(`Adversarial Janitor failed (exit ${adversarial.code})`);
+      if (normalizedProfile !== "llm-runtime") {
+        const adversarial = await runJanitorScript(
+          janitorAdversarialScriptPath,
+          runId,
+          "adversarial"
+        );
+        if (adversarial.code !== 0) {
+          throw new Error(`Adversarial Janitor failed (exit ${adversarial.code})`);
+        }
+      }
+
+      if (normalizedProfile === "full") {
+        shannonState.phase = "property";
+        const property = await runJanitorScript(janitorPropertyScriptPath, runId, "property");
+        if (property.code !== 0) {
+          throw new Error(`Property Janitor failed (exit ${property.code})`);
+        }
+
+        shannonState.phase = "hygiene";
+        const hygiene = await runJanitorScript(janitorHygieneScriptPath, runId, "hygiene");
+        if (hygiene.code !== 0) {
+          throw new Error(`Hygiene Janitor failed (exit ${hygiene.code})`);
+        }
+
+        shannonState.phase = "llm";
+        const llm = await runJanitorScript(janitorLlmScriptPath, runId, "llm");
+        if (llm.code !== 0) {
+          throw new Error(`LLM Janitor failed (exit ${llm.code})`);
+        }
+
+        shannonState.phase = "llm-runtime";
+        const llmRuntime = await runJanitorScript(
+          janitorLlmRuntimeScriptPath,
+          runId,
+          "llm-runtime",
+          runtimeBase
+            ? {
+                AJL_JANITOR_TARGET_BASE: runtimeBase,
+                AJL_JANITOR_RUNTIME_REQUIRED: requireRuntime ? "1" : "0",
+              }
+            : {
+                AJL_JANITOR_RUNTIME_REQUIRED: requireRuntime ? "1" : "0",
+              }
+        );
+        if (llmRuntime.code !== 0) {
+          throw new Error(`LLM runtime Janitor failed (exit ${llmRuntime.code})`);
+        }
+      } else if (normalizedProfile === "llm-runtime") {
+        shannonState.phase = "llm-runtime";
+        const llmRuntime = await runJanitorScript(
+          janitorLlmRuntimeScriptPath,
+          runId,
+          "llm-runtime",
+          runtimeBase
+            ? {
+                AJL_JANITOR_TARGET_BASE: runtimeBase,
+                AJL_JANITOR_RUNTIME_REQUIRED: requireRuntime ? "1" : "0",
+              }
+            : {
+                AJL_JANITOR_RUNTIME_REQUIRED: requireRuntime ? "1" : "0",
+              }
+        );
+        if (llmRuntime.code !== 0) {
+          throw new Error(`LLM runtime Janitor failed (exit ${llmRuntime.code})`);
+        }
       }
 
       appendShannonLog("stdout", `[run ${runId}] Janitor run completed successfully.`);
@@ -4638,12 +5388,36 @@ function startJanitorRun(profile) {
 
 function handleJanitorRunRequest(req, res) {
   const profileRaw = String(req.body?.profile || "").trim().toLowerCase();
-  const profile = profileRaw === "adversarial" ? "adversarial" : "full";
-  if (!fs.existsSync(janitorAdversarialScriptPath)) {
+  const runtimeRequired =
+    req.body?.runtime_required === true ||
+    String(req.body?.runtime_required || "").trim() === "1";
+  const profile = profileRaw === "adversarial"
+    ? "adversarial"
+    : profileRaw === "llm-runtime"
+      ? "llm-runtime"
+      : "full";
+  if (profile !== "llm-runtime" && !fs.existsSync(janitorAdversarialScriptPath)) {
     return res.status(500).json({ error: "Janitor adversarial script missing." });
   }
-  if (profile === "full" && !fs.existsSync(janitorFunctionalScriptPath)) {
-    return res.status(500).json({ error: "Janitor functional script missing." });
+  if (profile === "full") {
+    if (!fs.existsSync(janitorFunctionalScriptPath)) {
+      return res.status(500).json({ error: "Janitor functional script missing." });
+    }
+    if (!fs.existsSync(janitorPropertyScriptPath)) {
+      return res.status(500).json({ error: "Janitor property script missing." });
+    }
+    if (!fs.existsSync(janitorHygieneScriptPath)) {
+      return res.status(500).json({ error: "Janitor hygiene script missing." });
+    }
+    if (!fs.existsSync(janitorLlmScriptPath)) {
+      return res.status(500).json({ error: "Janitor LLM script missing." });
+    }
+    if (!fs.existsSync(janitorLlmRuntimeScriptPath)) {
+      return res.status(500).json({ error: "Janitor LLM runtime script missing." });
+    }
+  }
+  if (profile === "llm-runtime" && !fs.existsSync(janitorLlmRuntimeScriptPath)) {
+    return res.status(500).json({ error: "Janitor LLM runtime script missing." });
   }
   if (shannonState.running) {
     return res.status(409).json({
@@ -4651,7 +5425,14 @@ function handleJanitorRunRequest(req, res) {
       state: getShannonStatusPayload(),
     });
   }
-  startJanitorRun(profile);
+  const runtimeBaseResolved = resolveJanitorRuntimeBase(
+    req,
+    req.body?.runtime_base || `http://127.0.0.1:${PORT}`
+  );
+  if (!runtimeBaseResolved.ok) {
+    return res.status(400).json({ error: runtimeBaseResolved.error });
+  }
+  startJanitorRun(profile, runtimeBaseResolved.value, runtimeRequired);
   return res.json({ ok: true, started: true, state: getShannonStatusPayload() });
 }
 
@@ -4662,10 +5443,13 @@ app.post("/api/system/shannon/run", (req, res) => {
   return handleJanitorRunRequest(req, res);
 });
 
-app.get("/api/system/diagnostics", (req, res) => {
+app.get("/api/system/diagnostics", async (req, res) => {
   expireStaleShares();
-  const oauth = getQwenOauthSettings();
+  const oauth = await getQwenOauthFresh();
   const oauthConnected = !!(oauth && !qwenOauth.isTokenExpired(oauth));
+  const providerState = await buildProviderStatus();
+  const activeProvider = normalizeProviderName(providerState.active_provider || "qwen-oauth");
+  const activeProviderRow = providerState.providers?.[activeProvider] || {};
   const janitorReport = shannonState.report || buildJanitorCombinedReport(shannonState.profile || "full");
   const activeShare = db
     .prepare(
@@ -4705,8 +5489,13 @@ app.get("/api/system/diagnostics", (req, res) => {
       local_api_key_enabled: LOCAL_API_KEY.length > 0,
     },
     llm: {
-      provider: String(process.env.LLM_PROVIDER || "qwen-oauth").toLowerCase(),
-      connected: oauthConnected,
+      provider: activeProvider,
+      provider_label: providerDisplayName(activeProvider),
+      connected:
+        activeProvider === "qwen-oauth"
+          ? oauthConnected
+          : !!activeProviderRow.connected,
+      providers: providerState.providers,
       token_expires_at: oauth?.expires_at || null,
       cache_entries: llmCache.size,
       metrics: {
@@ -4737,6 +5526,8 @@ app.get("/api/system/diagnostics", (req, res) => {
       run_id: shannonState.run_id || null,
       profile: shannonState.profile || "full",
       phase: shannonState.phase || null,
+      runtime_base: shannonState.runtime_base || null,
+      runtime_required: !!shannonState.runtime_required,
       started_at: shannonState.started_at || null,
       finished_at: shannonState.finished_at || null,
       exit_code: shannonState.exit_code,

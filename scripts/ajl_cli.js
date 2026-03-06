@@ -24,6 +24,8 @@ Commands:
   export-json            Export backup JSON via local server
   diagnostics            Fetch local diagnostics snapshot
   clear-llm-cache        Clear Mamdou response cache
+  janitor                Start Janitor run (full/adversarial/llm-runtime)
+  janitor-status         Print Janitor run status/report summary
   mamdou-status          Print Mamdou OAuth connection status
   mamdou-login           Start/poll Qwen OAuth from terminal
   mamdou-logout          Clear Mamdou OAuth session locally
@@ -39,6 +41,11 @@ Options:
   --status <value>       Action status filter (pending|ok|error)
   --id <actionId>        Action id for action command
   --timeout <seconds>    Timeout for mamdou-login polling (default: 180)
+  --profile <name>       Janitor profile: full|adversarial|llm-runtime
+  --wait                 Wait for Janitor run completion
+  --interval <seconds>   Janitor status poll interval (default: 2)
+  --runtime-base <url>   Runtime target base for Janitor llm-runtime suite
+  --runtime-required     Fail Janitor runtime suite if target is unreachable
   --open                 Open OAuth URL in browser (mamdou-login)
   --create               Create new share if none exists (share-link)
   --disable              Disable current share link (share-link)
@@ -57,6 +64,9 @@ Examples:
   node scripts/ajl_cli.js backup
   node scripts/ajl_cli.js export-json --port 6709 --out ./ajl_backup.json
   node scripts/ajl_cli.js diagnostics --port 4567
+  node scripts/ajl_cli.js janitor --port 4567 --profile full --wait
+  node scripts/ajl_cli.js janitor --port 4567 --profile llm-runtime --runtime-base http://127.0.0.1:6709 --runtime-required --wait
+  node scripts/ajl_cli.js janitor-status --port 4567 --json
   node scripts/ajl_cli.js mamdou-status --port 4567
   node scripts/ajl_cli.js clear-llm-cache --port 4567
   node scripts/ajl_cli.js mamdou-login --port 4567 --open
@@ -308,6 +318,35 @@ async function doDoctor() {
     pushCheck("share_api", "warn", `Share check failed: ${err.message}`);
   }
 
+  try {
+    const janitor = await requestJson(port, "GET", "/api/system/janitor/status");
+    if (!janitor.res.ok || !janitor.payload?.ok) {
+      pushCheck("janitor", "warn", `Janitor status unavailable (${janitor.res.status}).`);
+    } else {
+      const state = janitor.payload?.state || {};
+      const summary = state.report?.summary || {};
+      const failed = Number(summary.failed || 0);
+      const blockers = Number(summary.by_severity?.BLOCKER || 0);
+      if (state.running) {
+        pushCheck("janitor", "warn", "Janitor run is currently active.", state);
+      } else if (failed > 0 || blockers > 0) {
+        const sevText = blockers > 0 ? ` (${blockers} blocker)` : "";
+        pushCheck(
+          "janitor",
+          "warn",
+          `Last Janitor run has ${failed} failing check(s)${sevText}.`,
+          state
+        );
+      } else if (state.report?.summary) {
+        pushCheck("janitor", "ok", "Last Janitor run has no failing checks.", state);
+      } else {
+        pushCheck("janitor", "warn", "No Janitor report yet (run: npm run ajl -- janitor --wait).", state);
+      }
+    }
+  } catch (err) {
+    pushCheck("janitor", "warn", `Janitor check failed: ${err.message}`);
+  }
+
   const failCount = checks.filter((item) => item.status === "fail").length;
   const warnCount = checks.filter((item) => item.status === "warn").length;
   const okCount = checks.filter((item) => item.status === "ok").length;
@@ -424,6 +463,164 @@ async function doClearLlmCache() {
     console.log(`Mamdou cache cleared: ${Number(data?.cleared || 0)} entries.`);
   } catch (err) {
     console.error("Cache clear failed. Is the server running?", err.message);
+    process.exit(1);
+  }
+}
+
+function normalizeJanitorProfile(value) {
+  const raw = String(value || "full").trim().toLowerCase();
+  if (raw === "adversarial") return "adversarial";
+  if (raw === "llm-runtime" || raw === "llm_runtime") return "llm-runtime";
+  return "full";
+}
+
+function formatJanitorStatus(state) {
+  const status = state?.running ? "running" : "idle";
+  const runId = String(state?.run_id || "n/a");
+  const profile = String(state?.profile || "full");
+  const phase = String(state?.phase || "n/a");
+  const exitCode =
+    state?.exit_code === null || state?.exit_code === undefined ? "n/a" : String(state.exit_code);
+  const startedAt = String(state?.started_at || "n/a");
+  const finishedAt = String(state?.finished_at || "n/a");
+  const runtimeBase = String(state?.runtime_base || "");
+  const runtimeRequired = !!state?.runtime_required;
+  const summary = state?.report?.summary || {};
+  const total = Number(summary.total || 0);
+  const passed = Number(summary.passed || 0);
+  const failed = Number(summary.failed || 0);
+  const skipped = Number(summary.skipped || 0);
+  const durationMs = Number(summary.duration_ms || 0);
+  const durationText =
+    durationMs <= 0 ? "n/a" : durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
+  return [
+    `status: ${status}`,
+    `run_id: ${runId}`,
+    `profile: ${profile}`,
+    `phase: ${phase}`,
+    `exit_code: ${exitCode}`,
+    `started_at: ${startedAt}`,
+    `finished_at: ${finishedAt}`,
+    `runtime_base: ${runtimeBase || "default"}`,
+    `runtime_required: ${runtimeRequired ? "yes" : "no"}`,
+    `summary: ${passed}/${total} passed, ${failed} failed, ${skipped} skipped (${durationText})`,
+  ].join("\n");
+}
+
+async function doJanitorStatus() {
+  const port = Number(argValue("--port") || process.env.PORT || 4567);
+  const asJson = argv.includes("--json");
+  try {
+    const result = await requestJson(port, "GET", "/api/system/janitor/status");
+    if (!result.res.ok || !result.payload?.ok) {
+      const message = result.payload?.error || `Janitor status failed (${result.res.status}).`;
+      console.error(message);
+      process.exit(1);
+    }
+    const state = result.payload?.state || {};
+    if (asJson) {
+      console.log(JSON.stringify(state, null, 2));
+      return;
+    }
+    console.log(formatJanitorStatus(state));
+  } catch (err) {
+    console.error("Janitor status failed. Is the server running?", err.message);
+    process.exit(1);
+  }
+}
+
+async function doJanitorRun() {
+  const port = Number(argValue("--port") || process.env.PORT || 4567);
+  const asJson = argv.includes("--json");
+  const wait = argv.includes("--wait");
+  const profile = normalizeJanitorProfile(argValue("--profile") || "full");
+  const runtimeBase = String(argValue("--runtime-base") || "").trim();
+  const runtimeRequired = argv.includes("--runtime-required");
+  const intervalRaw = Number(argValue("--interval") || 2);
+  const pollIntervalMs = Math.max(500, (Number.isFinite(intervalRaw) ? intervalRaw : 2) * 1000);
+  const timeoutRaw = Number(argValue("--timeout") || 900);
+  const timeoutMs = Math.max(15_000, (Number.isFinite(timeoutRaw) ? timeoutRaw : 900) * 1000);
+
+  const body = {
+    profile,
+    runtime_required: runtimeRequired,
+  };
+  if (runtimeBase) {
+    try {
+      const parsed = new URL(runtimeBase);
+      if (!["http:", "https:"].includes(parsed.protocol)) {
+        console.error("Invalid --runtime-base: use http or https URL.");
+        process.exit(1);
+      }
+    } catch (err) {
+      console.error("Invalid --runtime-base: expected absolute URL.");
+      process.exit(1);
+    }
+    body.runtime_base = runtimeBase;
+  }
+
+  try {
+    const start = await requestJson(port, "POST", "/api/system/janitor/run", body);
+    if (!start.res.ok || !start.payload?.ok) {
+      const message = start.payload?.error || `Janitor run failed to start (${start.res.status}).`;
+      console.error(message);
+      process.exit(1);
+    }
+    const startedState = start.payload?.state || {};
+    if (asJson && !wait) {
+      console.log(JSON.stringify(startedState, null, 2));
+      return;
+    }
+    if (!asJson) {
+      console.log(`Janitor started: profile=${profile} run_id=${startedState.run_id || "n/a"}`);
+      if (runtimeBase) {
+        console.log(`runtime_base: ${runtimeBase}`);
+      }
+      console.log(`runtime_required: ${runtimeRequired ? "yes" : "no"}`);
+    }
+    if (!wait) {
+      return;
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let lastPrintedRunning = null;
+    let finalState = startedState;
+    while (Date.now() < deadline) {
+      // eslint-disable-next-line no-await-in-loop
+      const status = await requestJson(port, "GET", "/api/system/janitor/status");
+      if (!status.res.ok || !status.payload?.ok) {
+        const message = status.payload?.error || `Janitor status failed (${status.res.status}).`;
+        console.error(message);
+        process.exit(1);
+      }
+      finalState = status.payload?.state || {};
+      const running = !!finalState.running;
+      if (!asJson && running !== lastPrintedRunning) {
+        lastPrintedRunning = running;
+        console.log(running ? "Janitor running..." : "Janitor completed.");
+      }
+      if (!running) break;
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(pollIntervalMs);
+    }
+
+    if (Date.now() >= deadline && finalState?.running) {
+      console.error(`Timed out waiting for Janitor completion after ${Math.round(timeoutMs / 1000)} seconds.`);
+      process.exit(1);
+    }
+
+    if (asJson) {
+      console.log(JSON.stringify(finalState, null, 2));
+    } else {
+      console.log(formatJanitorStatus(finalState));
+    }
+
+    const exitCode = Number(finalState?.exit_code);
+    if (Number.isFinite(exitCode) && exitCode !== 0) {
+      process.exit(1);
+    }
+  } catch (err) {
+    console.error("Janitor run failed. Is the server running?", err.message);
     process.exit(1);
   }
 }
@@ -800,6 +997,14 @@ async function main() {
   }
   if (command === "clear-llm-cache") {
     await doClearLlmCache();
+    return;
+  }
+  if (command === "janitor") {
+    await doJanitorRun();
+    return;
+  }
+  if (command === "janitor-status") {
+    await doJanitorStatus();
     return;
   }
   if (command === "mamdou-login") {

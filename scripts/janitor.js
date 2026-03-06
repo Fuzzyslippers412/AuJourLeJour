@@ -1483,6 +1483,13 @@ async function run() {
       assert.ok(content.includes("summary-panel"));
       assert.ok(content.includes("mini-remaining-amount"));
       assert.ok(content.includes("mini-done-amount"));
+      assert.ok(content.includes('id="assistant-provider-select"'));
+      assert.ok(content.includes('id="assistant-provider-connect"'));
+      assert.ok(content.includes('id="assistant-provider-setup"'));
+      assert.ok(content.includes('id="assistant-provider-hint"'));
+      assert.ok(content.includes('id="shannon-run-llm-runtime"'));
+      assert.ok(content.includes('value="llm-runtime"'));
+      assert.ok(content.includes('value="skipped"'));
     });
   });
 
@@ -1572,8 +1579,30 @@ async function run() {
       assert.ok(raw.includes('id="shannon-run"'), `${path.basename(file)} missing janitor run button`);
       assert.ok(raw.includes('id="shannon-refresh"'), `${path.basename(file)} missing janitor refresh button`);
       assert.ok(raw.includes('id="shannon-copy"'), `${path.basename(file)} missing janitor copy button`);
+      assert.ok(raw.includes('id="janitor-runtime-base"'), `${path.basename(file)} missing janitor runtime base input`);
+      assert.ok(raw.includes('id="janitor-runtime-required"'), `${path.basename(file)} missing janitor runtime required toggle`);
       assert.ok(raw.includes("Run Janitor"), `${path.basename(file)} missing Run Janitor label`);
     }
+  });
+
+  test("janitor runtime controls are wired in app logic", () => {
+    const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    const requiredSnippets = [
+      "JANITOR_RUNTIME_BASE_KEY",
+      "JANITOR_RUNTIME_REQUIRED_KEY",
+      "function loadJanitorRuntimeBase",
+      "function loadJanitorRuntimeRequired",
+      "function saveJanitorRuntimeSettings",
+      "function syncJanitorRuntimeControls",
+      "function applyJanitorRuntimeControlUpdate",
+      "runtime_required:",
+      "payload.runtime_base = runtimeBase",
+      "els.janitorRuntimeBase.addEventListener(\"change\"",
+      "els.janitorRuntimeRequired.addEventListener(\"change\"",
+    ];
+    requiredSnippets.forEach((snippet) => {
+      assert.ok(appFile.includes(snippet), `public/app.js missing Janitor runtime wiring: ${snippet}`);
+    });
   });
 
   test("share publish retry queue primitives exist in app", () => {
@@ -1654,6 +1683,11 @@ async function run() {
       "intent: \"LOCAL_SUMMARY_OVERDUE\"",
       "intent: \"LOCAL_SUMMARY_DUE_SOON\"",
       "intent: \"LOCAL_SUMMARY_FREE\"",
+      "function normalizeMamdouProviderInput",
+      "function getActiveMamdouConnectionState",
+      "function isActiveMamdouConnected",
+      "if (!isActiveMamdouConnected())",
+      "with|to|using",
       "function parseFastMonthIntent",
       "FAST_MONTH_MAP",
       "function canAutoExecuteProposal",
@@ -1804,6 +1838,25 @@ async function run() {
     }
   });
 
+  test("shipped client assets do not contain absolute local home paths", () => {
+    const files = [
+      path.join(__dirname, "..", "public", "app.js"),
+      path.join(__dirname, "..", "docs", "app.js"),
+      path.join(__dirname, "..", "public", "index.html"),
+      path.join(__dirname, "..", "docs", "index.html"),
+    ];
+    const forbiddenFragments = ["/Users/", "C:\\Users\\", "chefmbororo"];
+    for (const file of files) {
+      const raw = fs.readFileSync(file, "utf8");
+      forbiddenFragments.forEach((fragment) => {
+        assert.ok(
+          !raw.includes(fragment),
+          `Found forbidden absolute path/personal fragment "${fragment}" in ${path.basename(file)}`
+        );
+      });
+    }
+  });
+
   test("seed files are sanitized for public repo use", () => {
     const files = [
       path.join(__dirname, "..", "seeds", "monthly_expenses.json"),
@@ -1848,6 +1901,12 @@ async function run() {
     assert.ok(out.includes("export-json"));
     assert.ok(out.includes("diagnostics"));
     assert.ok(out.includes("clear-llm-cache"));
+    assert.ok(out.includes("janitor"));
+    assert.ok(out.includes("janitor-status"));
+    assert.ok(out.includes("--profile <name>"));
+    assert.ok(out.includes("--runtime-base <url>"));
+    assert.ok(out.includes("--runtime-required"));
+    assert.ok(out.includes("--wait"));
     assert.ok(out.includes("mamdou-status"));
     assert.ok(out.includes("mamdou-login"));
     assert.ok(out.includes("mamdou-logout"));

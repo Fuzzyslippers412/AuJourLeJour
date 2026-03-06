@@ -18,6 +18,10 @@ Repo: [github.com/Fuzzyslippers412/AuJourLeJour](https://github.com/Fuzzyslipper
 - Backup/export/import (`JSON` + month `CSV`)
 - Cross-platform read-only sharing (web/local) with relay
 - Fast-path local command parser for common Mamdou actions (low-latency fallback before LLM)
+- Multi-provider Mamdou connection in local setup:
+  - Qwen OAuth (default)
+  - OpenAI API key
+  - Anthropic API key
 
 ## Today / Review / Setup
 
@@ -47,6 +51,7 @@ Viewer routes support both:
 |---|---|---|
 | Storage | Browser storage (device-specific) | SQLite file |
 | Assistant (Mamdou) | Not available | Available |
+| Mamdou provider options | N/A | Qwen OAuth, OpenAI key, Anthropic key |
 | Offline | Browser-dependent | Full local operation |
 | Backups | Export/import | Export/import + SQLite file backups |
 | Sharing | Read-only relay links | Read-only relay links |
@@ -73,6 +78,9 @@ npm run ajl -- health --port 4567
 npm run ajl -- doctor --port 4567
 npm run ajl -- lan --port 4567
 npm run ajl -- diagnostics --port 4567
+npm run ajl -- janitor-status --port 4567
+npm run ajl -- janitor --port 4567 --profile full --wait
+npm run ajl -- janitor --port 4567 --profile llm-runtime --runtime-base http://127.0.0.1:6709 --runtime-required --wait
 npm run ajl -- mamdou-status --port 4567
 npm run ajl -- clear-llm-cache --port 4567
 npm run ajl -- mamdou-login --port 4567 --open
@@ -105,6 +113,9 @@ These commands are parsed locally first (before LLM) for faster response:
 - `delete templates a, b, c` / `archive templates a, b, c`
 - `open share` / `create share` / `refresh share` / `disable share`
 - `open mamdou` / `connect mamdou`
+- `connect mamdou with qwen`
+- `connect mamdou with openai`
+- `connect mamdou with anthropic`
 - `remaining this month` / `overdue` / `due soon`
 - `set bill internet amount to 95` / `set bill internet due to 2026-03-12`
 - `set bill internet note to autopay pending`
@@ -210,6 +221,33 @@ npm run sync:web:check
 ```
 
 Janitor covers local API contracts, web adapter behavior, UI spec assertions, share relay lifecycle, and security/route regression checks.
+
+Additional Janitor suites:
+
+```sh
+npm run janitor:property
+npm run janitor:hygiene
+npm run janitor:llm
+npm run janitor:llm:runtime
+npm run qa:runtime:required
+```
+
+`janitor:llm:runtime` probes your running local app (`http://127.0.0.1:4567` by default) and verifies live Mamdou connectivity + advisor response.  
+It auto-detects local targets in this order: `PORT`, `6709`, `4567`.  
+Override target with `AJL_JANITOR_TARGET_BASE`.
+Set `AJL_JANITOR_RUNTIME_REQUIRED=1` to fail hard if runtime target is unreachable.
+`qa:runtime:required` sets this automatically.
+
+Generated reports:
+
+```text
+reports/janitor-functional.json
+reports/janitor-security.json
+reports/janitor-property.json
+reports/janitor-hygiene.json
+reports/janitor-llm.json
+reports/janitor-llm-runtime.json
+```
 
 ## License
 

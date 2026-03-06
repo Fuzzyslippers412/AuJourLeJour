@@ -338,10 +338,76 @@ async function run() {
       generated_at: nowIso(),
       seed,
       summary: {
-        total_cases: fuzzCases,
+        total: 4,
+        passed: 4,
+        failed: 0,
         duration_ms: durationMs,
-        status: "passed",
+        by_severity: {
+          HIGH: 4,
+        },
       },
+      results: [
+        {
+          id: "property_idempotency_replay",
+          title: "idempotency invariant holds under replay",
+          name: "idempotency invariant holds under replay",
+          severity: "HIGH",
+          attack: "Replay same action id",
+          expected: "Second replay should not mutate ledger.",
+          status: "passed",
+          actual: "passed",
+          error: null,
+          request: null,
+          response_meta: null,
+          repro_curl: "",
+          seed,
+        },
+        {
+          id: "property_ordering_commutative",
+          title: "commutative ordering invariant holds",
+          name: "commutative ordering invariant holds",
+          severity: "HIGH",
+          attack: "Reorder independent updates",
+          expected: "Final totals match regardless of order.",
+          status: "passed",
+          actual: "passed",
+          error: null,
+          request: null,
+          response_meta: null,
+          repro_curl: "",
+          seed,
+        },
+        {
+          id: "property_fuzz_invariants",
+          title: "fuzz invariants hold across randomized actions",
+          name: "fuzz invariants hold across randomized actions",
+          severity: "HIGH",
+          attack: `Random action fuzz (${fuzzCases} cases)`,
+          expected: "No negative remaining and summary invariants always hold.",
+          status: "passed",
+          actual: `${fuzzCases} cases passed`,
+          error: null,
+          request: null,
+          response_meta: null,
+          repro_curl: "",
+          seed,
+        },
+        {
+          id: "property_concurrency_replay",
+          title: "concurrency replay invariant holds",
+          name: "concurrency replay invariant holds",
+          severity: "HIGH",
+          attack: "Concurrent identical mutation replay",
+          expected: "Only one mutation should apply.",
+          status: "passed",
+          actual: "passed",
+          error: null,
+          request: null,
+          response_meta: null,
+          repro_curl: "",
+          seed,
+        },
+      ],
     };
     const reportPath = path.join(__dirname, "..", "reports", "janitor-property.json");
     fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -355,6 +421,43 @@ async function run() {
 }
 
 run().catch((err) => {
+  try {
+    const reportPath = path.join(__dirname, "..", "reports", "janitor-property.json");
+    const report = {
+      profile: "janitor-property",
+      generated_at: nowIso(),
+      seed: Number(process.env.AJL_PROPERTY_SEED || 0) || null,
+      summary: {
+        total: 1,
+        passed: 0,
+        failed: 1,
+        duration_ms: 0,
+        by_severity: {
+          HIGH: 1,
+        },
+      },
+      results: [
+        {
+          id: "property_suite_execution",
+          title: "property suite execution",
+          name: "property suite execution",
+          severity: "HIGH",
+          attack: "run property test suite",
+          expected: "Suite completes with all invariants passing.",
+          status: "failed",
+          actual: String(err?.message || err),
+          error: String(err?.stack || err),
+          request: null,
+          response_meta: null,
+          repro_curl: "",
+        },
+      ],
+    };
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  } catch (writeErr) {
+    // ignore secondary report write error
+  }
   process.stderr.write(`${String(err?.stack || err)}\n`);
   process.exit(1);
 });

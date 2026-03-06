@@ -1,4 +1,4 @@
-/* Janitor Hygiene: dependency, license, and lockfile checks */
+/* Janitor Hygiene: dependency, license, and lockfile checks with report output */
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
@@ -6,9 +6,10 @@ const { spawnSync } = require("child_process");
 const repoRoot = path.join(__dirname, "..");
 const allowlistPath = path.join(repoRoot, "security", "licenses-allowlist.json");
 const lockfilePath = path.join(repoRoot, "package-lock.json");
+const reportPath = path.join(repoRoot, "reports", "janitor-hygiene.json");
 
-function fail(message) {
-  process.stderr.write(`${message}\n`);
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function runCmd(cmd, args) {
@@ -105,16 +106,73 @@ function checkAudit() {
   }
 }
 
-function main() {
-  checkLockfileSync();
-  checkLicenses();
-  checkAudit();
-  process.stdout.write("Janitor hygiene complete: lockfile, license, and audit checks passed.\n");
+function writeReport(report) {
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+}
+
+function run() {
+  const startedAt = Date.now();
+  const checks = [
+    { id: "lockfile_sync", title: "lockfile sync check", severity: "HIGH", run: checkLockfileSync },
+    { id: "license_allowlist", title: "license allowlist check", severity: "HIGH", run: checkLicenses },
+    { id: "audit_high_critical", title: "npm audit high/critical check", severity: "HIGH", run: checkAudit },
+  ];
+  const results = [];
+
+  checks.forEach((check) => {
+    const started = Date.now();
+    const row = {
+      id: check.id,
+      title: check.title,
+      name: check.title,
+      severity: check.severity,
+      attack: check.title,
+      expected: "No high-risk supply-chain hygiene failures.",
+      status: "passed",
+      error: null,
+      actual: "passed",
+      request: null,
+      response_meta: null,
+      repro_curl: "",
+      duration_ms: 0,
+    };
+    try {
+      check.run();
+      process.stdout.write(`PASS ${check.title}\n`);
+    } catch (err) {
+      row.status = "failed";
+      row.error = String(err?.message || err);
+      row.actual = row.error;
+      process.stderr.write(`FAIL ${check.title}: ${row.error}\n`);
+    }
+    row.duration_ms = Date.now() - started;
+    results.push(row);
+  });
+
+  const failed = results.filter((row) => row.status === "failed").length;
+  const report = {
+    profile: "janitor-hygiene",
+    generated_at: nowIso(),
+    summary: {
+      total: results.length,
+      passed: results.length - failed,
+      failed,
+      duration_ms: Date.now() - startedAt,
+      by_severity: {
+        HIGH: results.length,
+      },
+    },
+    results,
+  };
+  writeReport(report);
+  process.stdout.write(`Janitor hygiene report: ${reportPath}\n`);
+  if (failed > 0) process.exit(1);
 }
 
 try {
-  main();
+  run();
 } catch (err) {
-  fail(String(err?.message || err));
+  process.stderr.write(`${String(err?.stack || err)}\n`);
   process.exit(1);
 }

@@ -2,6 +2,14 @@ const PROVIDER = (process.env.LLM_PROVIDER || "qwen-oauth").toLowerCase();
 
 const DEFAULT_MODEL = process.env.LLM_MODEL || "qwen2.5-coder:7b-instruct";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
+const OPENAI_DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const ANTHROPIC_DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-latest";
+const OPENAI_BASE_URL = String(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1")
+  .trim()
+  .replace(/\/+$/, "");
+const ANTHROPIC_BASE_URL = String(process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com/v1")
+  .trim()
+  .replace(/\/+$/, "");
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 15000;
 const DEFAULT_MAX_RETRIES = Number(process.env.LLM_MAX_RETRIES) || 1;
 const DEFAULT_LLM_MAX_TOKENS = Number(process.env.LLM_MAX_TOKENS) || 512;
@@ -176,6 +184,7 @@ Output JSON object:
 }
 INPUT:
 ${input}`;
+    case "ask":
     case "assist":
       return `TASK: Respond to the user_text with a short helpful answer. If context is provided, use it. Output JSON object:
 {
@@ -224,6 +233,58 @@ ${input}`;
     default:
       throw new Error("Unknown advisor task");
   }
+}
+
+function buildMockTaskData(task, payload) {
+  if (task === "intake") {
+    return {
+      templates: [],
+      questions: [],
+      warnings: ["Mock mode: no extraction performed."],
+    };
+  }
+  if (task === "nudges") {
+    return {
+      messages: [
+        {
+          id: "mock_nudge_1",
+          severity: "info",
+          title: "Mamdou mock mode",
+          body: "LLM mock mode is active. Live provider calls are skipped.",
+          cta: null,
+        },
+      ],
+    };
+  }
+  if (task === "habit") {
+    return {
+      summary: {
+        high_level: ["Mock mode active."],
+        patterns: ["No live habit analysis in mock mode."],
+        suggested_rules: [],
+      },
+    };
+  }
+  if (task === "command") {
+    return {
+      proposals: [],
+      errors: ["Mock mode: command parsing disabled."],
+    };
+  }
+  if (task === "agent") {
+    const userText = String(payload?.user_text || "").trim();
+    return {
+      kind: "ask",
+      answer: userText ? `Mock mode: received "${userText}".` : "Mock mode active.",
+      proposal: null,
+      templates: null,
+      questions: [],
+      warnings: [],
+    };
+  }
+  return {
+    text: "Mamdou mock mode is active.",
+  };
 }
 
 function extractAuthUrl(text) {
@@ -486,6 +547,122 @@ async function callQwenOAuth(prompt, oauth, systemPrompt, profile) {
   return { ok: true, content };
 }
 
+function flattenMessageContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part) return "";
+        if (typeof part.text === "string") return part.text;
+        if (typeof part.content === "string") return part.content;
+        return "";
+      })
+      .join("");
+  }
+  return "";
+}
+
+async function callOpenAI(prompt, providerCredentials, systemPrompt, profile) {
+  if (process.env.LLM_DISABLED === "1") {
+    return { ok: false, error: "LLM disabled" };
+  }
+  const apiKey = String(providerCredentials?.api_key || "").trim();
+  if (!apiKey) {
+    return { ok: false, error: "OpenAI key not configured." };
+  }
+  const endpoint = `${String(providerCredentials?.base_url || OPENAI_BASE_URL).replace(/\/+$/, "")}/chat/completions`;
+  const model = String(providerCredentials?.model || OPENAI_DEFAULT_MODEL).trim();
+  let res;
+  try {
+    res = await withRetries(
+      () =>
+        fetchWithTimeout(
+          endpoint,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: profile.max_tokens,
+              temperature: profile.temperature,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: prompt },
+              ],
+            }),
+          },
+          profile.timeout_ms
+        ),
+      profile.retries
+    );
+  } catch (err) {
+    return { ok: false, error: `LLM request failed: ${err.message}` };
+  }
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const message = payload?.error?.message || `LLM request failed (${res.status})`;
+    return { ok: false, error: message };
+  }
+  const content = flattenMessageContent(payload?.choices?.[0]?.message?.content);
+  if (!content) {
+    return { ok: false, error: "LLM returned empty response" };
+  }
+  return { ok: true, content };
+}
+
+async function callAnthropic(prompt, providerCredentials, systemPrompt, profile) {
+  if (process.env.LLM_DISABLED === "1") {
+    return { ok: false, error: "LLM disabled" };
+  }
+  const apiKey = String(providerCredentials?.api_key || "").trim();
+  if (!apiKey) {
+    return { ok: false, error: "Anthropic key not configured." };
+  }
+  const endpoint = `${String(providerCredentials?.base_url || ANTHROPIC_BASE_URL).replace(/\/+$/, "")}/messages`;
+  const model = String(providerCredentials?.model || ANTHROPIC_DEFAULT_MODEL).trim();
+  let res;
+  try {
+    res = await withRetries(
+      () =>
+        fetchWithTimeout(
+          endpoint,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: profile.max_tokens,
+              temperature: profile.temperature,
+              system: systemPrompt,
+              messages: [{ role: "user", content: prompt }],
+            }),
+          },
+          profile.timeout_ms
+        ),
+      profile.retries
+    );
+  } catch (err) {
+    return { ok: false, error: `LLM request failed: ${err.message}` };
+  }
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const message = payload?.error?.message || `LLM request failed (${res.status})`;
+    return { ok: false, error: message };
+  }
+  const content = flattenMessageContent(payload?.content);
+  if (!content) {
+    return { ok: false, error: "LLM returned empty response" };
+  }
+  return { ok: true, content };
+}
+
 async function query(task, payload, options = {}) {
   const prompt = buildPrompt(task, payload);
   const systemPrompt = task === "agent" ? SYSTEM_PROMPT_AGENT : SYSTEM_PROMPT;
@@ -495,12 +672,21 @@ async function query(task, payload, options = {}) {
   const cacheKey = buildCacheKey(provider, task, payload);
   const cached = readCachedResult(cacheKey, profile);
   if (cached) return cached;
+  if (process.env.AJL_LLM_MOCK === "1") {
+    const result = { ok: true, data: buildMockTaskData(task, payload), mock: true };
+    writeCachedResult(cacheKey, profile, result);
+    return result;
+  }
   if (provider === "ollama") {
     response = await callOllama(prompt, systemPrompt, profile);
   } else if (provider === "qwen-cli" || provider === "qwen") {
     response = await callQwenCli(prompt, systemPrompt, profile);
   } else if (provider === "qwen-oauth") {
     response = await callQwenOAuth(prompt, options.oauth, systemPrompt, profile);
+  } else if (provider === "openai") {
+    response = await callOpenAI(prompt, options.providerCredentials, systemPrompt, profile);
+  } else if (provider === "anthropic") {
+    response = await callAnthropic(prompt, options.providerCredentials, systemPrompt, profile);
   } else {
     return { ok: false, error: `Unknown LLM provider: ${provider}` };
   }
