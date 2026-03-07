@@ -790,18 +790,23 @@
       const monthStart = 1;
       const monthEnd = yearScope === "full" ? 12 : parsed.month;
       let yearRequired = 0;
-      let yearDone = 0;
+      let yearDoneScope = 0;
       let yearRemaining = 0;
-      for (let m = monthStart; m <= monthEnd; m += 1) {
+      let yearDoneOutsideScope = 0;
+      for (let m = monthStart; m <= 12; m += 1) {
         const rows = getProgressInstancesForMonth(db, parsed.year, m, templates);
         const totals = computeProgressTotals(rows, essentialsOnly);
-        yearRequired += totals.required;
-        yearDone += totals.done;
-        yearRemaining += totals.remaining;
+        if (m <= monthEnd) {
+          yearRequired += totals.required;
+          yearDoneScope += totals.done;
+          yearRemaining += totals.remaining;
+        } else {
+          yearDoneOutsideScope += totals.done;
+        }
       }
       const yearTotals = {
         required: roundMoney(yearRequired),
-        done: roundMoney(yearDone),
+        done: roundMoney(yearDoneScope + yearDoneOutsideScope),
         remaining: roundMoney(yearRemaining),
       };
 
@@ -840,6 +845,7 @@
           target: roundMoney(yearTarget),
           target_remaining: roundMoney(Math.max(0, yearTarget - yearTotals.done)),
           percent: roundMoney(yearPercent),
+          prepaid_future_done: roundMoney(yearDoneOutsideScope),
           months_in_scope: monthEnd,
           start_month: monthStart,
           end_month: monthEnd,

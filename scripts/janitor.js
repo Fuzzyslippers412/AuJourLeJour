@@ -420,6 +420,17 @@ async function run() {
     assert.ok(disposition.includes("au_jour_le_jour.sqlite"));
   });
 
+  test("receipt pdf export returns downloadable file", async () => {
+    const res = await request("GET", "/api/export/receipt.pdf?year=2026&month=2&scope=ytd&essentials_only=true");
+    assert.strictEqual(res.status, 200);
+    const contentType = res.headers.get("content-type") || "";
+    const disposition = res.headers.get("content-disposition") || "";
+    assert.ok(contentType.includes("application/pdf"));
+    assert.ok(disposition.includes("au_jour_le_jour_receipt_2026_ytd.pdf"));
+    assert.strictEqual(typeof res.data, "string");
+    assert.ok(res.data.startsWith("%PDF-1.4"));
+  });
+
   test("qwen oauth status endpoint is reachable", async () => {
     const res = await request("GET", "/api/llm/qwen/oauth/status");
     assert.strictEqual(res.status, 200);
@@ -1723,6 +1734,7 @@ async function run() {
       "intent: \"MARK_INSTANCES_BULK_PENDING\"",
       "intent: \"SKIP_INSTANCES_BULK\"",
       "intent: \"EXPORT_BACKUP\"",
+      "intent: \"EXPORT_RECEIPT\"",
       "intent: \"EXPORT_MONTH\"",
       "intent: \"SET_ESSENTIALS_ONLY\"",
       "intent: \"SET_PROGRESS_BASIS\"",

@@ -103,6 +103,7 @@ These commands are parsed locally first (before LLM) for faster response:
 - `show overdue` / `show due soon` / `show templates`
 - `essentials on` / `essentials off`
 - `export month` / `export backup`
+- `export receipt` / `export receipt this year` / `export receipt 2026 full`
 - `mark all overdue done` / `mark all due soon done`
 - `mark done internet, electric, trash`
 - `mark pending internet, electric`

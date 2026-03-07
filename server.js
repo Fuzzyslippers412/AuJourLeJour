@@ -2725,6 +2725,10 @@ function roundMoney(value) {
   return Number(num.toFixed(2));
 }
 
+function formatMoney(value) {
+  return `$${roundMoney(value).toFixed(2)}`;
+}
+
 function buildProjectedInstancesFromTemplates(templates, year, month) {
   return templates
     .filter((template) => Number(template.active) === 1)
@@ -2779,6 +2783,155 @@ function computeProgressTotals(instances, essentialsOnly) {
     done: roundMoney(done),
     remaining: roundMoney(remaining),
   };
+}
+
+function buildYearProgressSnapshot(year, selectedMonth, yearScope, essentialsOnly, activeTemplates) {
+  const rows = db
+    .prepare(
+      "SELECT * FROM instances WHERE year = ? ORDER BY month ASC, due_date ASC, name_snapshot COLLATE NOCASE"
+    )
+    .all(year);
+  const attached = attachPayments(rows);
+  const monthMap = new Map();
+  for (const row of attached) {
+    const month = Number(row.month || 0);
+    if (!Number.isInteger(month) || month < 1 || month > 12) continue;
+    if (!monthMap.has(month)) monthMap.set(month, []);
+    monthMap.get(month).push(row);
+  }
+  const projectedMonthCache = new Map();
+  const getMonthRows = (month) => {
+    if (monthMap.has(month) && monthMap.get(month).length > 0) {
+      return monthMap.get(month);
+    }
+    if (!projectedMonthCache.has(month)) {
+      projectedMonthCache.set(
+        month,
+        buildProjectedInstancesFromTemplates(activeTemplates, year, month)
+      );
+    }
+    return projectedMonthCache.get(month);
+  };
+
+  const monthEnd = yearScope === "full" ? 12 : selectedMonth;
+  const monthTotals = computeProgressTotals(getMonthRows(selectedMonth), essentialsOnly);
+  let yearRequiredScope = 0;
+  let yearDoneScope = 0;
+  let yearRemainingScope = 0;
+  let yearDoneOutsideScope = 0;
+  for (let m = 1; m <= 12; m += 1) {
+    const totals = computeProgressTotals(getMonthRows(m), essentialsOnly);
+    if (m <= monthEnd) {
+      yearRequiredScope += totals.required;
+      yearDoneScope += totals.done;
+      yearRemainingScope += totals.remaining;
+    } else {
+      yearDoneOutsideScope += totals.done;
+    }
+  }
+
+  return {
+    monthTotals,
+    yearTotalsScope: {
+      required: roundMoney(yearRequiredScope),
+      done: roundMoney(yearDoneScope),
+      remaining: roundMoney(yearRemainingScope),
+    },
+    yearDoneOutsideScope: roundMoney(yearDoneOutsideScope),
+    monthEnd,
+    getMonthRows,
+  };
+}
+
+function escapePdfText(value) {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+function wrapPdfLine(text, maxLength = 92) {
+  const raw = String(text || "").trim();
+  if (!raw) return [""];
+  if (raw.length <= maxLength) return [raw];
+  const words = raw.split(/\s+/);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length <= maxLength) {
+      current = next;
+      continue;
+    }
+    if (current) lines.push(current);
+    if (word.length > maxLength) {
+      lines.push(word.slice(0, maxLength));
+      current = word.slice(maxLength);
+    } else {
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length > 0 ? lines : [raw.slice(0, maxLength)];
+}
+
+function buildReceiptPdf(pages) {
+  const pageLines = Array.isArray(pages) && pages.length > 0 ? pages : [[]];
+  const pageCount = pageLines.length;
+  const fontObjectNum = pageCount * 2 + 3;
+  const objectCount = fontObjectNum;
+  const objects = new Array(objectCount + 1).fill(null);
+
+  const pageRefs = [];
+  for (let i = 0; i < pageCount; i += 1) {
+    const pageObjectNum = 3 + i * 2;
+    const contentObjectNum = 4 + i * 2;
+    pageRefs.push(`${pageObjectNum} 0 R`);
+
+    const contentRows = [];
+    contentRows.push("BT");
+    contentRows.push("/F1 11 Tf");
+    contentRows.push("14 TL");
+    contentRows.push("50 770 Td");
+    const lines = Array.isArray(pageLines[i]) ? pageLines[i] : [];
+    if (lines.length === 0) {
+      contentRows.push(`(${escapePdfText("Receipt has no line items.")}) Tj`);
+    } else {
+      for (let idx = 0; idx < lines.length; idx += 1) {
+        const text = escapePdfText(lines[idx]);
+        if (idx === 0) contentRows.push(`(${text}) Tj`);
+        else contentRows.push(`T* (${text}) Tj`);
+      }
+    }
+    contentRows.push("ET");
+    const stream = `${contentRows.join("\n")}\n`;
+    const length = Buffer.byteLength(stream, "utf8");
+    objects[contentObjectNum] = `<< /Length ${length} >>\nstream\n${stream}endstream`;
+    objects[pageObjectNum] =
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ` +
+      `/Resources << /Font << /F1 ${fontObjectNum} 0 R >> >> ` +
+      `/Contents ${contentObjectNum} 0 R >>`;
+  }
+
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = `<< /Type /Pages /Count ${pageCount} /Kids [${pageRefs.join(" ")}] >>`;
+  objects[fontObjectNum] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+  let body = "%PDF-1.4\n";
+  const offsets = new Array(objectCount + 1).fill(0);
+  for (let i = 1; i <= objectCount; i += 1) {
+    const objectBody = objects[i] || "";
+    offsets[i] = Buffer.byteLength(body, "utf8");
+    body += `${i} 0 obj\n${objectBody}\nendobj\n`;
+  }
+  const xrefPos = Buffer.byteLength(body, "utf8");
+  body += `xref\n0 ${objectCount + 1}\n`;
+  body += "0000000000 65535 f \n";
+  for (let i = 1; i <= objectCount; i += 1) {
+    body += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  body += `trailer\n<< /Size ${objectCount + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`;
+  return Buffer.from(body, "utf8");
 }
 
 app.get("/api/ensure-month", (req, res) => {
@@ -3216,31 +3369,18 @@ app.get("/api/progress", (req, res) => {
   const activeTemplates = db
     .prepare("SELECT * FROM templates WHERE active = 1 ORDER BY name COLLATE NOCASE")
     .all();
-
-  const monthInstances = getProgressInstancesForMonth(
+  const snapshot = buildYearProgressSnapshot(
     parsed.year,
     parsed.month,
+    yearScope,
+    essentialsOnly,
     activeTemplates
   );
-  const monthTotals = computeProgressTotals(monthInstances, essentialsOnly);
-
+  const monthTotals = snapshot.monthTotals;
+  const yearTotals = snapshot.yearTotalsScope;
   const monthStart = 1;
-  const monthEnd = yearScope === "full" ? 12 : parsed.month;
-  let yearRequired = 0;
-  let yearDone = 0;
-  let yearRemaining = 0;
-  for (let m = monthStart; m <= monthEnd; m += 1) {
-    const rows = getProgressInstancesForMonth(parsed.year, m, activeTemplates);
-    const totals = computeProgressTotals(rows, essentialsOnly);
-    yearRequired += totals.required;
-    yearDone += totals.done;
-    yearRemaining += totals.remaining;
-  }
-  const yearTotals = {
-    required: roundMoney(yearRequired),
-    done: roundMoney(yearDone),
-    remaining: roundMoney(yearRemaining),
-  };
+  const monthEnd = snapshot.monthEnd;
+  const yearDoneIncludingPrepaid = roundMoney(yearTotals.done + snapshot.yearDoneOutsideScope);
 
   let monthTarget = monthTotals.required;
   let yearTarget = yearTotals.required;
@@ -3255,7 +3395,7 @@ app.get("/api/progress", (req, res) => {
     }
   }
   const monthPercent = monthTarget > 0 ? (monthTotals.done / monthTarget) * 100 : 0;
-  const yearPercent = yearTarget > 0 ? (yearTotals.done / yearTarget) * 100 : 0;
+  const yearPercent = yearTarget > 0 ? (yearDoneIncludingPrepaid / yearTarget) * 100 : 0;
 
   res.json({
     period: `${parsed.year}-${ledger.pad2(parsed.month)}`,
@@ -3272,11 +3412,12 @@ app.get("/api/progress", (req, res) => {
     },
     year: {
       required: yearTotals.required,
-      done: yearTotals.done,
+      done: yearDoneIncludingPrepaid,
       remaining: yearTotals.remaining,
       target: roundMoney(yearTarget),
-      target_remaining: roundMoney(Math.max(0, yearTarget - yearTotals.done)),
+      target_remaining: roundMoney(Math.max(0, yearTarget - yearDoneIncludingPrepaid)),
       percent: roundMoney(yearPercent),
+      prepaid_future_done: snapshot.yearDoneOutsideScope,
       months_in_scope: monthEnd,
       start_month: monthStart,
       end_month: monthEnd,
@@ -4073,6 +4214,133 @@ app.get("/api/export/month.csv", (req, res) => {
     )}.csv"`
   );
   res.send(lines.join("\n"));
+});
+
+app.get("/api/export/receipt.pdf", (req, res) => {
+  const now = new Date();
+  const yearRaw = Number(req.query.year ?? now.getFullYear());
+  if (!Number.isInteger(yearRaw) || yearRaw < 2000 || yearRaw > 2100) {
+    return res.status(400).json({ error: "Invalid year." });
+  }
+  const scope = normalizeYearScope(req.query.scope || "ytd");
+  const monthRaw = Number(req.query.month ?? now.getMonth() + 1);
+  const month = Number.isInteger(monthRaw) && monthRaw >= 1 && monthRaw <= 12
+    ? monthRaw
+    : now.getMonth() + 1;
+  const essentialsOnly = parseEssentialsOnly(req.query.essentials_only);
+  const settings = normalizeSettingsPayload(getMetaJson("settings") || {});
+  const defaults = settings.defaults || normalizeSettingsDefaults({});
+  const basis = normalizeProgressBasis(defaults.progressBasis);
+  const activeTemplates = db
+    .prepare("SELECT * FROM templates WHERE active = 1 ORDER BY name COLLATE NOCASE")
+    .all();
+  const snapshot = buildYearProgressSnapshot(
+    yearRaw,
+    month,
+    scope,
+    essentialsOnly,
+    activeTemplates
+  );
+
+  const monthTotals = snapshot.monthTotals;
+  const yearTotals = snapshot.yearTotalsScope;
+  const monthEnd = snapshot.monthEnd;
+  const yearDoneIncludingPrepaid = roundMoney(yearTotals.done + snapshot.yearDoneOutsideScope);
+  let monthTarget = monthTotals.required;
+  let yearTarget = yearTotals.required;
+  if (basis === "manual") {
+    if (defaults.monthlyGoalAmount > 0) {
+      monthTarget = roundMoney(defaults.monthlyGoalAmount);
+    }
+    if (defaults.yearlyGoalAmount > 0) {
+      yearTarget = roundMoney(defaults.yearlyGoalAmount);
+    } else if (defaults.monthlyGoalAmount > 0) {
+      yearTarget = roundMoney(defaults.monthlyGoalAmount * monthEnd);
+    }
+  }
+  const monthPercent = monthTarget > 0 ? (monthTotals.done / monthTarget) * 100 : 0;
+  const yearPercent = yearTarget > 0 ? (yearDoneIncludingPrepaid / yearTarget) * 100 : 0;
+
+  const lines = [];
+  const scopeLabel = scope === "full" ? "Full Year" : `YTD (through month ${monthEnd})`;
+  lines.push("Au Jour Le Jour - Yearly Receipt");
+  lines.push(`Generated: ${nowIsoLocal()}`);
+  lines.push(`Year: ${yearRaw}`);
+  lines.push(`Scope: ${scopeLabel}`);
+  lines.push(`Essentials only: ${essentialsOnly ? "Yes" : "No"}`);
+  lines.push(" ");
+  lines.push("Confirmed Totals");
+  lines.push(
+    `- Month progress: ${Math.round(monthPercent)}% (${formatMoney(monthTotals.done)} of ${formatMoney(monthTarget)})`
+  );
+  lines.push(
+    `- Year progress: ${Math.round(yearPercent)}% (${formatMoney(yearDoneIncludingPrepaid)} of ${formatMoney(yearTarget)})`
+  );
+  lines.push(`- Remaining in scope: ${formatMoney(yearTotals.remaining)}`);
+  lines.push(`- Prepaid future months: ${formatMoney(snapshot.yearDoneOutsideScope)}`);
+  lines.push(" ");
+
+  const attachedYearRows = attachPayments(
+    db.prepare("SELECT * FROM instances WHERE year = ? ORDER BY month ASC, due_date ASC").all(yearRaw)
+  );
+  const filteredYearRows = essentialsOnly
+    ? attachedYearRows.filter((row) => row.essential_snapshot)
+    : attachedYearRows;
+  const paidRows = filteredYearRows
+    .filter((row) => row.status_derived !== "skipped" && Number(row.amount_paid || 0) > 0)
+    .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+
+  lines.push(`Confirmed paid items (${paidRows.length})`);
+  if (paidRows.length === 0) {
+    lines.push("- None");
+  } else {
+    for (const row of paidRows) {
+      const line = `- ${row.due_date} | ${row.name_snapshot} | paid ${formatMoney(
+        Number(row.amount_paid || 0)
+      )} of ${formatMoney(Number(row.amount || 0))}`;
+      wrapPdfLine(line).forEach((wrapped) => lines.push(wrapped));
+    }
+  }
+  lines.push(" ");
+
+  const remainingRows = [];
+  for (let m = 1; m <= monthEnd; m += 1) {
+    const monthRows = snapshot.getMonthRows(m);
+    const filtered = essentialsOnly
+      ? monthRows.filter((row) => row.essential_snapshot)
+      : monthRows;
+    for (const row of filtered) {
+      if (row.status_derived === "skipped") continue;
+      if (Number(row.amount_remaining || 0) <= 0) continue;
+      remainingRows.push(row);
+    }
+  }
+  remainingRows.sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+  lines.push(`Remaining items in scope (${remainingRows.length})`);
+  if (remainingRows.length === 0) {
+    lines.push("- None");
+  } else {
+    for (const row of remainingRows) {
+      const line = `- ${row.due_date} | ${row.name_snapshot} | remaining ${formatMoney(
+        Number(row.amount_remaining || 0)
+      )}`;
+      wrapPdfLine(line).forEach((wrapped) => lines.push(wrapped));
+    }
+  }
+
+  const linesPerPage = 48;
+  const pages = [];
+  for (let i = 0; i < lines.length; i += linesPerPage) {
+    pages.push(lines.slice(i, i + linesPerPage));
+  }
+  const pdfBuffer = buildReceiptPdf(pages);
+  const scopeTag = scope === "full" ? "full" : "ytd";
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename=\"au_jour_le_jour_receipt_${yearRaw}_${scopeTag}.pdf\"`
+  );
+  res.send(pdfBuffer);
 });
 
 app.get("/api/export/sqlite", (req, res) => {

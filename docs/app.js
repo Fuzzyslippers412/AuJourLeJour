@@ -2683,6 +2683,7 @@ function buildLlmContext() {
         target: yearTarget,
         percent: yearPercent,
         months_in_scope: Number(yearProgress?.months_in_scope || 0),
+        prepaid_future_done: Number(yearProgress?.prepaid_future_done || 0),
       },
       defaults: {
         monthly_goal: Number(defaults.monthlyGoalAmount || 0),
@@ -3059,6 +3060,28 @@ function parseFastExportIntent(input) {
       needs_confirmation: false,
       target: { type: "none", name: null },
       payload: {},
+    };
+  }
+  const receiptMatch = text.match(
+    /^(?:export|download)(?:\s+(?:year|yearly))?\s+receipt(?:\s+(this\s+year|\d{4}))?(?:\s+(ytd|full|full\s+year))?$/
+  );
+  if (receiptMatch) {
+    const yearLabel = String(receiptMatch[1] || "").trim();
+    const year =
+      yearLabel === "this year"
+        ? new Date().getFullYear()
+        : Number.isInteger(Number(yearLabel))
+          ? Number(yearLabel)
+          : state.selectedYear;
+    return {
+      intent: "EXPORT_RECEIPT",
+      confidence: 0.97,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {
+        year,
+        scope: normalizeYearScope(receiptMatch[2] || state.settings.defaults?.yearScope || "ytd"),
+      },
     };
   }
   return null;
@@ -3693,8 +3716,11 @@ function renderSummary(list) {
     if (els.progressYearValue) els.progressYearValue.textContent = yearPercentText;
     if (els.progressYearMeta) {
       const monthsInScope = Number(yearProgress?.months_in_scope || 0);
+      const prepayFuture = Number(yearProgress?.prepaid_future_done || 0);
       const suffix = monthsInScope > 0 ? ` (${monthsInScope} month${monthsInScope === 1 ? "" : "s"})` : "";
-      els.progressYearMeta.textContent = `${formatMoneyDisplay(yearDone)} of ${formatMoneyDisplay(yearTarget)} target${suffix}`;
+      const prepayLabel =
+        prepayFuture > 0 ? `, includes ${formatMoneyDisplay(prepayFuture)} prepaid future months` : "";
+      els.progressYearMeta.textContent = `${formatMoneyDisplay(yearDone)} of ${formatMoneyDisplay(yearTarget)} target${suffix}${prepayLabel}`;
     }
     if (els.progressYearBar) {
       els.progressYearBar.style.width = `${Math.min(100, Math.max(0, yearPercent))}%`;
@@ -4838,6 +4864,13 @@ async function applyProposal(proposal) {
     els.exportBackup?.click();
     return { ok: true, message: "Exported backup JSON." };
   }
+  if (intent === "EXPORT_RECEIPT") {
+    exportReceiptPdf({
+      year: proposal.payload?.year,
+      scope: proposal.payload?.scope,
+    });
+    return { ok: true, message: "Exported yearly receipt PDF." };
+  }
   if (intent === "GENERATE_MONTH") {
     const period = proposal.target?.period || "";
     let year = state.selectedYear;
@@ -5647,6 +5680,7 @@ function summarizeProposal(proposal) {
   if (intent === "SET_CASH_START") return "Tracking removed";
   if (intent === "EXPORT_MONTH") return "Export current month CSV";
   if (intent === "EXPORT_BACKUP") return "Export full backup JSON";
+  if (intent === "EXPORT_RECEIPT") return "Export yearly receipt PDF";
   if (intent === "GENERATE_MONTH") return "Generate month";
   if (intent === "MARK_ALL_OVERDUE") {
     const count = getQueueTargets("overdue").length;
@@ -5702,6 +5736,7 @@ const AUTO_EXECUTE_INTENTS = new Set([
   "START_AGENT_AUTH",
   "EXPORT_MONTH",
   "EXPORT_BACKUP",
+  "EXPORT_RECEIPT",
   "LOCAL_SUMMARY_REMAINING",
   "LOCAL_SUMMARY_OVERDUE",
   "LOCAL_SUMMARY_DUE_SOON",
@@ -8741,6 +8776,27 @@ function exportReviewCsv() {
   )}.csv`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function exportReceiptPdf(options = {}) {
+  const now = new Date();
+  const yearRaw = Number(options.year ?? state.selectedYear ?? now.getFullYear());
+  const year = Number.isInteger(yearRaw) && yearRaw >= 2000 && yearRaw <= 2100
+    ? yearRaw
+    : now.getFullYear();
+  const scope = normalizeYearScope(options.scope || state.settings.defaults?.yearScope || "ytd");
+  const params = new URLSearchParams({
+    year: String(year),
+    month: String(state.selectedMonth || now.getMonth() + 1),
+    scope,
+    essentials_only: state.essentialsOnly ? "true" : "false",
+  });
+  const url = `/api/export/receipt.pdf?${params.toString()}`;
+  if (AJL_WEB_MODE) {
+    window.open(url, "_blank");
+    return;
+  }
+  window.open(url, "_blank");
 }
 
 function renderTemplates() {
