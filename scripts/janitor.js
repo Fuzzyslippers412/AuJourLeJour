@@ -323,6 +323,65 @@ async function run() {
     assert.strictEqual(res.data.hasCompletedOnboarding, false);
     assert.strictEqual(typeof res.data.share_viewer_base_url, "string");
     assert.ok(res.data.share_viewer_base_url.startsWith("http"));
+    assert.ok(res.data.defaults && typeof res.data.defaults === "object");
+    assert.ok(["auto", "manual"].includes(String(res.data.defaults.progressBasis || "")));
+    assert.ok(["ytd", "full"].includes(String(res.data.defaults.yearScope || "")));
+    assert.strictEqual(typeof Number(res.data.defaults.monthlyGoalAmount), "number");
+    assert.strictEqual(typeof Number(res.data.defaults.yearlyGoalAmount), "number");
+  });
+
+  test("progress endpoint returns monthly and yearly progress shape", async () => {
+    const res = await request("GET", "/api/progress?year=2026&month=2&essentials_only=true&year_scope=ytd");
+    assert.strictEqual(res.status, 200, `progress status ${res.status}`);
+    assert.strictEqual(typeof res.data.period, "string");
+    assert.ok(["auto", "manual"].includes(String(res.data.basis || "")));
+    assert.ok(["ytd", "full"].includes(String(res.data.year_scope || "")));
+    assert.strictEqual(typeof res.data.essentials_only, "boolean");
+    assert.ok(res.data.month && typeof res.data.month === "object");
+    assert.ok(res.data.year && typeof res.data.year === "object");
+    ["required", "done", "remaining", "target", "target_remaining", "percent"].forEach((key) => {
+      assert.strictEqual(typeof Number(res.data.month[key]), "number", `month.${key} must be numeric`);
+      assert.strictEqual(typeof Number(res.data.year[key]), "number", `year.${key} must be numeric`);
+    });
+    assert.strictEqual(typeof Number(res.data.year.months_in_scope), "number");
+  });
+
+  test("manual progress goals override auto targets", async () => {
+    const save = await request("POST", "/api/settings", {
+      defaults: {
+        sort: "due_date",
+        dueSoonDays: 7,
+        defaultPeriod: "month",
+        progressBasis: "manual",
+        monthlyGoalAmount: 250,
+        yearlyGoalAmount: 3000,
+        yearScope: "full",
+      },
+      categories: [],
+      hasCompletedOnboarding: false,
+    });
+    assert.strictEqual(save.status, 200);
+    const res = await request("GET", "/api/progress?year=2026&month=2&essentials_only=true&year_scope=full");
+    assert.strictEqual(res.status, 200, `progress manual status ${res.status}`);
+    assert.strictEqual(res.data.basis, "manual");
+    assert.strictEqual(res.data.year_scope, "full");
+    assert.strictEqual(Number(res.data.month.target), 250);
+    assert.strictEqual(Number(res.data.year.target), 3000);
+    assert.strictEqual(Number(res.data.year.months_in_scope), 12);
+    const restore = await request("POST", "/api/settings", {
+      defaults: {
+        sort: "due_date",
+        dueSoonDays: 7,
+        defaultPeriod: "month",
+        progressBasis: "auto",
+        monthlyGoalAmount: 0,
+        yearlyGoalAmount: 0,
+        yearScope: "ytd",
+      },
+      categories: [],
+      hasCompletedOnboarding: false,
+    });
+    assert.strictEqual(restore.status, 200);
   });
 
   test("invalid year/month input is rejected", async () => {
@@ -1646,6 +1705,7 @@ async function run() {
     const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
     const requiredSnippets = [
       "function parseFastEssentialsIntent",
+      "function parseFastProgressIntent",
       "function parseFastExportIntent",
       "function parseFastBatchQueueIntent",
       "function parseFastTemplateMutationIntent",
@@ -1665,6 +1725,11 @@ async function run() {
       "intent: \"EXPORT_BACKUP\"",
       "intent: \"EXPORT_MONTH\"",
       "intent: \"SET_ESSENTIALS_ONLY\"",
+      "intent: \"SET_PROGRESS_BASIS\"",
+      "intent: \"SET_PROGRESS_MONTHLY_GOAL\"",
+      "intent: \"SET_PROGRESS_YEARLY_GOAL\"",
+      "intent: \"SET_PROGRESS_YEAR_SCOPE\"",
+      "intent: \"SHOW_PROGRESS\"",
       "intent: \"UPDATE_INSTANCE_FIELDS\"",
       "intent: \"UPDATE_AMOUNT_FLEX\"",
       "intent: \"CREATE_TEMPLATES_BULK\"",
@@ -1683,6 +1748,7 @@ async function run() {
       "intent: \"LOCAL_SUMMARY_OVERDUE\"",
       "intent: \"LOCAL_SUMMARY_DUE_SOON\"",
       "intent: \"LOCAL_SUMMARY_FREE\"",
+      "intent: \"LOCAL_SUMMARY_PROGRESS\"",
       "function normalizeMamdouProviderInput",
       "function getActiveMamdouConnectionState",
       "function isActiveMamdouConnected",
@@ -1693,6 +1759,8 @@ async function run() {
       "function canAutoExecuteProposal",
       "AUTO_EXECUTE_INTENTS",
       "function logAutoAgentExecution",
+      "progress:",
+      "summary-year-scope",
     ];
     requiredSnippets.forEach((snippet) => {
       assert.ok(appFile.includes(snippet), `public/app.js missing fast parser snippet: ${snippet}`);

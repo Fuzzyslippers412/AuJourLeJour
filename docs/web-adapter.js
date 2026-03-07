@@ -160,7 +160,8 @@
   }
 
   function normalizeYearScope(value) {
-    return String(value || "").toLowerCase() === "full" ? "full" : "ytd";
+    const raw = String(value || "").trim().toLowerCase();
+    return raw === "full" || raw === "full year" ? "full" : "ytd";
   }
 
   function sanitizeGoalAmount(value) {

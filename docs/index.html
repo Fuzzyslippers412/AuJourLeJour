@@ -169,7 +169,7 @@
                 <button id="agent-inline-open" class="ghost-btn small">Open full panel</button>
               </div>
               <div class="assistant-inline-input-row">
-                <input id="agent-inline-input" class="assistant-inline-input" type="text" placeholder='Try: "mark rent done", "skip internet", "add phone $170 monthly"' />
+                <input id="agent-inline-input" class="assistant-inline-input" type="text" placeholder='Try: "mark rent done", "show progress", "set yearly goal 24000"' />
                 <button id="agent-inline-send" class="btn-small btn-primary">Run</button>
               </div>
               <div class="assistant-inline-chips">
@@ -177,6 +177,7 @@
                 <button class="chip" data-agent-shortcut="show due soon">Due soon</button>
                 <button class="chip" data-agent-shortcut="show templates">Templates</button>
                 <button class="chip" data-agent-shortcut="show summary">Summary</button>
+                <button class="chip" data-agent-shortcut="show progress">Progress</button>
                 <button class="chip" data-agent-shortcut="connect mamdou">Connect</button>
                 <button class="chip" data-agent-shortcut="connect mamdou with openai">OpenAI</button>
                 <button class="chip" data-agent-shortcut="connect mamdou with anthropic">Anthropic</button>
@@ -894,7 +895,7 @@ cd AuJourLeJour
             />
           </div>
           <div id="assistant-provider-hint" class="assistant-status meta"></div>
-          <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “add Internet $90 on the 3rd” or “mark rent done”"></textarea>
+          <textarea id="llm-agent-input" class="assistant-input" rows="3" placeholder="Try: “set progress manual”, “set monthly goal 5200”, or “show progress”"></textarea>
           <div class="assistant-actions">
             <button id="llm-agent-send" class="btn-small btn-primary">Send</button>
           </div>

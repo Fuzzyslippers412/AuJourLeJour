@@ -14,6 +14,7 @@ Repo: [github.com/Fuzzyslippers412/AuJourLeJour](https://github.com/Fuzzyslipper
 - Partial updates reflected in monthly totals and summary math
 - Action Queue (`Overdue`, `Due next 7 days`, `Later`)
 - Sticky mini-summary + inline expanded summary panel (no modal required)
+- Monthly + yearly progress overview with auto or manual goal targets
 - Sinking funds (“Piggy Banks”) for non-monthly obligations
 - Backup/export/import (`JSON` + month `CSV`)
 - Cross-platform read-only sharing (web/local) with relay
@@ -117,6 +118,10 @@ These commands are parsed locally first (before LLM) for faster response:
 - `connect mamdou with openai`
 - `connect mamdou with anthropic`
 - `remaining this month` / `overdue` / `due soon`
+- `show progress` / `what is my progress`
+- `set progress basis auto` / `set progress basis manual`
+- `set monthly goal 5200` / `set yearly goal 62400`
+- `set year scope ytd` / `set year scope full`
 - `set bill internet amount to 95` / `set bill internet due to 2026-03-12`
 - `set bill internet note to autopay pending`
 

@@ -712,7 +712,8 @@ function normalizeProgressBasis(value) {
 }
 
 function normalizeYearScope(value) {
-  return String(value || "").toLowerCase() === "full" ? "full" : "ytd";
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "full" || raw === "full year" ? "full" : "ytd";
 }
 
 function sanitizeGoalAmount(value) {
@@ -2635,6 +2636,18 @@ function buildLlmContext() {
   });
   const freeForMonth =
     totals.required > 0 && totals.remaining === 0 && overdue.length === 0;
+  const progress = state.progressData && typeof state.progressData === "object" ? state.progressData : null;
+  const monthProgress = progress?.month && typeof progress.month === "object" ? progress.month : null;
+  const yearProgress = progress?.year && typeof progress.year === "object" ? progress.year : null;
+  const monthTarget = Number(monthProgress?.target ?? totals.required);
+  const monthDone = Number(monthProgress?.done ?? totals.paid);
+  const monthRemaining = Number(monthProgress?.remaining ?? totals.remaining);
+  const monthPercent = monthTarget > 0 ? Number(((monthDone / monthTarget) * 100).toFixed(2)) : 0;
+  const yearTarget = Number(yearProgress?.target ?? monthTarget);
+  const yearDone = Number(yearProgress?.done ?? monthDone);
+  const yearRemaining = Number(yearProgress?.remaining ?? Math.max(0, yearTarget - yearDone));
+  const yearPercent = yearTarget > 0 ? Number(((yearDone / yearTarget) * 100).toFixed(2)) : 0;
+  const defaults = normalizeDefaults(state.settings.defaults || {});
 
   return {
     period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
@@ -2655,6 +2668,27 @@ function buildLlmContext() {
       due_date: item.due_date,
     })),
     free_for_month: freeForMonth,
+    progress: {
+      basis: String(progress?.basis || defaults.progressBasis || "auto"),
+      year_scope: String(progress?.year_scope || defaults.yearScope || "ytd"),
+      month: {
+        done: monthDone,
+        remaining: monthRemaining,
+        target: monthTarget,
+        percent: monthPercent,
+      },
+      year: {
+        done: yearDone,
+        remaining: yearRemaining,
+        target: yearTarget,
+        percent: yearPercent,
+        months_in_scope: Number(yearProgress?.months_in_scope || 0),
+      },
+      defaults: {
+        monthly_goal: Number(defaults.monthlyGoalAmount || 0),
+        yearly_goal: Number(defaults.yearlyGoalAmount || 0),
+      },
+    },
     templates_count: state.templates.length,
     items_count: base.length,
   };
@@ -2920,6 +2954,88 @@ function parseFastEssentialsIntent(input) {
       needs_confirmation: true,
       target: { type: "none", name: null },
       payload: { essentials_only: false },
+    };
+  }
+  return null;
+}
+
+function parseFastProgressIntent(input) {
+  const text = String(input || "").trim();
+  const lower = text.toLowerCase();
+  if (
+    /^(?:show|open)\s+(?:monthly\s+and\s+yearly\s+)?progress(?:\s+overview)?$/.test(lower) ||
+    /^(?:show|open)\s+progress\s+overview$/.test(lower)
+  ) {
+    return {
+      intent: "SHOW_PROGRESS",
+      confidence: 0.99,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  if (
+    /^(?:what(?:'s| is)?|show)\s+(?:my\s+)?progress(?:\s+this\s+month)?\??$/.test(lower) ||
+    /^progress\??$/.test(lower)
+  ) {
+    return {
+      intent: "LOCAL_SUMMARY_PROGRESS",
+      confidence: 0.99,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  const basisMatch =
+    text.match(/^(?:set|use|switch(?:\s+to)?)\s+(?:progress\s+)?basis\s+(auto|manual)$/i) ||
+    text.match(/^(?:set|use|switch(?:\s+to)?)\s+progress\s+(auto|manual)$/i);
+  if (basisMatch) {
+    return {
+      intent: "SET_PROGRESS_BASIS",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: { basis: normalizeProgressBasis(basisMatch[1]) },
+    };
+  }
+  const monthlyMatch = text.match(
+    /^(?:set|update)\s+(?:monthly|month)\s+(?:goal|progress\s+goal)\s*(?:to|=)?\s*\$?\s*(\d+(?:\.\d+)?)$/i
+  );
+  if (monthlyMatch) {
+    const amount = parseMoney(monthlyMatch[1]);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    return {
+      intent: "SET_PROGRESS_MONTHLY_GOAL",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: { amount },
+    };
+  }
+  const yearlyMatch = text.match(
+    /^(?:set|update)\s+(?:yearly|year)\s+(?:goal|progress\s+goal)\s*(?:to|=)?\s*\$?\s*(\d+(?:\.\d+)?)$/i
+  );
+  if (yearlyMatch) {
+    const amount = parseMoney(yearlyMatch[1]);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    return {
+      intent: "SET_PROGRESS_YEARLY_GOAL",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: { amount },
+    };
+  }
+  const scopeMatch = text.match(
+    /^(?:set|use|switch(?:\s+to)?)\s+(?:year\s+)?scope\s+(ytd|full|full\s+year)$/i
+  );
+  if (scopeMatch) {
+    return {
+      intent: "SET_PROGRESS_YEAR_SCOPE",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "none", name: null },
+      payload: { year_scope: normalizeYearScope(scopeMatch[1]) },
     };
   }
   return null;
@@ -3372,6 +3488,9 @@ function parseFastCommand(userText) {
 
   const essentialsIntent = parseFastEssentialsIntent(text);
   if (essentialsIntent) return essentialsIntent;
+
+  const progressIntent = parseFastProgressIntent(text);
+  if (progressIntent) return progressIntent;
 
   const exportIntent = parseFastExportIntent(text);
   if (exportIntent) return exportIntent;
@@ -4444,7 +4563,7 @@ async function applyProposal(proposal) {
       await openShareModal();
     } else if (intent === "SHOW_ASSISTANT") {
       els.assistantDrawer?.classList.remove("hidden");
-    } else if (intent === "SHOW_SUMMARY" || intent === "SHOW_DASHBOARD") {
+    } else if (intent === "SHOW_SUMMARY" || intent === "SHOW_DASHBOARD" || intent === "SHOW_PROGRESS") {
       state.view = "today";
       renderView();
       state.summaryExpanded = true;
@@ -4486,11 +4605,65 @@ async function applyProposal(proposal) {
     renderDashboard();
     return { ok: true, message: `Essentials only: ${state.essentialsOnly ? "on" : "off"}.` };
   }
+  if (intent === "SET_PROGRESS_BASIS") {
+    const nextBasis = normalizeProgressBasis(proposal.payload?.basis);
+    state.settings.defaults = normalizeDefaults({
+      ...state.settings.defaults,
+      progressBasis: nextBasis,
+    });
+    await saveSettings({ defaults: state.settings.defaults });
+    await loadProgressData();
+    renderDefaults();
+    renderDashboard();
+    return {
+      ok: true,
+      message: `Progress basis set to ${nextBasis === "manual" ? "manual goals" : "auto tracked totals"}.`,
+    };
+  }
+  if (intent === "SET_PROGRESS_MONTHLY_GOAL") {
+    const amount = sanitizeGoalAmount(proposal.payload?.amount);
+    state.settings.defaults = normalizeDefaults({
+      ...state.settings.defaults,
+      monthlyGoalAmount: amount,
+      progressBasis: "manual",
+    });
+    await saveSettings({ defaults: state.settings.defaults });
+    await loadProgressData();
+    renderDefaults();
+    renderDashboard();
+    return { ok: true, message: `Monthly progress goal set to ${formatMoney(amount)}.` };
+  }
+  if (intent === "SET_PROGRESS_YEARLY_GOAL") {
+    const amount = sanitizeGoalAmount(proposal.payload?.amount);
+    state.settings.defaults = normalizeDefaults({
+      ...state.settings.defaults,
+      yearlyGoalAmount: amount,
+      progressBasis: "manual",
+    });
+    await saveSettings({ defaults: state.settings.defaults });
+    await loadProgressData();
+    renderDefaults();
+    renderDashboard();
+    return { ok: true, message: `Yearly progress goal set to ${formatMoney(amount)}.` };
+  }
+  if (intent === "SET_PROGRESS_YEAR_SCOPE") {
+    const scope = normalizeYearScope(proposal.payload?.year_scope);
+    state.settings.defaults = normalizeDefaults({
+      ...state.settings.defaults,
+      yearScope: scope,
+    });
+    await saveSettings({ defaults: state.settings.defaults });
+    await loadProgressData();
+    renderDefaults();
+    renderDashboard();
+    return { ok: true, message: `Year progress scope set to ${scope === "full" ? "full year" : "YTD"}.` };
+  }
   if (
     intent === "LOCAL_SUMMARY_REMAINING" ||
     intent === "LOCAL_SUMMARY_OVERDUE" ||
     intent === "LOCAL_SUMMARY_DUE_SOON" ||
-    intent === "LOCAL_SUMMARY_FREE"
+    intent === "LOCAL_SUMMARY_FREE" ||
+    intent === "LOCAL_SUMMARY_PROGRESS"
   ) {
     const today = getTodayDateString();
     const list = getBaseInstances(deriveInstances());
@@ -4513,6 +4686,21 @@ async function applyProposal(proposal) {
     }
     if (intent === "LOCAL_SUMMARY_DUE_SOON") {
       return { ok: true, message: `Due soon (${dueSoonDays} days): ${dueSoon.length} bill(s).` };
+    }
+    if (intent === "LOCAL_SUMMARY_PROGRESS") {
+      const progress = state.progressData && typeof state.progressData === "object" ? state.progressData : null;
+      const monthPercent = Number(progress?.month?.percent || 0);
+      const yearPercent = Number(progress?.year?.percent || 0);
+      const scope = String(progress?.year_scope || state.settings.defaults?.yearScope || "ytd");
+      const scopeLabel = scope === "full" ? "full year" : "YTD";
+      const monthDone = Number(progress?.month?.done ?? totals.paid);
+      const monthTarget = Number(progress?.month?.target ?? totals.required);
+      const yearDone = Number(progress?.year?.done ?? monthDone);
+      const yearTarget = Number(progress?.year?.target ?? monthTarget);
+      return {
+        ok: true,
+        message: `Progress: month ${Math.round(monthPercent)}% (${formatMoney(monthDone)} of ${formatMoney(monthTarget)}), year ${Math.round(yearPercent)}% (${formatMoney(yearDone)} of ${formatMoney(yearTarget)}, ${scopeLabel}).`,
+      };
     }
     if (totals.required > 0 && totals.remaining === 0 && overdue.length === 0) {
       return { ok: true, message: "Yes — free for the month." };
@@ -5471,7 +5659,12 @@ function summarizeProposal(proposal) {
   if (intent === "UNDO_PAYMENT") return `Undo update: ${target}`;
   if (intent === "SET_MONTH") return "Switch month";
   if (intent === "SET_ESSENTIALS_ONLY") return "Toggle essentials only";
+  if (intent === "SET_PROGRESS_BASIS") return "Set progress basis";
+  if (intent === "SET_PROGRESS_MONTHLY_GOAL") return "Set monthly progress goal";
+  if (intent === "SET_PROGRESS_YEARLY_GOAL") return "Set yearly progress goal";
+  if (intent === "SET_PROGRESS_YEAR_SCOPE") return "Set year progress scope";
   if (intent === "SHOW_SUMMARY") return "Show Today";
+  if (intent === "SHOW_PROGRESS") return "Show progress overview";
   if (intent === "SHOW_SHARE") return "Open share controls";
   if (intent === "CREATE_SHARE") return "Create share link";
   if (intent === "REFRESH_SHARE") return "Refresh shared view";
@@ -5490,6 +5683,7 @@ function summarizeProposal(proposal) {
   if (intent === "LOCAL_SUMMARY_OVERDUE") return "Show overdue count";
   if (intent === "LOCAL_SUMMARY_DUE_SOON") return "Show due-soon count";
   if (intent === "LOCAL_SUMMARY_FREE") return "Check free-for-month status";
+  if (intent === "LOCAL_SUMMARY_PROGRESS") return "Show month and year progress";
   return `Intent: ${intent}`;
 }
 
@@ -5498,6 +5692,7 @@ const AUTO_EXECUTE_INTENTS = new Set([
   "SHOW_OVERDUE",
   "SHOW_TEMPLATES",
   "SHOW_SUMMARY",
+  "SHOW_PROGRESS",
   "SHOW_DASHBOARD",
   "SHOW_BACKUP",
   "SHOW_PIGGY",
@@ -5511,6 +5706,7 @@ const AUTO_EXECUTE_INTENTS = new Set([
   "LOCAL_SUMMARY_OVERDUE",
   "LOCAL_SUMMARY_DUE_SOON",
   "LOCAL_SUMMARY_FREE",
+  "LOCAL_SUMMARY_PROGRESS",
 ]);
 
 function canAutoExecuteProposal(proposal) {
