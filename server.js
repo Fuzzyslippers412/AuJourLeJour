@@ -1750,6 +1750,55 @@ function parseEssentialsOnly(value) {
   return true;
 }
 
+function sanitizeGoalAmount(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) return 0;
+  return Number(amount.toFixed(2));
+}
+
+function normalizeProgressBasis(value) {
+  return String(value || "").toLowerCase() === "manual" ? "manual" : "auto";
+}
+
+function normalizeYearScope(value) {
+  return String(value || "").toLowerCase() === "full" ? "full" : "ytd";
+}
+
+function normalizeSettingsDefaults(defaultsRaw) {
+  const defaults = defaultsRaw && typeof defaultsRaw === "object" ? defaultsRaw : {};
+  const allowedSort = new Set(["due_date", "amount", "name", "status"]);
+  const sort = allowedSort.has(defaults.sort) ? defaults.sort : "due_date";
+  let dueSoonDays = Number(defaults.dueSoonDays ?? 7);
+  if (!Number.isFinite(dueSoonDays) || dueSoonDays < 1 || dueSoonDays > 31) {
+    dueSoonDays = 7;
+  }
+  return {
+    sort,
+    dueSoonDays: Math.round(dueSoonDays),
+    defaultPeriod: "month",
+    progressBasis: normalizeProgressBasis(defaults.progressBasis),
+    monthlyGoalAmount: sanitizeGoalAmount(defaults.monthlyGoalAmount),
+    yearlyGoalAmount: sanitizeGoalAmount(defaults.yearlyGoalAmount),
+    yearScope: normalizeYearScope(defaults.yearScope),
+  };
+}
+
+function normalizeSettingsPayload(raw) {
+  const input = raw && typeof raw === "object" ? raw : {};
+  const categories = Array.isArray(input.categories)
+    ? input.categories.map((c) => String(c || "").trim()).filter(Boolean)
+    : [];
+  const firstRunCompleted = input.firstRunCompleted === true;
+  const hasCompletedOnboarding =
+    input.hasCompletedOnboarding === true || input.firstRunCompleted === true;
+  return {
+    defaults: normalizeSettingsDefaults(input.defaults),
+    categories,
+    firstRunCompleted,
+    hasCompletedOnboarding,
+  };
+}
+
 function toBoolean(value, defaultValue) {
   if (value === undefined || value === null) return defaultValue;
   if (value === true || value === "true" || value === 1 || value === "1") return true;
@@ -2669,6 +2718,68 @@ function getInstances(year, month) {
   return attachPayments(rows);
 }
 
+function roundMoney(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Number(num.toFixed(2));
+}
+
+function buildProjectedInstancesFromTemplates(templates, year, month) {
+  return templates
+    .filter((template) => Number(template.active) === 1)
+    .map((template) => {
+      const dueDay = ledger.clampDueDay(year, month, Number(template.due_day || 1));
+      return {
+        id: `projected:${template.id}:${year}-${ledger.pad2(month)}`,
+        template_id: template.id,
+        year,
+        month,
+        name_snapshot: template.name,
+        category_snapshot: template.category || null,
+        amount: Number(template.amount_default || 0),
+        due_date: ledger.toDateString(year, month, dueDay),
+        autopay_snapshot: Number(template.autopay) === 1,
+        essential_snapshot: Number(template.essential) === 1,
+        status: "pending",
+        status_derived: "pending",
+        amount_paid: 0,
+        amount_remaining: Number(template.amount_default || 0),
+      };
+    });
+}
+
+function getProgressInstancesForMonth(year, month, activeTemplates) {
+  const rows = db
+    .prepare("SELECT * FROM instances WHERE year = ? AND month = ? ORDER BY due_date ASC, name_snapshot COLLATE NOCASE")
+    .all(year, month);
+  if (rows.length > 0) return attachPayments(rows);
+  return buildProjectedInstancesFromTemplates(activeTemplates, year, month);
+}
+
+function computeProgressTotals(instances, essentialsOnly) {
+  const list = essentialsOnly
+    ? instances.filter((item) => Boolean(item.essential_snapshot))
+    : instances;
+  const required = list
+    .filter((item) => item.status_derived !== "skipped")
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const done = list
+    .filter((item) => item.status_derived !== "skipped")
+    .reduce((sum, item) => {
+      const due = Number(item.amount || 0);
+      const paid = Number(item.amount_paid || 0);
+      return sum + Math.min(due, paid);
+    }, 0);
+  const remaining = list
+    .filter((item) => item.status_derived !== "skipped")
+    .reduce((sum, item) => sum + Number(item.amount_remaining || 0), 0);
+  return {
+    required: roundMoney(required),
+    done: roundMoney(done),
+    remaining: roundMoney(remaining),
+  };
+}
+
 app.get("/api/ensure-month", (req, res) => {
   const parsed = parseYearMonth(req);
   if (!parsed) return res.status(400).json({ error: "Invalid year/month" });
@@ -3073,46 +3184,103 @@ app.delete("/api/chat", (req, res) => {
 });
 
 app.get("/api/settings", (req, res) => {
-  const stored = getMetaJson("settings") || {};
+  const stored = normalizeSettingsPayload(getMetaJson("settings") || {});
   const settings = {
-    defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
-    categories: [],
+    ...stored,
     share_base_url: SHARE_RELAY_BASE_URL,
     share_viewer_base_url: getViewerBaseUrl(req),
-    firstRunCompleted: !!stored.firstRunCompleted,
-    hasCompletedOnboarding: !!(stored.hasCompletedOnboarding ?? stored.firstRunCompleted),
   };
-  if (stored.defaults) settings.defaults = stored.defaults;
-  if (Array.isArray(stored.categories)) settings.categories = stored.categories;
   res.json(settings);
 });
 
 app.post("/api/settings", (req, res) => {
-  const body = req.body || {};
-  const defaults = body.defaults || {};
-  const allowedSort = new Set(["due_date", "amount", "name", "status"]);
-  const sort = allowedSort.has(defaults.sort) ? defaults.sort : "due_date";
-  let dueSoonDays = Number(defaults.dueSoonDays ?? 7);
-  if (!Number.isFinite(dueSoonDays) || dueSoonDays < 1 || dueSoonDays > 31) {
-    dueSoonDays = 7;
-  }
-  const defaultPeriod = defaults.defaultPeriod === "month" ? "month" : "month";
-  const categories = Array.isArray(body.categories)
-    ? body.categories.map((c) => String(c || "").trim()).filter(Boolean)
-    : [];
-  const firstRunCompleted = body.firstRunCompleted === true;
-  const hasCompletedOnboarding =
-    body.hasCompletedOnboarding === true || body.firstRunCompleted === true;
+  const normalized = normalizeSettingsPayload(req.body || {});
   const payload = {
-    defaults: { sort, dueSoonDays, defaultPeriod },
-    categories,
+    ...normalized,
     share_base_url: SHARE_RELAY_BASE_URL,
     share_viewer_base_url: getViewerBaseUrl(req),
-    firstRunCompleted,
-    hasCompletedOnboarding,
   };
   setMetaJson("settings", payload);
   res.json(payload);
+});
+
+app.get("/api/progress", (req, res) => {
+  const parsed = parseYearMonth(req);
+  if (!parsed) return res.status(400).json({ error: "Invalid year/month" });
+  const settings = normalizeSettingsPayload(getMetaJson("settings") || {});
+  const defaults = settings.defaults || normalizeSettingsDefaults({});
+  const basis = normalizeProgressBasis(defaults.progressBasis);
+  const yearScope = normalizeYearScope(req.query.year_scope || defaults.yearScope);
+  const essentialsOnly = parseEssentialsOnly(req.query.essentials_only);
+  const activeTemplates = db
+    .prepare("SELECT * FROM templates WHERE active = 1 ORDER BY name COLLATE NOCASE")
+    .all();
+
+  const monthInstances = getProgressInstancesForMonth(
+    parsed.year,
+    parsed.month,
+    activeTemplates
+  );
+  const monthTotals = computeProgressTotals(monthInstances, essentialsOnly);
+
+  const monthStart = 1;
+  const monthEnd = yearScope === "full" ? 12 : parsed.month;
+  let yearRequired = 0;
+  let yearDone = 0;
+  let yearRemaining = 0;
+  for (let m = monthStart; m <= monthEnd; m += 1) {
+    const rows = getProgressInstancesForMonth(parsed.year, m, activeTemplates);
+    const totals = computeProgressTotals(rows, essentialsOnly);
+    yearRequired += totals.required;
+    yearDone += totals.done;
+    yearRemaining += totals.remaining;
+  }
+  const yearTotals = {
+    required: roundMoney(yearRequired),
+    done: roundMoney(yearDone),
+    remaining: roundMoney(yearRemaining),
+  };
+
+  let monthTarget = monthTotals.required;
+  let yearTarget = yearTotals.required;
+  if (basis === "manual") {
+    if (defaults.monthlyGoalAmount > 0) {
+      monthTarget = roundMoney(defaults.monthlyGoalAmount);
+    }
+    if (defaults.yearlyGoalAmount > 0) {
+      yearTarget = roundMoney(defaults.yearlyGoalAmount);
+    } else if (defaults.monthlyGoalAmount > 0) {
+      yearTarget = roundMoney(defaults.monthlyGoalAmount * monthEnd);
+    }
+  }
+  const monthPercent = monthTarget > 0 ? (monthTotals.done / monthTarget) * 100 : 0;
+  const yearPercent = yearTarget > 0 ? (yearTotals.done / yearTarget) * 100 : 0;
+
+  res.json({
+    period: `${parsed.year}-${ledger.pad2(parsed.month)}`,
+    basis,
+    year_scope: yearScope,
+    essentials_only: essentialsOnly,
+    month: {
+      required: monthTotals.required,
+      done: monthTotals.done,
+      remaining: monthTotals.remaining,
+      target: roundMoney(monthTarget),
+      target_remaining: roundMoney(Math.max(0, monthTarget - monthTotals.done)),
+      percent: roundMoney(monthPercent),
+    },
+    year: {
+      required: yearTotals.required,
+      done: yearTotals.done,
+      remaining: yearTotals.remaining,
+      target: roundMoney(yearTarget),
+      target_remaining: roundMoney(Math.max(0, yearTarget - yearTotals.done)),
+      percent: roundMoney(yearPercent),
+      months_in_scope: monthEnd,
+      start_month: monthStart,
+      end_month: monthEnd,
+    },
+  });
 });
 
 app.post("/api/reset-local", (req, res) => {
@@ -3928,10 +4096,7 @@ app.get("/api/export/backup.json", (req, res) => {
   const monthSettings = db.prepare("SELECT * FROM month_settings").all();
   const sinkingFunds = db.prepare("SELECT * FROM sinking_funds").all();
   const sinkingEvents = db.prepare("SELECT * FROM sinking_events").all();
-  const settings = getMetaJson("settings") || {
-    defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
-    categories: [],
-  };
+  const settings = normalizeSettingsPayload(getMetaJson("settings") || {});
   res.json({
     app: "au-jour-le-jour",
     app_version: APP_VERSION,
@@ -4159,16 +4324,7 @@ app.post("/api/import/backup", (req, res) => {
     }
 
     if (incomingSettings) {
-      const payload = {
-        defaults: {
-          sort: incomingSettings.defaults?.sort || "due_date",
-          dueSoonDays: Number(incomingSettings.defaults?.dueSoonDays || 7),
-          defaultPeriod: incomingSettings.defaults?.defaultPeriod || "month",
-        },
-        categories: Array.isArray(incomingSettings.categories)
-          ? incomingSettings.categories.map((c) => String(c || "").trim()).filter(Boolean)
-          : [],
-      };
+      const payload = normalizeSettingsPayload(incomingSettings);
       setMetaJson("settings", payload);
     }
 

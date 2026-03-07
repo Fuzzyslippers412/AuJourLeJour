@@ -106,6 +106,37 @@
                   <div>Due soon: <span id="summary-count-soon">0</span></div>
                   <div>Done: <span id="summary-count-done">0</span></div>
                 </div>
+                <div class="summary-progress-head">
+                  <div class="summary-panel-title">Progress overview</div>
+                  <label class="summary-inline-control">
+                    Year scope
+                    <select id="summary-year-scope" class="select">
+                      <option value="ytd">YTD</option>
+                      <option value="full">Full year</option>
+                    </select>
+                  </label>
+                </div>
+                <div id="summary-progress-basis" class="summary-panel-sub">
+                  Based on required totals from your tracked bills.
+                </div>
+                <div class="summary-progress-grid">
+                  <div class="summary-progress-card">
+                    <div class="summary-label">Month progress</div>
+                    <div id="progress-month-value" class="summary-value">0%</div>
+                    <div id="progress-month-meta" class="summary-caption">$0.00 of $0.00</div>
+                    <div class="summary-progress-track">
+                      <span id="progress-month-bar" style="width: 0%"></span>
+                    </div>
+                  </div>
+                  <div class="summary-progress-card">
+                    <div class="summary-label">Year progress</div>
+                    <div id="progress-year-value" class="summary-value">0%</div>
+                    <div id="progress-year-meta" class="summary-caption">$0.00 of $0.00</div>
+                    <div class="summary-progress-track">
+                      <span id="progress-year-bar" style="width: 0%"></span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -421,6 +452,28 @@ cd AuJourLeJour
             <label>
               Due soon window (days)
               <input id="defaults-due-soon" type="number" min="1" max="31" />
+            </label>
+            <label>
+              Progress basis
+              <select id="defaults-progress-basis" class="select">
+                <option value="auto">Auto (from tracked bills)</option>
+                <option value="manual">Manual goals</option>
+              </select>
+            </label>
+            <label>
+              Monthly goal amount
+              <input id="defaults-monthly-goal" type="number" min="0" step="0.01" />
+            </label>
+            <label>
+              Yearly goal amount
+              <input id="defaults-yearly-goal" type="number" min="0" step="0.01" />
+            </label>
+            <label>
+              Year scope
+              <select id="defaults-year-scope" class="select">
+                <option value="ytd">YTD</option>
+                <option value="full">Full year</option>
+              </select>
             </label>
             <button id="save-defaults" class="ghost-btn">Save defaults</button>
           </div>

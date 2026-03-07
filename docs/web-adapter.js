@@ -34,7 +34,15 @@
         agent_command_log: [],
         assistant_chat: [],
         settings: {
-          defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
+          defaults: {
+            sort: "due_date",
+            dueSoonDays: 7,
+            defaultPeriod: "month",
+            progressBasis: "auto",
+            monthlyGoalAmount: 0,
+            yearlyGoalAmount: 0,
+            yearScope: "ytd",
+          },
           categories: [],
         },
       },
@@ -145,6 +153,39 @@
 
   function validYearMonth(year, month) {
     return Number.isInteger(year) && Number.isInteger(month) && year >= 2000 && year <= 2100 && month >= 1 && month <= 12;
+  }
+
+  function normalizeProgressBasis(value) {
+    return String(value || "").toLowerCase() === "manual" ? "manual" : "auto";
+  }
+
+  function normalizeYearScope(value) {
+    return String(value || "").toLowerCase() === "full" ? "full" : "ytd";
+  }
+
+  function sanitizeGoalAmount(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount) || amount < 0) return 0;
+    return Number(amount.toFixed(2));
+  }
+
+  function normalizeSettingsDefaults(rawDefaults) {
+    const defaults = rawDefaults && typeof rawDefaults === "object" ? rawDefaults : {};
+    const allowedSort = new Set(["due_date", "amount", "name", "status"]);
+    const sort = allowedSort.has(defaults.sort) ? defaults.sort : "due_date";
+    let dueSoonDays = Number(defaults.dueSoonDays ?? 7);
+    if (!Number.isFinite(dueSoonDays) || dueSoonDays < 1 || dueSoonDays > 31) {
+      dueSoonDays = 7;
+    }
+    return {
+      sort,
+      dueSoonDays: Math.round(dueSoonDays),
+      defaultPeriod: "month",
+      progressBasis: normalizeProgressBasis(defaults.progressBasis),
+      monthlyGoalAmount: sanitizeGoalAmount(defaults.monthlyGoalAmount),
+      yearlyGoalAmount: sanitizeGoalAmount(defaults.yearlyGoalAmount),
+      yearScope: normalizeYearScope(defaults.yearScope),
+    };
   }
 
   function pad2(value) {
@@ -282,6 +323,65 @@
     };
   }
 
+  function roundMoney(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 0;
+    return Number(num.toFixed(2));
+  }
+
+  function buildProjectedInstancesFromTemplates(templates, year, month) {
+    return templates
+      .filter((template) => template.active !== false)
+      .map((template) => {
+        const dueDay = clampDueDay(year, month, Number(template.due_day || 1));
+        const amount = Number(template.amount_default || 0);
+        return {
+          id: `projected:${template.id}:${year}-${pad2(month)}`,
+          template_id: template.id,
+          year,
+          month,
+          name_snapshot: template.name,
+          category_snapshot: template.category || null,
+          amount,
+          due_date: toDateString(year, month, dueDay),
+          autopay_snapshot: !!template.autopay,
+          essential_snapshot: template.essential !== false,
+          status: "pending",
+          status_derived: "pending",
+          amount_paid: 0,
+          amount_remaining: amount,
+        };
+      });
+  }
+
+  function getProgressInstancesForMonth(db, year, month, templates) {
+    const rows = getInstances(db).filter((inst) => inst.year === year && inst.month === month);
+    if (rows.length > 0) return attachPayments(db, rows);
+    return buildProjectedInstancesFromTemplates(templates, year, month);
+  }
+
+  function computeProgressTotals(instances, essentialsOnly) {
+    const list = essentialsOnly ? instances.filter((item) => item.essential_snapshot) : instances;
+    const required = list
+      .filter((item) => item.status_derived !== "skipped")
+      .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const done = list
+      .filter((item) => item.status_derived !== "skipped")
+      .reduce((sum, item) => {
+        const due = Number(item.amount || 0);
+        const paid = Number(item.amount_paid || 0);
+        return sum + Math.min(due, paid);
+      }, 0);
+    const remaining = list
+      .filter((item) => item.status_derived !== "skipped")
+      .reduce((sum, item) => sum + Number(item.amount_remaining || 0), 0);
+    return {
+      required: roundMoney(required),
+      done: roundMoney(done),
+      remaining: roundMoney(remaining),
+    };
+  }
+
   function getData(db) {
     if (!db.data) db.data = defaultDb().data;
     return db.data;
@@ -330,22 +430,21 @@
     const settings = getData(db).settings;
     if (!settings || typeof settings !== "object") {
       return {
-        defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
+        defaults: normalizeSettingsDefaults({}),
         categories: [],
         share_base_url: SHARE_BASE_URL,
         share_viewer_base_url: SHARE_VIEWER_BASE_URL,
+        firstRunCompleted: false,
+        hasCompletedOnboarding: false,
       };
     }
-    const defaults = settings.defaults || {};
     return {
-      defaults: {
-        sort: defaults.sort || "due_date",
-        dueSoonDays: Number(defaults.dueSoonDays || 7),
-        defaultPeriod: defaults.defaultPeriod || "month",
-      },
+      defaults: normalizeSettingsDefaults(settings.defaults || {}),
       categories: Array.isArray(settings.categories) ? settings.categories.filter(Boolean) : [],
       share_base_url: SHARE_BASE_URL,
       share_viewer_base_url: SHARE_VIEWER_BASE_URL,
+      firstRunCompleted: settings.firstRunCompleted === true,
+      hasCompletedOnboarding: settings.hasCompletedOnboarding === true || settings.firstRunCompleted === true,
     };
   }
 
@@ -654,24 +753,97 @@
       const bodyRes = await parseJsonBody(req);
       if (!bodyRes.ok) return jsonResponse(400, { ok: false, error: bodyRes.error });
       const body = bodyRes.body || {};
-      const defaults = body.defaults || {};
-      const allowedSort = new Set(["due_date", "amount", "name", "status"]);
-      const sort = allowedSort.has(defaults.sort) ? defaults.sort : "due_date";
-      let dueSoonDays = Number(defaults.dueSoonDays ?? 7);
-      if (!Number.isFinite(dueSoonDays) || dueSoonDays < 1 || dueSoonDays > 31) {
-        dueSoonDays = 7;
-      }
-      const defaultPeriod = defaults.defaultPeriod === "month" ? "month" : "month";
       const categories = Array.isArray(body.categories)
         ? body.categories.map((c) => String(c || "").trim()).filter(Boolean)
         : [];
       getData(db).settings = {
-        defaults: { sort, dueSoonDays, defaultPeriod },
+        defaults: normalizeSettingsDefaults(body.defaults || {}),
         categories,
+        firstRunCompleted: body.firstRunCompleted === true,
+        hasCompletedOnboarding:
+          body.hasCompletedOnboarding === true || body.firstRunCompleted === true,
       };
       const saved = safeSaveDb(db);
       if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
       return ok(getSettings(db));
+    }
+
+    if (path === "/api/progress" && req.method === "GET") {
+      const parsed = parseYearMonth(params);
+      if (!parsed) return bad("INVALID_INPUT", "Invalid year/month");
+      const settings = getSettings(db);
+      const defaults = settings.defaults || normalizeSettingsDefaults({});
+      const basis = normalizeProgressBasis(defaults.progressBasis);
+      const yearScope = normalizeYearScope(params.get("year_scope") || defaults.yearScope);
+      const essentialsOnly = params.get("essentials_only") !== "false";
+      const templates = getTemplates(db).filter((template) => template.active !== false);
+
+      const monthRows = getProgressInstancesForMonth(
+        db,
+        parsed.year,
+        parsed.month,
+        templates
+      );
+      const monthTotals = computeProgressTotals(monthRows, essentialsOnly);
+
+      const monthStart = 1;
+      const monthEnd = yearScope === "full" ? 12 : parsed.month;
+      let yearRequired = 0;
+      let yearDone = 0;
+      let yearRemaining = 0;
+      for (let m = monthStart; m <= monthEnd; m += 1) {
+        const rows = getProgressInstancesForMonth(db, parsed.year, m, templates);
+        const totals = computeProgressTotals(rows, essentialsOnly);
+        yearRequired += totals.required;
+        yearDone += totals.done;
+        yearRemaining += totals.remaining;
+      }
+      const yearTotals = {
+        required: roundMoney(yearRequired),
+        done: roundMoney(yearDone),
+        remaining: roundMoney(yearRemaining),
+      };
+
+      let monthTarget = monthTotals.required;
+      let yearTarget = yearTotals.required;
+      if (basis === "manual") {
+        if (defaults.monthlyGoalAmount > 0) {
+          monthTarget = roundMoney(defaults.monthlyGoalAmount);
+        }
+        if (defaults.yearlyGoalAmount > 0) {
+          yearTarget = roundMoney(defaults.yearlyGoalAmount);
+        } else if (defaults.monthlyGoalAmount > 0) {
+          yearTarget = roundMoney(defaults.monthlyGoalAmount * monthEnd);
+        }
+      }
+      const monthPercent = monthTarget > 0 ? (monthTotals.done / monthTarget) * 100 : 0;
+      const yearPercent = yearTarget > 0 ? (yearTotals.done / yearTarget) * 100 : 0;
+
+      return ok({
+        period: `${parsed.year}-${pad2(parsed.month)}`,
+        basis,
+        year_scope: yearScope,
+        essentials_only: essentialsOnly,
+        month: {
+          required: monthTotals.required,
+          done: monthTotals.done,
+          remaining: monthTotals.remaining,
+          target: roundMoney(monthTarget),
+          target_remaining: roundMoney(Math.max(0, monthTarget - monthTotals.done)),
+          percent: roundMoney(monthPercent),
+        },
+        year: {
+          required: yearTotals.required,
+          done: yearTotals.done,
+          remaining: yearTotals.remaining,
+          target: roundMoney(yearTarget),
+          target_remaining: roundMoney(Math.max(0, yearTarget - yearTotals.done)),
+          percent: roundMoney(yearPercent),
+          months_in_scope: monthEnd,
+          start_month: monthStart,
+          end_month: monthEnd,
+        },
+      });
     }
 
     if (path === "/api/ensure-month" && req.method === "GET") {
@@ -963,6 +1135,7 @@
 
     if (path === "/api/export/backup.json" && req.method === "GET") {
       const data = getData(db);
+      const settings = getSettings(db);
       return ok({
         app: "au-jour-le-jour",
         app_version: "web",
@@ -975,7 +1148,13 @@
         month_settings: data.month_settings,
         sinking_funds: data.sinking_funds,
         sinking_events: data.sinking_events,
-        settings: data.settings,
+        settings: {
+          defaults: normalizeSettingsDefaults(settings.defaults || {}),
+          categories: Array.isArray(settings.categories) ? settings.categories : [],
+          firstRunCompleted: settings.firstRunCompleted === true,
+          hasCompletedOnboarding:
+            settings.hasCompletedOnboarding === true || settings.firstRunCompleted === true,
+        },
       });
     }
 
@@ -1017,9 +1196,29 @@
       data.month_settings = Array.isArray(payload.month_settings) ? payload.month_settings : [];
       data.sinking_funds = Array.isArray(payload.sinking_funds) ? payload.sinking_funds : [];
       data.sinking_events = Array.isArray(payload.sinking_events) ? payload.sinking_events : [];
-      data.settings = payload.settings && typeof payload.settings === "object"
-        ? payload.settings
-        : getSettings(fresh);
+      if (payload.settings && typeof payload.settings === "object") {
+        const incomingSettings = payload.settings;
+        data.settings = {
+          defaults: normalizeSettingsDefaults(incomingSettings.defaults || {}),
+          categories: Array.isArray(incomingSettings.categories)
+            ? incomingSettings.categories.map((c) => String(c || "").trim()).filter(Boolean)
+            : [],
+          firstRunCompleted: incomingSettings.firstRunCompleted === true,
+          hasCompletedOnboarding:
+            incomingSettings.hasCompletedOnboarding === true ||
+            incomingSettings.firstRunCompleted === true,
+        };
+      } else {
+        const normalized = getSettings(fresh);
+        data.settings = {
+          defaults: normalizeSettingsDefaults(normalized.defaults || {}),
+          categories: Array.isArray(normalized.categories) ? normalized.categories : [],
+          firstRunCompleted: normalized.firstRunCompleted === true,
+          hasCompletedOnboarding:
+            normalized.hasCompletedOnboarding === true ||
+            normalized.firstRunCompleted === true,
+        };
+      }
       const saved = safeSaveDb(fresh);
       if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
       return ok({ imported: true });

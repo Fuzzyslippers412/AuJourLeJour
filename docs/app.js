@@ -5,7 +5,15 @@ const state = {
   funds: [],
   selectedTemplates: new Set(),
   settings: {
-    defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" },
+    defaults: {
+      sort: "due_date",
+      dueSoonDays: 7,
+      defaultPeriod: "month",
+      progressBasis: "auto",
+      monthlyGoalAmount: 0,
+      yearlyGoalAmount: 0,
+      yearScope: "ytd",
+    },
     categories: [],
     share_base_url: "",
     share_viewer_base_url: "",
@@ -69,6 +77,7 @@ const state = {
   integrityStatus: "unknown",
   dataVersion: 0,
   summaryCache: null,
+  progressData: null,
   janitorReport: null,
   janitorSelectedId: "",
   janitorFilter: {
@@ -457,6 +466,14 @@ const els = {
   summaryCountOverdue: document.getElementById("summary-count-overdue"),
   summaryCountSoon: document.getElementById("summary-count-soon"),
   summaryCountDone: document.getElementById("summary-count-done"),
+  summaryYearScope: document.getElementById("summary-year-scope"),
+  summaryProgressBasis: document.getElementById("summary-progress-basis"),
+  progressMonthValue: document.getElementById("progress-month-value"),
+  progressMonthMeta: document.getElementById("progress-month-meta"),
+  progressMonthBar: document.getElementById("progress-month-bar"),
+  progressYearValue: document.getElementById("progress-year-value"),
+  progressYearMeta: document.getElementById("progress-year-meta"),
+  progressYearBar: document.getElementById("progress-year-bar"),
   sharedHeader: document.getElementById("shared-header"),
   sharedOwner: document.getElementById("shared-owner"),
   sharedUpdated: document.getElementById("shared-updated"),
@@ -491,6 +508,10 @@ const els = {
   defaultsPeriod: document.getElementById("defaults-period"),
   defaultsSort: document.getElementById("defaults-sort"),
   defaultsDueSoon: document.getElementById("defaults-due-soon"),
+  defaultsProgressBasis: document.getElementById("defaults-progress-basis"),
+  defaultsMonthlyGoal: document.getElementById("defaults-monthly-goal"),
+  defaultsYearlyGoal: document.getElementById("defaults-yearly-goal"),
+  defaultsYearScope: document.getElementById("defaults-year-scope"),
   saveDefaults: document.getElementById("save-defaults"),
   categoryInput: document.getElementById("category-input"),
   categoryAdd: document.getElementById("category-add"),
@@ -684,6 +705,41 @@ function saveShareOptions() {
   } catch (err) {
     // ignore
   }
+}
+
+function normalizeProgressBasis(value) {
+  return String(value || "").toLowerCase() === "manual" ? "manual" : "auto";
+}
+
+function normalizeYearScope(value) {
+  return String(value || "").toLowerCase() === "full" ? "full" : "ytd";
+}
+
+function sanitizeGoalAmount(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) return 0;
+  return Number(amount.toFixed(2));
+}
+
+function normalizeDefaults(rawDefaults = {}) {
+  const defaults = rawDefaults && typeof rawDefaults === "object" ? rawDefaults : {};
+  const allowedSort = new Set(["due_date", "amount", "name", "status"]);
+  const sort = allowedSort.has(defaults.sort) ? defaults.sort : "due_date";
+  const dueSoonDaysRaw = Number(defaults.dueSoonDays ?? 7);
+  const dueSoonDays =
+    Number.isFinite(dueSoonDaysRaw) && dueSoonDaysRaw >= 1 && dueSoonDaysRaw <= 31
+      ? Math.round(dueSoonDaysRaw)
+      : 7;
+  const defaultPeriod = defaults.defaultPeriod === "month" ? "month" : "month";
+  return {
+    sort,
+    dueSoonDays,
+    defaultPeriod,
+    progressBasis: normalizeProgressBasis(defaults.progressBasis),
+    monthlyGoalAmount: sanitizeGoalAmount(defaults.monthlyGoalAmount),
+    yearlyGoalAmount: sanitizeGoalAmount(defaults.yearlyGoalAmount),
+    yearScope: normalizeYearScope(defaults.yearScope),
+  };
 }
 
 function normalizeJanitorRuntimeBase(value) {
@@ -1236,7 +1292,10 @@ function mergeBackups(existingRaw, incomingRaw) {
     month_settings: [],
     sinking_funds: [],
     sinking_events: [],
-    settings: existing.settings || incoming.settings || { defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" }, categories: [] },
+    settings:
+      existing.settings ||
+      incoming.settings ||
+      { defaults: normalizeDefaults({}), categories: [] },
   };
 
   let conflicts = 0;
@@ -1310,7 +1369,7 @@ function mergeBackups(existingRaw, incomingRaw) {
   addUnique(existing.sinking_events, incoming.sinking_events, (e) => String(e.id || ""), merged.sinking_events);
 
   if (existing.settings || incoming.settings) {
-    const existingSettings = existing.settings || { defaults: { sort: "due_date", dueSoonDays: 7, defaultPeriod: "month" }, categories: [] };
+    const existingSettings = existing.settings || { defaults: normalizeDefaults({}), categories: [] };
     const incomingSettings = incoming.settings || { defaults: {}, categories: [] };
     merged.settings = {
       defaults: { ...incomingSettings.defaults, ...existingSettings.defaults },
@@ -1504,18 +1563,25 @@ async function loadFunds() {
   state.funds = Array.isArray(data) ? data : [];
 }
 
+async function loadProgressData() {
+  const params = new URLSearchParams();
+  params.set("year", String(state.selectedYear));
+  params.set("month", String(state.selectedMonth));
+  params.set("essentials_only", state.essentialsOnly ? "true" : "false");
+  params.set("year_scope", normalizeYearScope(state.settings.defaults?.yearScope));
+  const res = await apiFetch(`/api/progress?${params.toString()}`);
+  const data = await readApiData(res);
+  state.progressData = data && typeof data === "object" ? data : null;
+}
+
 async function loadSettings() {
   const res = await apiFetch("/api/settings");
   const data = await readApiData(res);
   if (data && typeof data === "object") {
-    const defaults = data.defaults || state.settings.defaults;
+    const defaults = normalizeDefaults(data.defaults || state.settings.defaults);
     const categories = Array.isArray(data.categories) ? data.categories : [];
     state.settings = {
-      defaults: {
-        sort: defaults.sort || "due_date",
-        dueSoonDays: Number(defaults.dueSoonDays || 7),
-        defaultPeriod: defaults.defaultPeriod || "month",
-      },
+      defaults,
       categories,
       share_base_url: typeof data.share_base_url === "string" ? data.share_base_url : "",
       share_viewer_base_url:
@@ -1525,6 +1591,9 @@ async function loadSettings() {
     };
     state.filters.sort = state.settings.defaults.sort || state.filters.sort;
     if (els.sortFilter) els.sortFilter.value = state.filters.sort;
+    if (els.summaryYearScope) {
+      els.summaryYearScope.value = state.settings.defaults.yearScope || "ytd";
+    }
   }
 }
 
@@ -3467,6 +3536,56 @@ function renderSummary(list) {
   if (els.summaryCountSoon) els.summaryCountSoon.textContent = dueSoon.length;
   if (els.summaryCountDone) els.summaryCountDone.textContent = doneCount;
 
+  const progress = state.progressData && typeof state.progressData === "object" ? state.progressData : null;
+  const monthProgress = progress?.month && typeof progress.month === "object" ? progress.month : null;
+  const yearProgress = progress?.year && typeof progress.year === "object" ? progress.year : null;
+  const monthDone = Number(monthProgress?.done ?? totals.paid);
+  const monthTarget = Number(monthProgress?.target ?? totals.required);
+  const monthPercent = monthTarget > 0 ? (monthDone / monthTarget) * 100 : 0;
+  const yearDone = Number(yearProgress?.done ?? monthDone);
+  const yearTarget = Number(yearProgress?.target ?? monthTarget);
+  const yearPercent = yearTarget > 0 ? (yearDone / yearTarget) * 100 : 0;
+  const monthPercentText = `${Math.round(Math.max(0, monthPercent))}%`;
+  const yearPercentText = `${Math.round(Math.max(0, yearPercent))}%`;
+
+  if (els.summaryProgressBasis) {
+    const basis = String(progress?.basis || state.settings.defaults?.progressBasis || "auto");
+    if (basis === "manual") {
+      els.summaryProgressBasis.textContent = "Based on your manual goals from Setup defaults.";
+    } else {
+      els.summaryProgressBasis.textContent = "Based on required totals from your tracked bills.";
+    }
+  }
+  if (hideAmounts) {
+    if (els.progressMonthValue) els.progressMonthValue.textContent = "Hidden";
+    if (els.progressMonthMeta) els.progressMonthMeta.textContent = "Reference totals hidden";
+    if (els.progressMonthBar) els.progressMonthBar.style.width = "0%";
+    if (els.progressYearValue) els.progressYearValue.textContent = "Hidden";
+    if (els.progressYearMeta) els.progressYearMeta.textContent = "Reference totals hidden";
+    if (els.progressYearBar) els.progressYearBar.style.width = "0%";
+  } else {
+    if (els.progressMonthValue) els.progressMonthValue.textContent = monthPercentText;
+    if (els.progressMonthMeta) {
+      els.progressMonthMeta.textContent = `${formatMoneyDisplay(monthDone)} of ${formatMoneyDisplay(monthTarget)} target`;
+    }
+    if (els.progressMonthBar) {
+      els.progressMonthBar.style.width = `${Math.min(100, Math.max(0, monthPercent))}%`;
+    }
+    if (els.progressYearValue) els.progressYearValue.textContent = yearPercentText;
+    if (els.progressYearMeta) {
+      const monthsInScope = Number(yearProgress?.months_in_scope || 0);
+      const suffix = monthsInScope > 0 ? ` (${monthsInScope} month${monthsInScope === 1 ? "" : "s"})` : "";
+      els.progressYearMeta.textContent = `${formatMoneyDisplay(yearDone)} of ${formatMoneyDisplay(yearTarget)} target${suffix}`;
+    }
+    if (els.progressYearBar) {
+      els.progressYearBar.style.width = `${Math.min(100, Math.max(0, yearPercent))}%`;
+    }
+  }
+  if (els.summaryYearScope) {
+    const nextScope = normalizeYearScope(progress?.year_scope || state.settings.defaults?.yearScope || "ytd");
+    if (els.summaryYearScope.value !== nextScope) els.summaryYearScope.value = nextScope;
+  }
+
   return { ...totals, daysInMonth };
 }
 
@@ -4363,6 +4482,7 @@ async function applyProposal(proposal) {
       state.essentialsOnly = Boolean(value);
     }
     if (els.essentialsToggle) els.essentialsToggle.checked = state.essentialsOnly;
+    await loadProgressData();
     renderDashboard();
     return { ok: true, message: `Essentials only: ${state.essentialsOnly ? "on" : "off"}.` };
   }
@@ -5933,11 +6053,40 @@ function closeFilterSheet() {
   els.filterSheet.classList.add("hidden");
 }
 
+function updateProgressDefaultsInputs() {
+  const basis = normalizeProgressBasis(els.defaultsProgressBasis?.value || state.settings.defaults?.progressBasis);
+  const manual = basis === "manual";
+  if (els.defaultsMonthlyGoal) {
+    els.defaultsMonthlyGoal.disabled = !manual;
+  }
+  if (els.defaultsYearlyGoal) {
+    els.defaultsYearlyGoal.disabled = !manual;
+  }
+}
+
 function renderDefaults() {
   if (!els.defaultsSort || !els.defaultsDueSoon || !els.defaultsPeriod) return;
-  els.defaultsSort.value = state.settings.defaults.sort || "due_date";
-  els.defaultsDueSoon.value = state.settings.defaults.dueSoonDays || 7;
-  els.defaultsPeriod.value = state.settings.defaults.defaultPeriod || "month";
+  const defaults = normalizeDefaults(state.settings.defaults || {});
+  state.settings.defaults = defaults;
+  els.defaultsSort.value = defaults.sort || "due_date";
+  els.defaultsDueSoon.value = defaults.dueSoonDays || 7;
+  els.defaultsPeriod.value = defaults.defaultPeriod || "month";
+  if (els.defaultsProgressBasis) {
+    els.defaultsProgressBasis.value = defaults.progressBasis || "auto";
+  }
+  if (els.defaultsMonthlyGoal) {
+    els.defaultsMonthlyGoal.value = Number(defaults.monthlyGoalAmount || 0);
+  }
+  if (els.defaultsYearlyGoal) {
+    els.defaultsYearlyGoal.value = Number(defaults.yearlyGoalAmount || 0);
+  }
+  if (els.defaultsYearScope) {
+    els.defaultsYearScope.value = defaults.yearScope || "ytd";
+  }
+  if (els.summaryYearScope) {
+    els.summaryYearScope.value = defaults.yearScope || "ytd";
+  }
+  updateProgressDefaultsInputs();
 }
 
 function renderImportPreview() {
@@ -6839,7 +6988,7 @@ function renderCategories() {
 
 async function saveSettings(updates) {
   const payload = {
-    defaults: state.settings.defaults,
+    defaults: normalizeDefaults(state.settings.defaults),
     categories: state.settings.categories,
     share_base_url: state.settings.share_base_url || "",
     share_viewer_base_url: state.settings.share_viewer_base_url || "",
@@ -6854,7 +7003,7 @@ async function saveSettings(updates) {
   });
   const data = await readApiData(res);
   if (data && typeof data === "object") {
-    state.settings.defaults = data.defaults || state.settings.defaults;
+    state.settings.defaults = normalizeDefaults(data.defaults || state.settings.defaults);
     state.settings.categories = Array.isArray(data.categories) ? data.categories : state.settings.categories;
     if (typeof data.share_base_url === "string") {
       state.settings.share_base_url = data.share_base_url;
@@ -8942,8 +9091,8 @@ async function refreshAll() {
   try {
     syncToCurrentMonth();
     await ensureMonth();
+    await loadSettings();
     await Promise.all([
-      loadSettings(),
       loadTemplates(),
       loadInstances(),
       loadPayments(),
@@ -8954,6 +9103,7 @@ async function refreshAll() {
       loadCommandLog(),
       loadChatHistory(),
     ]);
+    await loadProgressData();
     const valid = validateLoadedState();
     if (!valid.ok) {
       enterSafeMode(valid.reason);
@@ -9012,8 +9162,9 @@ function bindEvents() {
     }
   });
 
-  els.essentialsToggle.addEventListener("change", () => {
+  els.essentialsToggle.addEventListener("change", async () => {
     state.essentialsOnly = els.essentialsToggle.checked;
+    await loadProgressData();
     renderDashboard();
     scheduleNudgeRefresh();
   });
@@ -9389,12 +9540,44 @@ function bindEvents() {
   if (els.saveDefaults) {
     els.saveDefaults.addEventListener("click", async () => {
       const dueSoonValue = Number(els.defaultsDueSoon?.value || 7);
-      state.settings.defaults = {
+      const monthlyGoal = sanitizeGoalAmount(els.defaultsMonthlyGoal?.value || 0);
+      const yearlyGoal = sanitizeGoalAmount(els.defaultsYearlyGoal?.value || 0);
+      state.settings.defaults = normalizeDefaults({
         sort: els.defaultsSort?.value || "due_date",
         dueSoonDays: Number.isFinite(dueSoonValue) ? Math.max(1, dueSoonValue) : 7,
         defaultPeriod: els.defaultsPeriod?.value || "month",
-      };
+        progressBasis: els.defaultsProgressBasis?.value || "auto",
+        monthlyGoalAmount: monthlyGoal,
+        yearlyGoalAmount: yearlyGoal,
+        yearScope: els.defaultsYearScope?.value || "ytd",
+      });
       await saveSettings({ defaults: state.settings.defaults });
+      await loadProgressData();
+      renderDefaults();
+      renderDashboard();
+    });
+  }
+
+  if (els.defaultsProgressBasis) {
+    els.defaultsProgressBasis.addEventListener("change", () => {
+      updateProgressDefaultsInputs();
+    });
+  }
+
+  if (els.summaryYearScope) {
+    els.summaryYearScope.addEventListener("change", async () => {
+      const nextScope = normalizeYearScope(els.summaryYearScope.value);
+      if (state.settings.defaults.yearScope === nextScope) {
+        await loadProgressData();
+        renderDashboard();
+        return;
+      }
+      state.settings.defaults = normalizeDefaults({
+        ...state.settings.defaults,
+        yearScope: nextScope,
+      });
+      await saveSettings({ defaults: state.settings.defaults });
+      await loadProgressData();
       renderDefaults();
       renderDashboard();
     });
