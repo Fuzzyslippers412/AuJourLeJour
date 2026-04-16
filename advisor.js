@@ -554,6 +554,52 @@ async function callQwenOAuth(prompt, oauth, systemPrompt, profile) {
   return { ok: true, content };
 }
 
+async function validateQwenOAuthSession(oauth, timeoutMs = 8000) {
+  if (process.env.LLM_DISABLED === "1") {
+    return { ok: false, error: "LLM disabled" };
+  }
+  if (!oauth || !oauth.access_token || !oauth.resource_url) {
+    return { ok: false, error: "Agent not connected", auth_expired: false };
+  }
+
+  const base = String(oauth.resource_url || "").replace(/\/+$/, "");
+  const url = `${base}/models`;
+  try {
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${oauth.access_token}`,
+        },
+      },
+      timeoutMs
+    );
+    if (res.status === 401) {
+      return {
+        ok: false,
+        error: "Agent login expired. Reconnect.",
+        auth_expired: true,
+      };
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return {
+        ok: false,
+        error: `LLM request failed: ${text || `HTTP ${res.status}`}`,
+        auth_expired: false,
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `LLM request failed: ${err.message}`,
+      auth_expired: false,
+    };
+  }
+}
+
 function flattenMessageContent(content) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -714,4 +760,4 @@ async function query(task, payload, options = {}) {
   }
 }
 
-module.exports = { query };
+module.exports = { query, validateQwenOAuthSession };

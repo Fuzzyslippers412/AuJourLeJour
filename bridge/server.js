@@ -2,10 +2,12 @@ const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const Database = require("better-sqlite3");
+const QRCode = require("qrcode");
 const cookie = require("cookie");
 const { randomUUID, createHash } = require("crypto");
 const advisor = require("./advisor");
 const qwenOauth = require("./qwen_oauth");
+const householdRuntime = require("../modules/household_runtime");
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || "0.0.0.0";
@@ -77,6 +79,51 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_shares_owner_key ON shares (owner_key);
   CREATE INDEX IF NOT EXISTS idx_shares_updated_at ON shares (updated_at);
+
+  CREATE TABLE IF NOT EXISTS households (
+    id TEXT PRIMARY KEY,
+    owner_key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    owner_label TEXT,
+    base_payload TEXT,
+    payload_version TEXT,
+    sync_mode TEXT NOT NULL DEFAULT 'live',
+    invite_token TEXT,
+    invite_expires_at TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_published_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS household_members (
+    token TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_seen_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS household_events (
+    id TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    member_token TEXT NOT NULL,
+    member_name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    amount REAL,
+    note TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_household_owner_key ON households (owner_key);
+  CREATE INDEX IF NOT EXISTS idx_household_invite ON households (invite_token);
+  CREATE INDEX IF NOT EXISTS idx_household_member_household ON household_members (household_id);
+  CREATE INDEX IF NOT EXISTS idx_household_events_household ON household_events (household_id);
+  CREATE INDEX IF NOT EXISTS idx_household_events_item ON household_events (item_id);
 `);
 
 db.pragma("journal_mode = WAL");
@@ -163,7 +210,7 @@ function setCors(req, res) {
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type, X-AJL-Session, X-AJL-Share-Owner, X-Request-Id"
+      "Content-Type, X-AJL-Session, X-AJL-Share-Owner, X-AJL-Household-Owner, X-AJL-Household-Member, X-Request-Id"
     );
     res.setHeader("Vary", "Origin");
   }
@@ -398,6 +445,137 @@ function readOwnerKey(req) {
   return key;
 }
 
+function readHouseholdOwnerKey(req) {
+  const key = String(req.headers["x-ajl-household-owner"] || "").trim();
+  if (!householdRuntime.isValidHouseholdOwnerKey(key)) return null;
+  return key;
+}
+
+function readHouseholdMemberToken(req) {
+  const token = String(req.headers["x-ajl-household-member"] || "").trim();
+  if (!householdRuntime.isValidHouseholdMemberToken(token)) return null;
+  return token;
+}
+
+function expireStaleHouseholdInvites() {
+  const now = nowIso();
+  db.prepare(
+    `UPDATE households
+        SET invite_token = NULL,
+            invite_expires_at = NULL,
+            updated_at = ?
+      WHERE invite_token IS NOT NULL
+        AND invite_expires_at IS NOT NULL
+        AND invite_expires_at <= ?`
+  ).run(now, now);
+}
+
+function buildHouseholdInviteUrl(inviteToken) {
+  return householdRuntime.buildHouseholdInviteUrl(SHARE_VIEWER_BASE_URL, inviteToken);
+}
+
+function getDefaultInviteExpiry() {
+  return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function getHouseholdRow(householdId) {
+  return db.prepare("SELECT * FROM households WHERE id = ? AND is_active = 1").get(householdId);
+}
+
+function getHouseholdMembers(householdId) {
+  return db
+    .prepare(
+      `SELECT *
+         FROM household_members
+        WHERE household_id = ?
+          AND is_active = 1
+        ORDER BY CASE WHEN role = 'owner' THEN 0 ELSE 1 END, lower(display_name), created_at`
+    )
+    .all(householdId);
+}
+
+function getHouseholdEvents(householdId) {
+  return db
+    .prepare(
+      `SELECT *
+         FROM household_events
+        WHERE household_id = ?
+        ORDER BY datetime(created_at) DESC`
+    )
+    .all(householdId);
+}
+
+function touchHouseholdMember(memberToken) {
+  if (!householdRuntime.isValidHouseholdMemberToken(memberToken)) return;
+  db.prepare(
+    "UPDATE household_members SET last_seen_at = ?, updated_at = ? WHERE token = ?"
+  ).run(nowIso(), nowIso(), memberToken);
+}
+
+function resolveHouseholdAccess(req, householdId) {
+  const row = getHouseholdRow(householdId);
+  if (!row) return { ok: false, status: 404, error: "Household not found." };
+
+  const ownerKey = readHouseholdOwnerKey(req);
+  if (ownerKey && ownerKey === row.owner_key) {
+    return {
+      ok: true,
+      household: row,
+      role: "owner",
+      member: getHouseholdMembers(householdId).find((member) => member.role === "owner") || null,
+    };
+  }
+
+  const memberToken = readHouseholdMemberToken(req);
+  if (!memberToken) {
+    return { ok: false, status: 401, error: "Household access requires a valid member token." };
+  }
+  const member = db
+    .prepare(
+      "SELECT * FROM household_members WHERE token = ? AND household_id = ? AND is_active = 1 LIMIT 1"
+    )
+    .get(memberToken, householdId);
+  if (!member) {
+    return { ok: false, status: 401, error: "Household member token is not valid." };
+  }
+  touchHouseholdMember(memberToken);
+  return { ok: true, household: row, role: member.role, member };
+}
+
+function buildHouseholdResponse(row, access) {
+  const payload = householdRuntime.safeJsonParse(row.base_payload) || {
+    schema_version: "1",
+    period: null,
+    items: [],
+  };
+  const members = getHouseholdMembers(row.id);
+  const events = getHouseholdEvents(row.id);
+  const ledgerView = householdRuntime.aggregateHouseholdLedger(payload, members, events);
+  return {
+    household: {
+      id: row.id,
+      name: row.name,
+      owner_label: row.owner_label || null,
+      role: access.role,
+      member_name: access.member?.display_name || null,
+      sync_mode: row.sync_mode || "live",
+      period: payload.period || null,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      last_published_at: row.last_published_at || null,
+      invite: access.role === "owner" ? {
+        token: row.invite_token || null,
+        url: row.invite_token ? buildHouseholdInviteUrl(row.invite_token) : "",
+        expires_at: row.invite_expires_at || null,
+      } : null,
+      summary: ledgerView.summary,
+      members: ledgerView.members,
+      items: ledgerView.items,
+      activity: ledgerView.activity,
+    },
+  };
+}
+
 const shareLookup = new Map();
 
 function pruneShareLookup(nowTs) {
@@ -437,6 +615,31 @@ app.get("/api/health", (req, res) => {
     schema_version: "1",
     generated_at: nowIsoLocal(),
   });
+});
+
+app.get("/api/qr", async (req, res) => {
+  const value = String(req.query?.value || "").trim();
+  const size = Math.max(96, Math.min(320, Number(req.query?.size) || 176));
+  if (!value) return res.status(400).json({ error: "QR value is required." });
+  if (value.length > 4096) {
+    return res.status(400).json({ error: "QR value is too long." });
+  }
+  try {
+    const svg = await QRCode.toString(value, {
+      type: "svg",
+      width: size,
+      margin: 1,
+      color: {
+        dark: "#0f172a",
+        light: "#ffffff",
+      },
+    });
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.status(200).send(svg);
+  } catch (err) {
+    res.status(500).json({ error: "Unable to generate QR code." });
+  }
 });
 
 app.get("/api/metrics", (req, res) => {
@@ -651,6 +854,329 @@ app.get("/api/shares/:token", (req, res) => {
     ownerLabel: row.owner_label || null,
     lastPublishedAt: row.last_published_at || null,
   });
+});
+
+app.post("/api/households", (req, res) => {
+  expireStaleHouseholdInvites();
+  const name = householdRuntime.sanitizeHouseholdName(req.body?.name || "Shared household");
+  const ownerName =
+    householdRuntime.sanitizeMemberName(req.body?.display_name || req.body?.member_name || req.body?.owner_name) ||
+    "Owner";
+  const ownerLabel = sanitizeOwnerLabel(req.body?.owner_label || ownerName);
+  const payload = req.body?.payload;
+  const payloadCheck = householdRuntime.validateHouseholdPayload(payload);
+  if (!payloadCheck.ok) return res.status(400).json({ error: payloadCheck.error });
+  const inviteExpiry = householdRuntime.parseInviteExpiresAt(req.body?.invite_expires_at);
+  if (!inviteExpiry.ok) return res.status(400).json({ error: inviteExpiry.error });
+  const now = nowIso();
+  const householdId = householdRuntime.generateHouseholdId();
+  const ownerKey = householdRuntime.generateHouseholdOwnerKey();
+  const ownerMemberToken = householdRuntime.generateHouseholdMemberToken();
+  const inviteToken = householdRuntime.generateHouseholdInviteToken();
+  const payloadString = householdRuntime.safeJsonStringify(payload);
+  db.prepare(
+    `INSERT INTO households (
+      id, owner_key, name, owner_label, base_payload, payload_version, sync_mode,
+      invite_token, invite_expires_at, is_active, created_at, updated_at, last_published_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+  ).run(
+    householdId,
+    ownerKey,
+    name || "Shared household",
+    ownerLabel,
+    payloadString,
+    String(payload.schema_version || "1"),
+    req.body?.sync_mode === "manual" ? "manual" : "live",
+    inviteToken,
+    inviteExpiry.value === undefined ? getDefaultInviteExpiry() : inviteExpiry.value,
+    now,
+    now,
+    now
+  );
+  db.prepare(
+    `INSERT INTO household_members (
+      token, household_id, display_name, role, is_active, created_at, updated_at, last_seen_at
+    ) VALUES (?, ?, ?, 'owner', 1, ?, ?, ?)`
+  ).run(ownerMemberToken, householdId, ownerName, now, now, now);
+  const access = {
+    role: "owner",
+    member: { token: ownerMemberToken, display_name: ownerName, role: "owner" },
+  };
+  res.json({
+    ...buildHouseholdResponse(getHouseholdRow(householdId), access),
+    session: {
+      household_id: householdId,
+      owner_key: ownerKey,
+      member_token: ownerMemberToken,
+      display_name: ownerName,
+      role: "owner",
+    },
+  });
+});
+
+app.post("/api/households/join", (req, res) => {
+  expireStaleHouseholdInvites();
+  const inviteToken = householdRuntime.parseInviteToken(
+    req.body?.invite_token || req.body?.invite || req.body?.invite_url || ""
+  );
+  if (!householdRuntime.isValidHouseholdInviteToken(inviteToken)) {
+    return res.status(400).json({ error: "Invite link is not valid." });
+  }
+  const displayName = householdRuntime.sanitizeMemberName(req.body?.display_name || req.body?.member_name);
+  if (!displayName) {
+    return res.status(400).json({ error: "Enter a display name to join this household." });
+  }
+  const row = db
+    .prepare("SELECT * FROM households WHERE invite_token = ? AND is_active = 1 LIMIT 1")
+    .get(inviteToken);
+  if (!row) return res.status(404).json({ error: "This invite is invalid or has been disabled." });
+  if (row.invite_expires_at && row.invite_expires_at <= nowIso()) {
+    return res.status(410).json({ error: "This invite has expired." });
+  }
+  const now = nowIso();
+  const memberToken = householdRuntime.generateHouseholdMemberToken();
+  db.prepare(
+    `INSERT INTO household_members (
+      token, household_id, display_name, role, is_active, created_at, updated_at, last_seen_at
+    ) VALUES (?, ?, ?, 'member', 1, ?, ?, ?)`
+  ).run(memberToken, row.id, displayName, now, now, now);
+  const access = {
+    role: "member",
+    member: { token: memberToken, display_name: displayName, role: "member" },
+  };
+  res.json({
+    ...buildHouseholdResponse(getHouseholdRow(row.id), access),
+    session: {
+      household_id: row.id,
+      member_token: memberToken,
+      display_name: displayName,
+      role: "member",
+    },
+  });
+});
+
+app.post("/api/households/recover", (req, res) => {
+  expireStaleHouseholdInvites();
+  const recovery = householdRuntime.parseHouseholdRecoveryCode(
+    req.body?.recovery_code || req.body?.recoveryCode || ""
+  );
+  const householdId = String(
+    recovery.household_id || req.body?.household_id || req.body?.householdId || ""
+  ).trim();
+  const ownerKey = String(recovery.owner_key || req.body?.owner_key || req.body?.ownerKey || "").trim();
+  if (!householdRuntime.isValidHouseholdId(householdId)) {
+    return res.status(400).json({ error: "Household recovery code is not valid." });
+  }
+  if (!householdRuntime.isValidHouseholdOwnerKey(ownerKey)) {
+    return res.status(400).json({ error: "Owner recovery key is not valid." });
+  }
+  const row = getHouseholdRow(householdId);
+  if (!row) return res.status(404).json({ error: "Shared household not found." });
+  if (row.owner_key !== ownerKey) {
+    return res.status(401).json({ error: "Owner recovery key does not match this household." });
+  }
+  const existingOwner = db
+    .prepare(
+      "SELECT token, display_name FROM household_members WHERE household_id = ? AND role = 'owner' ORDER BY datetime(created_at) ASC LIMIT 1"
+    )
+    .get(householdId);
+  const displayName =
+    householdRuntime.sanitizeMemberName(req.body?.display_name || req.body?.member_name) ||
+    existingOwner?.display_name ||
+    "Owner";
+  const now = nowIso();
+  const ownerMemberToken = householdRuntime.generateHouseholdMemberToken();
+  if (existingOwner?.token) {
+    db.prepare(
+      `UPDATE household_members
+          SET token = ?, display_name = ?, is_active = 1, updated_at = ?, last_seen_at = ?
+        WHERE token = ?`
+    ).run(ownerMemberToken, displayName, now, now, existingOwner.token);
+  } else {
+    db.prepare(
+      `INSERT INTO household_members (
+        token, household_id, display_name, role, is_active, created_at, updated_at, last_seen_at
+      ) VALUES (?, ?, ?, 'owner', 1, ?, ?, ?)`
+    ).run(ownerMemberToken, householdId, displayName, now, now, now);
+  }
+  const access = {
+    role: "owner",
+    member: { token: ownerMemberToken, display_name: displayName, role: "owner" },
+  };
+  res.json({
+    ...buildHouseholdResponse(getHouseholdRow(householdId), access),
+    session: {
+      household_id: householdId,
+      owner_key: ownerKey,
+      member_token: ownerMemberToken,
+      display_name: displayName,
+      role: "owner",
+    },
+  });
+});
+
+app.post("/api/households/:id/owner-key", (req, res) => {
+  expireStaleHouseholdInvites();
+  const householdId = String(req.params.id || "").trim();
+  if (!householdRuntime.isValidHouseholdId(householdId)) {
+    return res.status(400).json({ error: "Invalid household id." });
+  }
+  const access = resolveHouseholdAccess(req, householdId);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  if (access.role !== "owner") {
+    return res.status(403).json({ error: "Only the owner can rotate the recovery code." });
+  }
+  const nextOwnerKey = householdRuntime.generateHouseholdOwnerKey();
+  db.prepare("UPDATE households SET owner_key = ?, updated_at = ? WHERE id = ?").run(
+    nextOwnerKey,
+    nowIso(),
+    householdId
+  );
+  res.json({
+    ...buildHouseholdResponse(getHouseholdRow(householdId), access),
+    session: {
+      household_id: householdId,
+      owner_key: nextOwnerKey,
+      member_token: access.member?.token || null,
+      display_name: access.member?.display_name || "Owner",
+      role: "owner",
+    },
+  });
+});
+
+app.get("/api/households/:id", (req, res) => {
+  expireStaleHouseholdInvites();
+  const householdId = String(req.params.id || "").trim();
+  if (!householdRuntime.isValidHouseholdId(householdId)) {
+    return res.status(400).json({ error: "Invalid household id." });
+  }
+  const access = resolveHouseholdAccess(req, householdId);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  res.json(buildHouseholdResponse(access.household, access));
+});
+
+app.post("/api/households/:id/publish", (req, res) => {
+  expireStaleHouseholdInvites();
+  const householdId = String(req.params.id || "").trim();
+  if (!householdRuntime.isValidHouseholdId(householdId)) {
+    return res.status(400).json({ error: "Invalid household id." });
+  }
+  const access = resolveHouseholdAccess(req, householdId);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  if (access.role !== "owner") return res.status(403).json({ error: "Only the owner can sync the household." });
+  const payload = req.body?.payload;
+  const payloadCheck = householdRuntime.validateHouseholdPayload(payload);
+  if (!payloadCheck.ok) return res.status(400).json({ error: payloadCheck.error });
+  const payloadString = householdRuntime.safeJsonStringify(payload);
+  db.prepare(
+    `UPDATE households
+        SET name = ?, owner_label = ?, base_payload = ?, payload_version = ?, sync_mode = ?,
+            last_published_at = ?, updated_at = ?
+      WHERE id = ?`
+  ).run(
+    householdRuntime.sanitizeHouseholdName(req.body?.name || access.household.name) || access.household.name,
+    sanitizeOwnerLabel(req.body?.owner_label || access.household.owner_label),
+    payloadString,
+    String(payload.schema_version || "1"),
+    req.body?.sync_mode === "manual" ? "manual" : "live",
+    nowIso(),
+    nowIso(),
+    householdId
+  );
+  res.json(buildHouseholdResponse(getHouseholdRow(householdId), access));
+});
+
+app.post("/api/households/:id/invite", (req, res) => {
+  expireStaleHouseholdInvites();
+  const householdId = String(req.params.id || "").trim();
+  if (!householdRuntime.isValidHouseholdId(householdId)) {
+    return res.status(400).json({ error: "Invalid household id." });
+  }
+  const access = resolveHouseholdAccess(req, householdId);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  if (access.role !== "owner") return res.status(403).json({ error: "Only the owner can refresh invites." });
+  const inviteExpiry = householdRuntime.parseInviteExpiresAt(req.body?.invite_expires_at);
+  if (!inviteExpiry.ok) return res.status(400).json({ error: inviteExpiry.error });
+  db.prepare(
+    "UPDATE households SET invite_token = ?, invite_expires_at = ?, updated_at = ? WHERE id = ?"
+  ).run(
+    householdRuntime.generateHouseholdInviteToken(),
+    inviteExpiry.value === undefined ? getDefaultInviteExpiry() : inviteExpiry.value,
+    nowIso(),
+    householdId
+  );
+  res.json(buildHouseholdResponse(getHouseholdRow(householdId), access));
+});
+
+app.delete("/api/households/:id/members/:memberToken", (req, res) => {
+  expireStaleHouseholdInvites();
+  const householdId = String(req.params.id || "").trim();
+  const memberToken = String(req.params.memberToken || "").trim();
+  if (!householdRuntime.isValidHouseholdId(householdId)) {
+    return res.status(400).json({ error: "Invalid household id." });
+  }
+  if (!householdRuntime.isValidHouseholdMemberToken(memberToken)) {
+    return res.status(400).json({ error: "Invalid household member token." });
+  }
+  const access = resolveHouseholdAccess(req, householdId);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  const target = db
+    .prepare(
+      "SELECT * FROM household_members WHERE token = ? AND household_id = ? AND is_active = 1 LIMIT 1"
+    )
+    .get(memberToken, householdId);
+  if (!target) return res.status(404).json({ error: "Household member not found." });
+  const isSelf = access.member?.token === memberToken;
+  if (access.role !== "owner" && !isSelf) {
+    return res.status(403).json({ error: "Only the owner can remove other household members." });
+  }
+  if (target.role === "owner") {
+    return res.status(400).json({ error: "The owner device cannot be removed from the shared household." });
+  }
+  db.prepare("UPDATE household_members SET is_active = 0, updated_at = ? WHERE token = ?").run(
+    nowIso(),
+    memberToken
+  );
+  res.json({
+    ...buildHouseholdResponse(getHouseholdRow(householdId), access),
+    removed_member_token: memberToken,
+    removed_member_name: target.display_name || null,
+    removed_self: isSelf,
+  });
+});
+
+app.post("/api/households/:id/events", (req, res) => {
+  expireStaleHouseholdInvites();
+  const householdId = String(req.params.id || "").trim();
+  if (!householdRuntime.isValidHouseholdId(householdId)) {
+    return res.status(400).json({ error: "Invalid household id." });
+  }
+  const access = resolveHouseholdAccess(req, householdId);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  const payload = householdRuntime.safeJsonParse(access.household.base_payload) || { items: [] };
+  const itemId = String(req.body?.item_id || "").trim();
+  if (!itemId) return res.status(400).json({ error: "item_id is required." });
+  const item = Array.isArray(payload.items) ? payload.items.find((entry) => entry.id === itemId) : null;
+  if (!item) return res.status(404).json({ error: "Household item not found." });
+  const amount = Number(req.body?.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ error: "Contribution amount must be greater than 0." });
+  }
+  db.prepare(
+    `INSERT INTO household_events (
+      id, household_id, item_id, member_token, member_name, type, amount, note, created_at
+    ) VALUES (?, ?, ?, ?, ?, 'contribution', ?, ?, ?)`
+  ).run(
+    randomUUID(),
+    householdId,
+    itemId,
+    access.member?.token || readHouseholdMemberToken(req) || householdRuntime.generateHouseholdMemberToken(),
+    access.member?.display_name || "Member",
+    Number(amount.toFixed(2)),
+    householdRuntime.sanitizeNote(req.body?.note) || null,
+    nowIso()
+  );
+  res.json(buildHouseholdResponse(getHouseholdRow(householdId), access));
 });
 
 app.get("/api/llm/qwen/oauth/status", async (req, res) => {

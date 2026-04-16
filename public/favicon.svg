@@ -1,6 +1,50 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="12" fill="#0F172A"/>
-  <rect x="16" y="18" width="32" height="4" rx="2" fill="#E2E8F0"/>
-  <rect x="16" y="28" width="24" height="4" rx="2" fill="#E2E8F0"/>
-  <path d="M18 43 L25 50 L40 35" stroke="#38BDF8" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="164" y1="120" x2="864" y2="920" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#172554"/>
+      <stop offset="0.52" stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(274 202) rotate(42.8) scale(584 512)">
+      <stop stop-color="#38BDF8" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#38BDF8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="card" x1="330" y1="286" x2="742" y2="774" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FEF3C7"/>
+      <stop offset="1" stop-color="#F8FAFC"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="644" y1="612" x2="792" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <filter id="shadow" x="232" y="218" width="560" height="644" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="28"/>
+      <feGaussianBlur stdDeviation="32"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0588235 0 0 0 0 0.0901961 0 0 0 0 0.164706 0 0 0 0.28 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="232" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="232" fill="url(#glow)"/>
+
+  <circle cx="764" cy="254" r="44" fill="#F59E0B" fill-opacity="0.95"/>
+  <circle cx="764" cy="254" r="68" fill="#F59E0B" fill-opacity="0.12"/>
+
+  <g filter="url(#shadow)">
+    <path d="M322 468.382C322 446.788 331.89 426.382 348.821 412.96L483.821 306.012C500.216 293.03 523.784 293.03 540.179 306.012L675.179 412.96C692.11 426.382 702 446.788 702 468.382V708C702 739.48 676.48 765 645 765H379C347.52 765 322 739.48 322 708V468.382Z" fill="url(#card)"/>
+    <path d="M278 471.918L471.026 318.649C495.435 299.266 530.565 299.266 554.974 318.649L748 471.918" stroke="#F8FAFC" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <rect x="410" y="474" width="204" height="34" rx="17" fill="#1E293B" fill-opacity="0.92"/>
+  <rect x="410" y="554" width="168" height="34" rx="17" fill="#334155" fill-opacity="0.86"/>
+  <rect x="410" y="634" width="138" height="34" rx="17" fill="#475569" fill-opacity="0.76"/>
+
+  <path d="M612 666.838L658.494 713.332L748 624" stroke="url(#accent)" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="355" y="782" width="314" height="26" rx="13" fill="#E2E8F0" fill-opacity="0.18"/>
 </svg>

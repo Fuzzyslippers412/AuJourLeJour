@@ -893,6 +893,91 @@
       }
     }
 
+    if (path === "/api/qr") {
+      if (!SHARE_BASE_URL) {
+        return jsonResponse(503, {
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "QR service is not configured.",
+            details: {},
+          },
+        });
+      }
+      try {
+        const target = new URL(`${path}${url.search}`, SHARE_BASE_URL);
+        const relayRes = await realFetch(target.toString(), {
+          method: req.method,
+          headers: req.headers,
+        });
+        const relayContentType = relayRes.headers.get("content-type") || "image/svg+xml";
+        const relayBodyText = await relayRes.text();
+        return new Response(relayBodyText, {
+          status: relayRes.status,
+          headers: {
+            "Content-Type": relayContentType,
+            "Cache-Control": "no-store",
+          },
+        });
+      } catch (err) {
+        return jsonResponse(503, {
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "QR relay is unavailable.",
+            details: {},
+          },
+        });
+      }
+    }
+
+    if (path.startsWith("/api/households")) {
+      if (!SHARE_BASE_URL) {
+        return jsonResponse(503, {
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "Shared household service is not configured.",
+            details: {},
+          },
+        });
+      }
+      try {
+        const target = new URL(`${path}${url.search}`, SHARE_BASE_URL);
+        const headers = new Headers();
+        const ownerHeader = req.headers.get("x-ajl-household-owner");
+        const memberHeader = req.headers.get("x-ajl-household-member");
+        if (ownerHeader) headers.set("X-AJL-Household-Owner", ownerHeader);
+        if (memberHeader) headers.set("X-AJL-Household-Member", memberHeader);
+        const contentType = req.headers.get("content-type");
+        if (contentType) headers.set("Content-Type", contentType);
+        const bodyText = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
+        const relayRes = await realFetch(target.toString(), {
+          method: req.method,
+          headers,
+          body: bodyText,
+        });
+        const relayContentType = relayRes.headers.get("content-type") || "";
+        const relayBodyText = await relayRes.text();
+        return new Response(relayBodyText, {
+          status: relayRes.status,
+          headers: {
+            "Content-Type": relayContentType || "application/json",
+            "Cache-Control": "no-store",
+          },
+        });
+      } catch (err) {
+        return jsonResponse(503, {
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "Shared household relay is unavailable.",
+            details: {},
+          },
+        });
+      }
+    }
+
     if (path === "/api/reset" && req.method === "POST") {
       const fresh = defaultDb();
       const saved = safeSaveDb(fresh);
