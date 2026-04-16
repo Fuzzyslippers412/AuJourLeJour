@@ -64,6 +64,19 @@
           </div>
         </div>
 
+        <section id="app-install-banner" class="card app-install-banner hidden">
+          <div class="app-install-copy">
+            <div id="app-install-title" class="app-install-title">Install on this device</div>
+            <div id="app-install-sub" class="app-install-sub">
+              Open Au Jour Le Jour from your home screen for a cleaner, app-like view.
+            </div>
+          </div>
+          <div class="app-install-actions">
+            <button id="app-install-action" class="btn-small btn-primary">Install app</button>
+            <button id="app-install-dismiss" class="ghost-btn small">Not now</button>
+          </div>
+        </section>
+
         <div class="today-layout">
           <div class="today-main">
             <div id="status-bar" class="status-bar">
@@ -299,6 +312,7 @@
 
         <div id="filter-sheet" class="sheet hidden">
           <div class="sheet-card">
+            <div class="sheet-handle" aria-hidden="true"></div>
             <div class="sheet-header">
               <div>
                 <div class="sheet-title">Filters</div>
@@ -366,6 +380,17 @@
         <div class="page-title">Setup</div>
         <div class="page-sub">Templates, categories, backups, and reserved buckets.</div>
         <div class="disclaimer">This app tracks bills. You pay outside the app.</div>
+        <section id="setup-install" class="setup-block app-install-block hidden">
+          <div class="block-title">Use it like an app</div>
+          <div id="setup-install-copy" class="block-sub">
+            Install Au Jour Le Jour on this device for a cleaner full-screen experience.
+          </div>
+          <div class="backup-actions">
+            <button id="setup-install-action" class="primary-btn">Install app</button>
+            <button id="setup-install-help" class="ghost-btn">How it works</button>
+          </div>
+          <div id="setup-install-status" class="meta">Checking app install support…</div>
+        </section>
         <section class="setup-block web-only">
           <div class="block-title">Install locally</div>
           <div class="block-sub">Want the full local version? Install from GitHub and run it on your machine.</div>
@@ -772,18 +797,48 @@ cd AuJourLeJour
 
     <nav class="mobile-tabbar" aria-label="Primary navigation">
       <button id="mobile-nav-today" class="mobile-tab-btn active" aria-label="Today">
-        <span class="mobile-tab-icon">Today</span>
+        <span class="mobile-tab-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a2 2 0 0 1 2 2v11a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a2 2 0 0 1 2-2h1V3a1 1 0 0 1 1-1Zm12 8H5v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7Z" fill="currentColor"/></svg>
+        </span>
+        <span class="mobile-tab-label">Today</span>
       </button>
       <button id="mobile-nav-review" class="mobile-tab-btn" aria-label="Review">
-        <span class="mobile-tab-icon">Review</span>
+        <span class="mobile-tab-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M4 5a2 2 0 0 1 2-2h1a1 1 0 1 1 0 2H6v14h12V5h-1a1 1 0 1 1 0-2h1a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Zm4 8a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Zm3-3a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H12a1 1 0 0 1-1-1Zm3 5a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H15a1 1 0 0 1-1-1Z" fill="currentColor"/></svg>
+        </span>
+        <span class="mobile-tab-label">Review</span>
       </button>
       <button id="mobile-nav-setup" class="mobile-tab-btn" aria-label="Setup">
-        <span class="mobile-tab-icon">Setup</span>
+        <span class="mobile-tab-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M11 2h2l.5 2.14a7.95 7.95 0 0 1 1.92.8l1.94-1.04 1.41 1.42-1.03 1.93c.32.6.58 1.24.77 1.91L22 11v2l-2.14.5a7.9 7.9 0 0 1-.79 1.91l1.03 1.94-1.41 1.41-1.94-1.03c-.6.32-1.24.58-1.91.79L13 22h-2l-.5-2.14a7.9 7.9 0 0 1-1.91-.79l-1.94 1.03-1.41-1.41 1.03-1.94a7.9 7.9 0 0 1-.79-1.91L2 13v-2l2.14-.5c.18-.67.45-1.31.79-1.91L3.9 6.66 5.31 5.24l1.94 1.03a7.9 7.9 0 0 1 1.91-.79L11 2Zm1 6a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" fill="currentColor"/></svg>
+        </span>
+        <span class="mobile-tab-label">Setup</span>
       </button>
       <button id="mobile-nav-janitor" class="mobile-tab-btn local-only" aria-label="Janitor">
-        <span class="mobile-tab-icon">Janitor</span>
+        <span class="mobile-tab-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M12 2 4 5v5c0 5.25 3.4 10.02 8 11.5 4.6-1.48 8-6.25 8-11.5V5l-8-3Zm-1 5h2v5h3a1 1 0 1 1 0 2h-4a1 1 0 0 1-1-1V7Z" fill="currentColor"/></svg>
+        </span>
+        <span class="mobile-tab-label">Janitor</span>
       </button>
     </nav>
+
+    <div id="install-sheet" class="sheet hidden">
+      <div class="sheet-card install-sheet-card">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-header">
+          <div>
+            <div id="install-sheet-title" class="sheet-title">Install Au Jour Le Jour</div>
+            <div id="install-sheet-copy" class="sheet-sub">Add it to your device for a cleaner, app-like experience.</div>
+          </div>
+          <button id="install-sheet-close" class="icon-btn" aria-label="Close">&times;</button>
+        </div>
+        <ol id="install-sheet-steps" class="install-steps"></ol>
+        <div id="install-sheet-hint" class="meta"></div>
+        <div class="sheet-actions">
+          <button id="install-sheet-action" class="btn-small btn-primary">Install app</button>
+        </div>
+      </div>
+    </div>
 
     <div id="share-modal" class="modal hidden">
       <div class="modal-content">
@@ -870,6 +925,7 @@ cd AuJourLeJour
     <div id="details-drawer" class="drawer hidden">
       <div class="drawer-scrim" data-close="details"></div>
       <div class="drawer-panel">
+        <div class="drawer-handle" aria-hidden="true"></div>
         <div class="drawer-header">
           <div>
             <div id="detail-name" class="drawer-title">Bill</div>
@@ -934,6 +990,7 @@ cd AuJourLeJour
     <div id="assistant-drawer" class="drawer hidden local-only">
       <div class="drawer-scrim" data-close="assistant"></div>
       <div class="drawer-panel assistant-sheet">
+        <div class="drawer-handle" aria-hidden="true"></div>
         <div class="drawer-header">
           <div>
             <div class="drawer-title">Mamdou</div>

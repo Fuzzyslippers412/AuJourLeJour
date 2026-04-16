@@ -1602,6 +1602,15 @@ async function run() {
       assert.ok(content.includes('id="available-now-save"'));
       assert.ok(content.includes('id="allocation-plan-list"'));
       assert.ok(content.includes('class="migration-callout"'));
+      assert.ok(content.includes('id="app-install-banner"'));
+      assert.ok(content.includes('id="setup-install"'));
+      assert.ok(content.includes('id="install-sheet"'));
+      assert.ok(content.includes('id="app-install-action"'));
+      assert.ok(content.includes('id="setup-install-action"'));
+      assert.ok(content.includes('id="install-sheet-action"'));
+      assert.ok(content.includes('class="mobile-tab-svg"'));
+      assert.ok(content.includes('class="drawer-handle"'));
+      assert.ok(content.includes('class="sheet-handle"'));
     });
   });
 

@@ -84,6 +84,14 @@ const state = {
   },
   shareRelayBackoffUntil: 0,
   lanInfo: null,
+  installState: {
+    standalone: false,
+    mobile: false,
+    ios: false,
+    canPrompt: false,
+    dismissed: false,
+    method: "unsupported",
+  },
   integrityStatus: "unknown",
   dataVersion: 0,
   summaryCache: null,
@@ -145,6 +153,7 @@ const PROFILE_NAME_KEY = "ajl_profile_name";
 const BACKUP_LAST_KEY = "ajl_last_backup_at";
 const LOCAL_EDIT_COUNT_KEY = "ajl_local_edit_count";
 const LOCAL_BACKUP_REMINDER_KEY = "ajl_local_backup_reminder";
+const INSTALL_BANNER_DISMISSED_KEY = "ajl_install_banner_dismissed";
 const SHARE_OWNER_KEY = "ajl_share_owner_key";
 const SHARE_OPTIONS_KEY = "ajl_share_options";
 const SHARE_LIVE_REFRESH_MS = 8000;
@@ -170,6 +179,10 @@ const HOUSEHOLD_SYSTEMS = [
   { key: "household", label: "Household" },
   { key: "other", label: "Other" },
 ];
+
+let deferredInstallPrompt = null;
+let standaloneMediaQuery = null;
+let installHooksBound = false;
 
 function looksLikeStorageError(err) {
   const message = String(err?.message || err || "");
@@ -492,6 +505,23 @@ const els = {
   firstVisitTemplate: document.getElementById("first-visit-template"),
   firstVisitContinue: document.getElementById("first-visit-continue"),
   firstVisitWebNote: document.getElementById("first-visit-web-note"),
+  appInstallBanner: document.getElementById("app-install-banner"),
+  appInstallTitle: document.getElementById("app-install-title"),
+  appInstallSub: document.getElementById("app-install-sub"),
+  appInstallAction: document.getElementById("app-install-action"),
+  appInstallDismiss: document.getElementById("app-install-dismiss"),
+  setupInstall: document.getElementById("setup-install"),
+  setupInstallCopy: document.getElementById("setup-install-copy"),
+  setupInstallStatus: document.getElementById("setup-install-status"),
+  setupInstallAction: document.getElementById("setup-install-action"),
+  setupInstallHelp: document.getElementById("setup-install-help"),
+  installSheet: document.getElementById("install-sheet"),
+  installSheetTitle: document.getElementById("install-sheet-title"),
+  installSheetCopy: document.getElementById("install-sheet-copy"),
+  installSheetSteps: document.getElementById("install-sheet-steps"),
+  installSheetHint: document.getElementById("install-sheet-hint"),
+  installSheetAction: document.getElementById("install-sheet-action"),
+  installSheetClose: document.getElementById("install-sheet-close"),
   wizardModal: document.getElementById("first-run-modal"),
   wizardImport: document.getElementById("wizard-import"),
   wizardTemplate: document.getElementById("wizard-template"),
@@ -860,6 +890,128 @@ function saveJanitorRuntimeSettings() {
   } catch (err) {
     // ignore
   }
+}
+
+function loadInstallBannerDismissed() {
+  try {
+    return localStorage.getItem(INSTALL_BANNER_DISMISSED_KEY) === "1";
+  } catch (err) {
+    return false;
+  }
+}
+
+function saveInstallBannerDismissed(value) {
+  try {
+    if (value) {
+      localStorage.setItem(INSTALL_BANNER_DISMISSED_KEY, "1");
+    } else {
+      localStorage.removeItem(INSTALL_BANNER_DISMISSED_KEY);
+    }
+  } catch (err) {
+    // ignore
+  }
+}
+
+function isStandaloneDisplayMode() {
+  if (window.matchMedia?.("(display-mode: standalone)").matches) return true;
+  return window.navigator?.standalone === true;
+}
+
+function isIosSafariInstallContext() {
+  const ua = String(window.navigator?.userAgent || "");
+  const iOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes("Mac") && window.navigator.maxTouchPoints > 1);
+  if (!iOS) return false;
+  return /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(ua);
+}
+
+function getInstallExperience() {
+  const standalone = isStandaloneDisplayMode();
+  const mobile = window.matchMedia?.("(max-width: 820px)").matches || window.navigator.maxTouchPoints > 0;
+  const ios = isIosSafariInstallContext();
+  const canPrompt = !!deferredInstallPrompt;
+  let method = "unsupported";
+  if (standalone) method = "installed";
+  else if (canPrompt) method = "prompt";
+  else if (ios) method = "ios-manual";
+  const dismissed = loadInstallBannerDismissed();
+  const available = method !== "unsupported";
+  return {
+    standalone,
+    mobile,
+    ios,
+    canPrompt,
+    method,
+    dismissed,
+    available,
+  };
+}
+
+function getInstallCopyBundle(install = state.installState || getInstallExperience()) {
+  if (install.method === "installed") {
+    return {
+      title: "Installed on this device",
+      sub: "Au Jour Le Jour is already running in app mode here.",
+      actionLabel: "Open tips",
+      status: "Installed and ready.",
+      steps: [
+        "Open Au Jour Le Jour from your home screen or app library.",
+        "Keep this tab for browser access; the home screen icon gives the cleanest app shell.",
+        "Use the same flow on other devices for quick re-entry.",
+      ],
+      hint: "Home screen launch keeps the interface cleaner and reduces browser chrome.",
+    };
+  }
+  if (install.method === "prompt") {
+    return {
+      title: "Install on this device",
+      sub: "Add Au Jour Le Jour to this device for faster launch, a cleaner shell, and better focus.",
+      actionLabel: "Install app",
+      status: "Install prompt ready in this browser.",
+      steps: [
+        "Tap Install app to let the browser create an app shortcut.",
+        "Launch Au Jour Le Jour from your home screen or apps list.",
+        "The installed shell opens cleaner and keeps navigation tighter on small screens.",
+      ],
+      hint: "This keeps the tracker one tap away and removes most browser chrome.",
+    };
+  }
+  if (install.method === "ios-manual") {
+    return {
+      title: "Add to Home Screen",
+      sub: "On iPhone or iPad, save Au Jour Le Jour to your home screen for a native-feeling full-screen view.",
+      actionLabel: "Show steps",
+      status: "Use Safari's Share menu to add this app to your home screen.",
+      steps: [
+        "Tap the Share button in Safari.",
+        "Choose Add to Home Screen.",
+        "Open Au Jour Le Jour from your home screen for the cleanest mobile shell.",
+      ],
+      hint: "Safari install is manual, but once added it behaves much more like an app.",
+    };
+  }
+  return {
+    title: "Use it like an app",
+    sub: "Install support is limited in this browser, but the tracker still works here.",
+    actionLabel: "How it works",
+    status: "Install prompt not available in this browser.",
+    steps: [
+      "If your browser supports app install, look for an Install App or Add to Home Screen action.",
+      "On iPhone or iPad, Safari gives the best add-to-home-screen flow.",
+      "You can still use Au Jour Le Jour normally in the browser without installing it.",
+    ],
+    hint: "Safari on iPhone and Chromium browsers on secure origins usually give the best install experience.",
+  };
+}
+
+function syncOverlayState() {
+  const open =
+    (!!els.detailsDrawer && !els.detailsDrawer.classList.contains("hidden")) ||
+    (!!els.assistantDrawer && !els.assistantDrawer.classList.contains("hidden")) ||
+    (!!els.filterSheet && !els.filterSheet.classList.contains("hidden")) ||
+    (!!els.installSheet && !els.installSheet.classList.contains("hidden")) ||
+    (!!els.shareModal && !els.shareModal.classList.contains("hidden")) ||
+    (!!els.wizardModal && !els.wizardModal.classList.contains("hidden"));
+  document.body.classList.toggle("overlay-open", open);
 }
 
 function getShareBaseUrl() {
@@ -1525,16 +1677,7 @@ async function handleResetFlag() {
   try {
     await fetch("/api/reset-local", { method: "POST" });
     if (AJL_WEB_MODE) {
-      try {
-        localStorage.removeItem(WEB_META_KEY);
-        localStorage.removeItem(BACKUP_LAST_KEY);
-        localStorage.removeItem(LOCAL_EDIT_COUNT_KEY);
-        localStorage.removeItem(LOCAL_BACKUP_REMINDER_KEY);
-        localStorage.removeItem(JANITOR_RUNTIME_BASE_KEY);
-        localStorage.removeItem(JANITOR_RUNTIME_REQUIRED_KEY);
-      } catch (err) {
-        // ignore
-      }
+      clearClientRuntimeKeys();
     }
   } catch (err) {
     // ignore
@@ -7087,11 +7230,13 @@ function openFilterSheet() {
   if (!els.filterSheet) return;
   syncFilterSheet();
   els.filterSheet.classList.remove("hidden");
+  syncOverlayState();
 }
 
 function closeFilterSheet() {
   if (!els.filterSheet) return;
   els.filterSheet.classList.add("hidden");
+  syncOverlayState();
 }
 
 function updateProgressDefaultsInputs() {
@@ -7194,6 +7339,7 @@ function setReadOnlyMode(enabled) {
     els.sharedHeader.classList.add("hidden");
     els.sharedHeader.classList.remove("visible");
   }
+  renderInstallExperience();
 }
 
 function renderSharedHeader(label, meta = {}) {
@@ -7582,11 +7728,13 @@ async function openShareModal() {
   state.shareOwnerLabel = state.shareInfo?.owner_label || state.shareOwnerLabel || state.profileName || "";
   updateShareModal();
   els.shareModal.classList.remove("hidden");
+  syncOverlayState();
 }
 
 function closeShareModal() {
   if (!els.shareModal) return;
   els.shareModal.classList.add("hidden");
+  syncOverlayState();
 }
 
 function normalizeShareInfo(share) {
@@ -8335,6 +8483,138 @@ function renderFirstVisitHero() {
   document.body.classList.toggle("landing", !hide);
   if (els.firstVisitWebNote) {
     els.firstVisitWebNote.classList.toggle("hidden", !AJL_WEB_MODE);
+  }
+}
+
+function renderInstallExperience() {
+  const install = getInstallExperience();
+  state.installState = install;
+  const copy = getInstallCopyBundle(install);
+  const suppressForHero =
+    !els.firstVisitHero?.classList.contains("hidden") ||
+    state.readOnly ||
+    state.safeMode ||
+    (AJL_WEB_MODE && state.webMeta?.readOnlyPreview);
+
+  document.body.classList.toggle("standalone", install.standalone);
+
+  if (els.appInstallTitle) els.appInstallTitle.textContent = copy.title;
+  if (els.appInstallSub) els.appInstallSub.textContent = copy.sub;
+  if (els.appInstallAction) els.appInstallAction.textContent = copy.actionLabel;
+  if (els.setupInstallCopy) els.setupInstallCopy.textContent = copy.sub;
+  if (els.setupInstallStatus) els.setupInstallStatus.textContent = copy.status;
+  if (els.setupInstallAction) {
+    els.setupInstallAction.textContent = install.method === "installed" ? "Open tips" : copy.actionLabel;
+  }
+  if (els.setupInstallHelp) {
+    els.setupInstallHelp.textContent = install.method === "installed" ? "Install details" : "How it works";
+  }
+  if (els.installSheetTitle) els.installSheetTitle.textContent = copy.title;
+  if (els.installSheetCopy) els.installSheetCopy.textContent = copy.sub;
+  if (els.installSheetHint) els.installSheetHint.textContent = copy.hint;
+  if (els.installSheetAction) {
+    els.installSheetAction.textContent = install.method === "prompt" ? "Install app" : "Got it";
+  }
+  if (els.installSheetSteps) {
+    els.installSheetSteps.innerHTML = "";
+    copy.steps.forEach((step) => {
+      const item = document.createElement("li");
+      item.textContent = step;
+      els.installSheetSteps.appendChild(item);
+    });
+  }
+
+  const showBanner = install.available && install.mobile && !install.standalone && !install.dismissed && !suppressForHero;
+  if (els.appInstallBanner) {
+    els.appInstallBanner.classList.toggle("hidden", !showBanner);
+  }
+  if (els.setupInstall) {
+    els.setupInstall.classList.toggle("hidden", state.readOnly || !install.available);
+  }
+  syncOverlayState();
+}
+
+async function promptInstallExperience() {
+  const install = state.installState || getInstallExperience();
+  if (install.standalone) {
+    openInstallSheet();
+    return;
+  }
+  if (install.canPrompt && deferredInstallPrompt) {
+    try {
+      await deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice.catch(() => null);
+      deferredInstallPrompt = null;
+      saveInstallBannerDismissed(false);
+      renderInstallExperience();
+      if (choice?.outcome === "accepted") {
+        showToast("Install started. Look for Au Jour Le Jour on your device.");
+      } else {
+        showToast("Install cancelled.");
+      }
+      return;
+    } catch (err) {
+      // Fall through to the manual sheet.
+    }
+  }
+  openInstallSheet();
+}
+
+function dismissInstallBanner() {
+  saveInstallBannerDismissed(true);
+  renderInstallExperience();
+}
+
+function openInstallSheet() {
+  if (!els.installSheet) return;
+  renderInstallExperience();
+  els.installSheet.classList.remove("hidden");
+  syncOverlayState();
+}
+
+function closeInstallSheet() {
+  if (!els.installSheet) return;
+  els.installSheet.classList.add("hidden");
+  syncOverlayState();
+}
+
+function clearClientRuntimeKeys() {
+  try {
+    localStorage.removeItem(WEB_META_KEY);
+    localStorage.removeItem(BACKUP_LAST_KEY);
+    localStorage.removeItem(LOCAL_EDIT_COUNT_KEY);
+    localStorage.removeItem(LOCAL_BACKUP_REMINDER_KEY);
+    localStorage.removeItem(JANITOR_RUNTIME_BASE_KEY);
+    localStorage.removeItem(JANITOR_RUNTIME_REQUIRED_KEY);
+    localStorage.removeItem(INSTALL_BANNER_DISMISSED_KEY);
+  } catch (err) {
+    // ignore
+  }
+}
+
+function setupInstallExperienceHooks() {
+  if (installHooksBound) return;
+  installHooksBound = true;
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    saveInstallBannerDismissed(false);
+    renderInstallExperience();
+  });
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    saveInstallBannerDismissed(false);
+    renderInstallExperience();
+    showToast("Au Jour Le Jour installed on this device.");
+  });
+  if (window.matchMedia) {
+    standaloneMediaQuery = window.matchMedia("(display-mode: standalone)");
+    const handler = () => renderInstallExperience();
+    if (typeof standaloneMediaQuery.addEventListener === "function") {
+      standaloneMediaQuery.addEventListener("change", handler);
+    } else if (typeof standaloneMediaQuery.addListener === "function") {
+      standaloneMediaQuery.addListener(handler);
+    }
   }
 }
 
@@ -9303,9 +9583,11 @@ function maybeShowFirstRunWizard() {
     state.webMeta.firstRunCompleted = true;
     state.webMeta.hasCompletedOnboarding = true;
     saveWebMeta(state.webMeta);
+    syncOverlayState();
     return;
   }
   els.wizardModal.classList.remove("hidden");
+  syncOverlayState();
 }
 
 function closeWizard() {
@@ -9411,6 +9693,7 @@ function openInstanceDetail(instanceId) {
   } else {
     els.detailsDrawer.classList.remove("hidden");
   }
+  syncOverlayState();
 }
 
 function openLogUpdateFor(instanceId) {
@@ -9428,10 +9711,12 @@ function closeInstanceDetail() {
   if (state.splitView) {
     state.selectedInstanceId = null;
     renderDetailsEmpty();
+    syncOverlayState();
     return;
   }
   if (els.detailsDrawer) els.detailsDrawer.classList.add("hidden");
   state.selectedInstanceId = null;
+  syncOverlayState();
 }
 
 function renderMonthReview(baseList) {
@@ -10132,6 +10417,7 @@ function renderDashboard() {
   const base = getBaseInstances(derived);
   renderSummary(base);
   renderFirstVisitHero();
+  renderInstallExperience();
   renderZeroState();
   renderStatusBar(base);
   renderHomeOverview(base);
@@ -10183,6 +10469,7 @@ function renderView() {
     renderBackupStatus();
     renderImportPreview();
     renderSetupCta();
+    renderInstallExperience();
     renderDeviceAccess();
     updateStorageHealth();
     renderIntegrityStatus();
@@ -10199,6 +10486,7 @@ function renderView() {
       loadJanitorReport({ silent: true }).catch(() => {});
     }
   }
+  syncOverlayState();
 }
 
 async function refreshAll() {
@@ -10779,16 +11067,7 @@ function bindEvents() {
       if (!confirmed) return;
       await fetch("/api/reset-local", { method: "POST" });
       if (AJL_WEB_MODE) {
-        try {
-          localStorage.removeItem(WEB_META_KEY);
-          localStorage.removeItem(BACKUP_LAST_KEY);
-          localStorage.removeItem(LOCAL_EDIT_COUNT_KEY);
-          localStorage.removeItem(LOCAL_BACKUP_REMINDER_KEY);
-          localStorage.removeItem(JANITOR_RUNTIME_BASE_KEY);
-          localStorage.removeItem(JANITOR_RUNTIME_REQUIRED_KEY);
-        } catch (err) {
-          // ignore
-        }
+        clearClientRuntimeKeys();
       }
       window.location.reload();
     });
@@ -11010,6 +11289,7 @@ function bindEvents() {
   if (els.assistantFab && els.assistantDrawer) {
     els.assistantFab.addEventListener("click", () => {
       els.assistantDrawer.classList.remove("hidden");
+      syncOverlayState();
     });
   }
 
@@ -11018,7 +11298,59 @@ function bindEvents() {
       const target = event.target;
       if (target && target.dataset && target.dataset.close === "assistant") {
         els.assistantDrawer.classList.add("hidden");
+        syncOverlayState();
       }
+    });
+  }
+
+  if (els.installSheet) {
+    els.installSheet.addEventListener("click", (event) => {
+      if (event.target === els.installSheet) {
+        closeInstallSheet();
+      }
+    });
+  }
+
+  if (els.installSheetClose) {
+    els.installSheetClose.addEventListener("click", () => {
+      closeInstallSheet();
+    });
+  }
+
+  if (els.installSheetAction) {
+    els.installSheetAction.addEventListener("click", async () => {
+      if (state.installState?.canPrompt) {
+        await promptInstallExperience();
+        if (!state.installState?.canPrompt || state.installState?.standalone) {
+          closeInstallSheet();
+        }
+        return;
+      }
+      closeInstallSheet();
+    });
+  }
+
+  if (els.appInstallAction) {
+    els.appInstallAction.addEventListener("click", async () => {
+      await promptInstallExperience();
+    });
+  }
+
+  if (els.appInstallDismiss) {
+    els.appInstallDismiss.addEventListener("click", () => {
+      dismissInstallBanner();
+    });
+  }
+
+  if (els.setupInstallAction) {
+    els.setupInstallAction.addEventListener("click", async () => {
+      await promptInstallExperience();
+    });
+  }
+
+  if (els.setupInstallHelp) {
+    els.setupInstallHelp.addEventListener("click", () => {
+      openInstallSheet();
     });
   }
 
@@ -11429,6 +11761,7 @@ function bindEvents() {
   if (els.agentInlineOpen && els.assistantDrawer) {
     els.agentInlineOpen.addEventListener("click", () => {
       els.assistantDrawer.classList.remove("hidden");
+      syncOverlayState();
       focusAgentInput({ scroll: true });
     });
   }
@@ -11586,6 +11919,8 @@ async function init() {
   const shareToken = getShareTokenFromPath();
   document.body.classList.toggle("web", AJL_WEB_MODE);
   document.body.classList.toggle("local", !AJL_WEB_MODE);
+  setupInstallExperienceHooks();
+  renderInstallExperience();
   state.shareOwnerKey = loadShareOwnerKey();
   state.shareOptions = loadShareOptions();
   if (shareToken) {
@@ -11655,9 +11990,15 @@ async function init() {
   updateSplitView(true);
   window.addEventListener("resize", () => {
     if (splitViewTimer) clearTimeout(splitViewTimer);
-    splitViewTimer = setTimeout(() => updateSplitView(), 150);
+    splitViewTimer = setTimeout(() => {
+      updateSplitView();
+      renderInstallExperience();
+    }, 150);
   });
-  window.addEventListener("orientationchange", () => updateSplitView(true));
+  window.addEventListener("orientationchange", () => {
+    updateSplitView(true);
+    renderInstallExperience();
+  });
   if (!scrollShadowBound) {
     scrollShadowBound = true;
     let ticking = false;
