@@ -10,6 +10,10 @@ const pairs = [
   ["public/app.js", "docs/app.js"],
   ["public/styles.css", "docs/styles.css"],
   ["public/favicon.svg", "docs/favicon.svg"],
+  ["public/apple-touch-icon.png", "docs/apple-touch-icon.png"],
+  ["public/icon-192.png", "docs/icon-192.png"],
+  ["public/icon-512.png", "docs/icon-512.png"],
+  ["public/manifest.webmanifest", "docs/manifest.webmanifest"],
   ["docs/reset.html", "docs/reset/index.html"],
   ["docs/safe.html", "docs/safe/index.html"],
 ];
@@ -45,6 +49,14 @@ function syncIndexHtml() {
   raw = raw.replace(
     '<link rel="icon" href="/favicon.svg" type="image/svg+xml" />',
     '<link rel="icon" href="./favicon.svg" type="image/svg+xml" />'
+  );
+  raw = raw.replace(
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png" />',
+    '<link rel="apple-touch-icon" href="./apple-touch-icon.png" />'
+  );
+  raw = raw.replace(
+    '<link rel="manifest" href="/manifest.webmanifest" />',
+    '<link rel="manifest" href="./manifest.webmanifest" />'
   );
   raw = raw.replace(
     '<link rel="stylesheet" href="/styles.css" />',

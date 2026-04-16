@@ -1927,11 +1927,113 @@ function setQwenOauthSettings(settings) {
   setMetaJson("qwen_oauth", settings);
 }
 
+function updateQwenProviderState(partial = {}) {
+  const state = getLlmProviderState();
+  state.providers["qwen-oauth"] = {
+    ...(state.providers["qwen-oauth"] || {}),
+    ...partial,
+  };
+  setLlmProviderState(state);
+  return state.providers["qwen-oauth"];
+}
+
+function getLatestQwenDeviceSession(statuses = []) {
+  const filtered = Array.isArray(statuses) ? statuses.filter((item) => typeof item === "string" && item.trim()) : [];
+  const where = filtered.length > 0
+    ? ` AND status IN (${filtered.map(() => "?").join(",")})`
+    : "";
+  return db
+    .prepare(
+      `SELECT id, user_code, verification_uri, verification_uri_complete, interval_seconds, expires_at, status, error, created_at
+       FROM oauth_device_sessions
+       WHERE provider = 'qwen'${where}
+       ORDER BY datetime(created_at) DESC
+       LIMIT 1`
+    )
+    .get(...filtered);
+}
+
+function serializeQwenSession(row) {
+  if (!row) return null;
+  return {
+    session_id: row.id,
+    user_code: row.user_code || null,
+    verification_uri: row.verification_uri || null,
+    verification_uri_complete: row.verification_uri_complete || null,
+    interval_seconds: row.interval_seconds || 5,
+    expires_at: row.expires_at || null,
+    status: row.status || null,
+    error: row.error || null,
+  };
+}
+
+async function buildQwenOauthStatusPayload() {
+  const rawOauth = getQwenOauthSettings();
+  const oauth = await getQwenOauthFresh();
+  const connected = !!(oauth && !qwenOauth.isTokenExpired(oauth));
+  const providerState = getLlmProviderState();
+  const activeProvider = normalizeProviderName(providerState.active_provider || "qwen-oauth");
+  const pendingSession = getLatestQwenDeviceSession(["pending"]);
+  const latestFailure = getLatestQwenDeviceSession(["error", "expired"]);
+  const pendingActive =
+    pendingSession && new Date(String(pendingSession.expires_at || "")).getTime() > Date.now();
+
+  let authState = "disconnected";
+  let lastError = String(providerState.providers?.["qwen-oauth"]?.last_error || "");
+  if (connected) {
+    authState = "connected";
+    lastError = "";
+  } else if (pendingActive) {
+    authState = "pending";
+    lastError = "";
+  } else if (rawOauth) {
+    authState = "reauth_required";
+  } else if (latestFailure?.status === "expired") {
+    authState = "expired";
+    lastError = lastError || "Qwen login expired. Reconnect Mamdou.";
+  } else if (latestFailure?.status === "error") {
+    authState = "error";
+    lastError = lastError || String(latestFailure.error || "Qwen login failed.");
+  }
+
+  if (!lastError && latestFailure?.error && authState !== "connected" && authState !== "pending") {
+    lastError = String(latestFailure.error);
+  }
+  if (!lastError && authState === "reauth_required") {
+    lastError = "Qwen login expired. Reconnect Mamdou.";
+  }
+
+  const session = pendingActive ? serializeQwenSession(pendingSession) : null;
+  return {
+    connected,
+    expires_at: oauth?.expiry_date || rawOauth?.expiry_date || null,
+    resource_url: oauth?.resource_url || rawOauth?.resource_url || null,
+    provider: "qwen-oauth",
+    active: activeProvider === "qwen-oauth",
+    auth_state: authState,
+    auth_url: session?.verification_uri_complete || session?.verification_uri || null,
+    session_id: session?.session_id || null,
+    interval_seconds: session?.interval_seconds || null,
+    pending_expires_at: session?.expires_at || null,
+    can_reconnect: !connected,
+    last_error: lastError || null,
+  };
+}
+
 async function getQwenOauthFresh() {
   const oauth = getQwenOauthSettings();
   if (!oauth) return null;
-  if (!qwenOauth.isTokenExpired(oauth)) return oauth;
-  if (!oauth.refresh_token) return null;
+  if (!qwenOauth.isTokenExpired(oauth)) {
+    updateQwenProviderState({ connected: true, last_error: null });
+    return oauth;
+  }
+  if (!oauth.refresh_token) {
+    updateQwenProviderState({
+      connected: false,
+      last_error: "Qwen login expired. Reconnect Mamdou.",
+    });
+    return null;
+  }
   try {
     const tokenData = await qwenOauth.refreshAccessToken(oauth.refresh_token);
     const fresh = qwenOauth.buildOAuthSettings({
@@ -1939,8 +2041,17 @@ async function getQwenOauthFresh() {
       resource_url: tokenData.resource_url || oauth.resource_url,
     });
     setQwenOauthSettings(fresh);
+    updateQwenProviderState({
+      connected: true,
+      connected_at: nowIso(),
+      last_error: null,
+    });
     return fresh;
   } catch (err) {
+    updateQwenProviderState({
+      connected: false,
+      last_error: String(err?.message || "Qwen refresh failed."),
+    });
     return null;
   }
 }
@@ -3741,46 +3852,34 @@ app.post("/api/month-settings", (req, res) => {
 });
 
 app.get("/api/llm/qwen/oauth/status", async (req, res) => {
-  const oauth = await getQwenOauthFresh();
-  const connected = oauth && !qwenOauth.isTokenExpired(oauth);
-  const providerState = getLlmProviderState();
-  const activeProvider = normalizeProviderName(providerState.active_provider || "qwen-oauth");
-  res.json({
-    connected: !!connected,
-    expires_at: oauth?.expiry_date || null,
-    resource_url: oauth?.resource_url || null,
-    provider: "qwen-oauth",
-    active: activeProvider === "qwen-oauth",
-  });
+  const payload = await buildQwenOauthStatusPayload();
+  res.json(payload);
 });
 
 app.get("/api/llm/qwen/oauth/last", (req, res) => {
-  const row = db
-    .prepare(
-      `SELECT id, user_code, verification_uri, verification_uri_complete, interval_seconds, expires_at, status
-       FROM oauth_device_sessions
-       WHERE provider = 'qwen' AND status = 'pending'
-       ORDER BY created_at DESC
-       LIMIT 1`
-    )
-    .get();
+  const row = getLatestQwenDeviceSession(["pending"]);
 
   if (!row) return res.status(404).json({ status: "none" });
   if (new Date(row.expires_at).getTime() <= Date.now()) {
     return res.status(410).json({ status: "expired" });
   }
   return res.json({
+    ...serializeQwenSession(row),
     status: "pending",
-    session_id: row.id,
-    user_code: row.user_code,
-    verification_uri: row.verification_uri,
-    verification_uri_complete: row.verification_uri_complete,
-    interval_seconds: row.interval_seconds,
-    expires_at: row.expires_at,
   });
 });
 
 app.post("/api/llm/qwen/oauth/start", async (req, res) => {
+  const force = req.body?.force === true || String(req.body?.force || "").trim() === "1";
+  const existing = !force ? getLatestQwenDeviceSession(["pending"]) : null;
+  if (existing && new Date(existing.expires_at).getTime() > Date.now()) {
+    return res.json({
+      ...serializeQwenSession(existing),
+      resumed: true,
+      status: "pending",
+    });
+  }
+
   db.prepare(
     "UPDATE oauth_device_sessions SET status = 'superseded' WHERE provider = 'qwen' AND status = 'pending'"
   ).run();
@@ -3812,6 +3911,11 @@ app.post("/api/llm/qwen/oauth/start", async (req, res) => {
       nowIso()
     );
 
+    updateQwenProviderState({
+      connected: false,
+      last_error: null,
+    });
+
     res.json({
       session_id: sessionId,
       user_code: payload.user_code,
@@ -3819,8 +3923,13 @@ app.post("/api/llm/qwen/oauth/start", async (req, res) => {
       verification_uri_complete: payload.verification_uri_complete,
       expires_at: expiresAt,
       interval_seconds: interval,
+      status: "pending",
     });
   } catch (err) {
+    updateQwenProviderState({
+      connected: false,
+      last_error: String(err?.message || "OAuth start failed"),
+    });
     res.status(502).json({ error: err.message || "OAuth start failed" });
   }
 });
@@ -3863,6 +3972,10 @@ app.post("/api/llm/qwen/oauth/poll", async (req, res) => {
         result.error_description || result.error || "OAuth error",
         sessionId
       );
+      updateQwenProviderState({
+        connected: false,
+        last_error: result.error_description || result.error || "OAuth error",
+      });
       return res.json({
         status: "error",
         message: result.error_description || result.error || "OAuth error",
@@ -3896,12 +4009,19 @@ app.post("/api/llm/qwen/oauth/poll", async (req, res) => {
       err.message || "OAuth error",
       sessionId
     );
+    updateQwenProviderState({
+      connected: false,
+      last_error: String(err?.message || "OAuth error"),
+    });
     res.json({ status: "error", message: err.message || "OAuth error" });
   }
 });
 
 app.delete("/api/llm/qwen/oauth", (req, res) => {
   setMeta("qwen_oauth", "");
+  db.prepare(
+    "UPDATE oauth_device_sessions SET status = 'cancelled', error = COALESCE(error, 'Disconnected by user') WHERE provider = 'qwen' AND status = 'pending'"
+  ).run();
   const providerState = getLlmProviderState();
   providerState.providers["qwen-oauth"] = {
     ...providerState.providers["qwen-oauth"],
@@ -4033,13 +4153,15 @@ app.post("/api/llm/providers/test", async (req, res) => {
     return res.status(400).json({ error: "Unsupported provider." });
   }
   if (provider === "qwen-oauth") {
-    const oauth = await getQwenOauthFresh();
-    const connected = !!oauth && !qwenOauth.isTokenExpired(oauth);
+    const auth = await buildQwenOauthStatusPayload();
     return res.json({
-      ok: connected,
+      ok: auth.connected,
       provider,
-      connected,
-      error: connected ? null : "Qwen login required.",
+      connected: auth.connected,
+      error: auth.connected ? null : auth.last_error || "Qwen login required.",
+      auth_state: auth.auth_state,
+      auth_url: auth.auth_url,
+      can_reconnect: auth.can_reconnect,
     });
   }
   const credential = getProviderCredential(provider);
@@ -4081,6 +4203,9 @@ app.delete("/api/llm/providers/disconnect", (req, res) => {
     if (!validProviderName(target)) continue;
     if (target === "qwen-oauth") {
       setMeta("qwen_oauth", "");
+      db.prepare(
+        "UPDATE oauth_device_sessions SET status = 'cancelled', error = COALESCE(error, 'Disconnected by user') WHERE provider = 'qwen' AND status = 'pending'"
+      ).run();
       state.providers["qwen-oauth"] = {
         ...(state.providers["qwen-oauth"] || {}),
         connected: false,
@@ -5392,15 +5517,23 @@ app.post("/internal/advisor/query", async (req, res) => {
       oauth = oauthFresh;
     }
     if (provider === "qwen-oauth" && !oauth) {
+      const auth = await buildQwenOauthStatusPayload();
       const next = getLlmProviderState();
       next.providers["qwen-oauth"] = {
         ...(next.providers["qwen-oauth"] || {}),
         connected: false,
-        last_error: "Qwen login required.",
+        last_error: auth.last_error || "Qwen login required.",
       };
       setLlmProviderState(next);
       recordLlmLatency(Date.now() - startedAt, false);
-      return res.status(503).json({ ok: false, error: "Agent not connected. Connect Mamdou in Setup." });
+      return res.status(503).json({
+        ok: false,
+        error: auth.last_error || "Agent not connected. Connect Mamdou in Setup.",
+        provider,
+        auth_state: auth.auth_state,
+        auth_url: auth.auth_url,
+        can_reconnect: auth.can_reconnect,
+      });
     }
     if (provider === "openai" || provider === "anthropic") {
       const credential = getProviderCredential(provider);
@@ -5442,6 +5575,17 @@ app.post("/internal/advisor/query", async (req, res) => {
         setLlmProviderState(next);
       }
       recordLlmLatency(Date.now() - startedAt, false);
+      if (provider === "qwen-oauth") {
+        const auth = await buildQwenOauthStatusPayload();
+        return res.status(503).json({
+          ...result,
+          provider,
+          auth_state: auth.auth_state,
+          auth_url: result.auth_url || auth.auth_url,
+          can_reconnect: auth.can_reconnect,
+          error: result.error || auth.last_error || "Qwen login required.",
+        });
+      }
       return res.status(503).json(result);
     }
     {

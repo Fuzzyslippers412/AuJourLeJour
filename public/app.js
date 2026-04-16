@@ -25,7 +25,17 @@ const state = {
   llmStatus: { status: "unknown", auth_url: null, error: null },
   llmProviders: null,
   llmChecked: false,
-  qwenAuth: { connected: false, status: "unknown", session_id: null, verification_uri_complete: null, interval_seconds: null },
+  qwenAuth: {
+    connected: false,
+    status: "unknown",
+    session_id: null,
+    verification_uri_complete: null,
+    interval_seconds: null,
+    expires_at: null,
+    pending_expires_at: null,
+    can_reconnect: true,
+    error: "",
+  },
   llmHistory: [],
   commandLog: [],
   profileName: "",
@@ -141,6 +151,8 @@ const SHARE_LIVE_REFRESH_MS = 8000;
 const SHARE_RELAY_TIMEOUT_MS = 4500;
 const SHARE_PUBLISH_BASE_DELAY_MS = 1500;
 const SHARE_PUBLISH_MAX_DELAY_MS = 60000;
+const MAMDOU_AUTH_TIMEOUT_MS = 8000;
+const JANITOR_START_TIMEOUT_MS = 7000;
 const PWA_DB_NAME = "ajl_pwa";
 const PWA_DB_PREFIX = "ajl_pwa";
 const WEB_META_KEY = "auj_web_meta";
@@ -220,6 +232,19 @@ function getErrorMessage(data, fallback) {
   if (data.error && typeof data.error.message === "string") return data.error.message;
   if (typeof data.message === "string") return data.message;
   return fallback;
+}
+
+function setLlmUnavailableStateFromPayload(payload, fallback) {
+  const authState = String(payload?.auth_state || state.qwenAuth?.status || "").toLowerCase();
+  const authUrl = payload?.auth_url || state.qwenAuth?.verification_uri_complete || null;
+  const error = getErrorMessage(payload, fallback);
+  state.llmStatus = {
+    status: authUrl || authState === "reauth_required" || authState === "pending"
+      ? "auth_required"
+      : "unavailable",
+    auth_url: authUrl,
+    error,
+  };
 }
 
 let pwaResetInProgress = false;
@@ -370,6 +395,10 @@ const els = {
   navReview: document.getElementById("nav-review"),
   navSetup: document.getElementById("nav-setup"),
   navJanitor: document.getElementById("nav-janitor"),
+  mobileNavToday: document.getElementById("mobile-nav-today"),
+  mobileNavReview: document.getElementById("mobile-nav-review"),
+  mobileNavSetup: document.getElementById("mobile-nav-setup"),
+  mobileNavJanitor: document.getElementById("mobile-nav-janitor"),
   shareOpen: document.getElementById("share-open"),
   shareModal: document.getElementById("share-modal"),
   shareClose: document.getElementById("share-close"),
@@ -1626,7 +1655,17 @@ async function loadSettings() {
 
 async function loadQwenAuthStatus() {
   if (AJL_WEB_MODE) {
-    state.qwenAuth = { connected: false, status: "disabled", session_id: null, verification_uri_complete: null, interval_seconds: null };
+    state.qwenAuth = {
+      connected: false,
+      status: "disabled",
+      session_id: null,
+      verification_uri_complete: null,
+      interval_seconds: null,
+      expires_at: null,
+      pending_expires_at: null,
+      can_reconnect: false,
+      error: "",
+    };
     return;
   }
   try {
@@ -1634,32 +1673,98 @@ async function loadQwenAuthStatus() {
     if (!res.ok) return;
     const data = await res.json();
     if (data.disabled) {
-      state.qwenAuth = {
+      applyQwenAuthState({
         connected: false,
-        status: "disabled",
-        session_id: null,
-        verification_uri_complete: null,
-        interval_seconds: null,
-      };
+        auth_state: "disabled",
+        can_reconnect: false,
+      });
       return;
     }
-    state.qwenAuth.connected = !!data.connected;
-    state.qwenAuth.status = data.connected ? "connected" : "disconnected";
-    if (data.connected) {
-      state.qwenAuth.session_id = null;
-      state.qwenAuth.verification_uri_complete = null;
-    } else if (!state.qwenAuth.session_id) {
-      await resumeQwenAuth();
+    applyQwenAuthState(data);
+  } catch (err) {
+    applyQwenAuthState({
+      connected: false,
+      auth_state: "error",
+      last_error: err.message || "Unable to load Qwen status.",
+    });
+  }
+}
+
+function applyQwenAuthState(payload = {}) {
+  const connected = !!payload.connected;
+  const status = String(
+    payload.auth_state || payload.status || (connected ? "connected" : "disconnected")
+  ).toLowerCase();
+  state.qwenAuth = {
+    connected,
+    status,
+    session_id: payload.session_id || null,
+    verification_uri_complete:
+      payload.auth_url || payload.verification_uri_complete || payload.verification_uri || null,
+    interval_seconds:
+      Number(payload.interval_seconds || state.qwenAuth?.interval_seconds || 5) || 5,
+    expires_at: payload.expires_at || null,
+    pending_expires_at: payload.pending_expires_at || null,
+    can_reconnect: payload.can_reconnect !== false,
+    error: String(payload.last_error || payload.error || ""),
+  };
+
+  if (connected) {
+    state.qwenAuth.session_id = null;
+    state.qwenAuth.verification_uri_complete = null;
+    state.qwenAuth.pending_expires_at = null;
+    if (state.llmStatus?.status === "auth_required" || state.llmStatus?.status === "unavailable") {
+      state.llmStatus = { status: "ok", auth_url: null, error: null };
     }
-    if (state.llmProviders?.providers?.["qwen-oauth"]) {
-      state.llmProviders.providers["qwen-oauth"] = {
-        ...state.llmProviders.providers["qwen-oauth"],
-        connected: !!data.connected,
-        last_error: data.connected ? null : state.llmProviders.providers["qwen-oauth"]?.last_error || null,
-      };
+    stopQwenPolling();
+  } else if (status === "pending" && state.qwenAuth.session_id) {
+    state.llmStatus = {
+      status: "auth_required",
+      auth_url: state.qwenAuth.verification_uri_complete,
+      error: state.qwenAuth.error || "",
+    };
+    startQwenPolling();
+  } else {
+    stopQwenPolling();
+  }
+
+  if (state.llmProviders?.providers?.["qwen-oauth"]) {
+    state.llmProviders.providers["qwen-oauth"] = {
+      ...state.llmProviders.providers["qwen-oauth"],
+      connected,
+      last_error: connected ? null : state.qwenAuth.error || null,
+    };
+  }
+}
+
+function isQwenReconnectState(status) {
+  return ["expired", "reauth_required", "error"].includes(String(status || "").toLowerCase());
+}
+
+function openAuthWindow(url, existingWindow = null) {
+  if (!url) return false;
+  try {
+    if (existingWindow && !existingWindow.closed) {
+      existingWindow.location = url;
+      if (typeof existingWindow.focus === "function") existingWindow.focus();
+      return true;
     }
   } catch (err) {
-    state.qwenAuth.status = "error";
+    // ignore popup navigation failures
+  }
+  try {
+    const win = window.open(url, "_blank", "noopener");
+    return !!win;
+  } catch (err) {
+    return false;
+  }
+}
+
+function preopenAuthWindow() {
+  try {
+    return window.open("about:blank", "_blank", "noopener");
+  } catch (err) {
+    return null;
   }
 }
 
@@ -1686,8 +1791,10 @@ function getProviderConnectionState(provider) {
       connected,
       configured: connected,
       pending: qwenPending,
+      status: String(state.qwenAuth?.status || "unknown"),
+      canReconnect: state.qwenAuth?.can_reconnect !== false,
       authUrl: state.qwenAuth?.verification_uri_complete || state.llmStatus?.auth_url || "",
-      lastError: String(row.last_error || state.qwenAuth?.error || state.llmStatus?.error || ""),
+      lastError: String(state.qwenAuth?.error || row.last_error || state.llmStatus?.error || ""),
       model: row.model || defaultModelForProvider(key),
       baseUrl: "",
     };
@@ -1757,17 +1864,21 @@ async function connectMamdouFlow(providerInput) {
       renderSetupAgentConnection();
       return { ok: true, message: "Mamdou is already connected via Qwen." };
     }
-    await startQwenAuth();
+    const qwenResult = await startQwenAuth({
+      force: isQwenReconnectState(state.qwenAuth?.status),
+    });
     renderAssistantConnection();
     renderSetupAgentConnection();
-    if (state.qwenAuth?.verification_uri_complete) {
+    if (qwenResult.ok && state.qwenAuth?.verification_uri_complete) {
       return {
         ok: true,
-        message: "Started Qwen login. Open login and authorize Mamdou.",
+        message: qwenResult.resumed
+          ? "Qwen login is still pending. Open login and authorize Mamdou."
+          : "Started Qwen login. Open login and authorize Mamdou.",
         authUrl: state.qwenAuth.verification_uri_complete,
       };
     }
-    return { ok: false, message: state.qwenAuth?.error || "Unable to start Mamdou login." };
+    return { ok: false, message: qwenResult.error || state.qwenAuth?.error || "Unable to start Mamdou login." };
   }
 
   if (!activeState.configured) {
@@ -1814,6 +1925,20 @@ async function connectMamdouFromAssistant() {
   }
   const provider =
     normalizeMamdouProviderInput(els.assistantProviderSelect?.value || "") || "qwen-oauth";
+  if (provider === "qwen-oauth") {
+    if (state.qwenAuth?.status === "pending" && state.qwenAuth?.verification_uri_complete) {
+      openAuthWindow(state.qwenAuth.verification_uri_complete, preopenAuthWindow());
+      showToast("Qwen login reopened.");
+      renderAssistantConnection();
+      renderSetupAgentConnection();
+      renderNudges();
+      return;
+    }
+    await triggerQwenAuthLaunch({
+      force: state.qwenAuth?.connected || isQwenReconnectState(state.qwenAuth?.status),
+    });
+    return;
+  }
   if (provider !== "qwen-oauth") {
     const keyText = String(els.assistantProviderKey?.value || "").trim();
     if (keyText) {
@@ -1838,13 +1963,6 @@ async function connectMamdouFromAssistant() {
   const result = await connectMamdouFlow(provider);
   if (result.ok) {
     showToast(result.message || "Mamdou connected.");
-    if (result.authUrl) {
-      try {
-        window.open(result.authUrl, "_blank", "noopener");
-      } catch (err) {
-        // ignore popup failures
-      }
-    }
   } else {
     showSystemBanner(result.message || "Unable to connect Mamdou.");
   }
@@ -2007,6 +2125,19 @@ async function testActiveProviderConnection() {
     showSystemBanner(message);
     return;
   }
+  if (provider === "qwen-oauth" && !payload?.connected) {
+    applyQwenAuthState({
+      connected: false,
+      auth_state: payload?.auth_state || state.qwenAuth?.status || "reauth_required",
+      verification_uri_complete: payload?.auth_url || null,
+      last_error: payload?.error || "Qwen login required.",
+      can_reconnect: payload?.can_reconnect !== false,
+    });
+    renderNudges();
+    renderSetupAgentConnection();
+    showSystemBanner(payload?.error || "Qwen login required. Reconnect Mamdou.");
+    return;
+  }
   showToast(`Mamdou test passed for ${provider}.`);
   await loadLlmProviderStatus({ silent: true });
   await loadQwenAuthStatus();
@@ -2017,49 +2148,94 @@ async function testActiveProviderConnection() {
 async function resumeQwenAuth() {
   try {
     const res = await fetch("/api/llm/qwen/oauth/last");
-    if (!res.ok) return;
+    if (!res.ok) return false;
     const data = await res.json();
-    if (data.status !== "pending") return;
-    state.qwenAuth = {
+    if (data.status !== "pending") return false;
+    applyQwenAuthState({
       connected: false,
-      status: "pending",
+      auth_state: "pending",
       session_id: data.session_id,
       verification_uri_complete: data.verification_uri_complete || data.verification_uri,
       interval_seconds: data.interval_seconds || 5,
-    };
-    startQwenPolling();
+      pending_expires_at: data.expires_at || null,
+      can_reconnect: true,
+    });
+    return true;
   } catch (err) {
-    // ignore
+    return false;
   }
 }
 
 let qwenPollTimer = null;
 
-async function startQwenAuth() {
+async function startQwenAuth(options = {}) {
+  const force = options.force === true;
   try {
-    const res = await fetch("/api/llm/qwen/oauth/start", { method: "POST" });
+    const res = await fetchWithTimeout(
+      "/api/llm/qwen/oauth/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(force ? { force: true } : {}),
+      },
+      MAMDOU_AUTH_TIMEOUT_MS
+    );
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      state.qwenAuth.status = "error";
-      state.qwenAuth.error = data.error || "Unable to start Mamdou auth.";
+      applyQwenAuthState({
+        connected: false,
+        auth_state: "error",
+        last_error: data.error || "Unable to start Mamdou auth.",
+      });
       renderNudges();
-      return;
+      return { ok: false, error: data.error || "Unable to start Mamdou auth." };
     }
-    const data = await res.json();
-    state.qwenAuth = {
+    applyQwenAuthState({
       connected: false,
-      status: "pending",
+      auth_state: data.status || "pending",
       session_id: data.session_id,
       verification_uri_complete: data.verification_uri_complete || data.verification_uri,
       interval_seconds: data.interval_seconds || 5,
+      pending_expires_at: data.expires_at || null,
+      can_reconnect: true,
+      last_error: "",
+    });
+    renderNudges();
+    return {
+      ok: true,
+      authUrl: state.qwenAuth.verification_uri_complete,
+      resumed: !!data.resumed,
     };
-    renderNudges();
-    startQwenPolling();
   } catch (err) {
-    state.qwenAuth.status = "error";
-    state.qwenAuth.error = err.message || "Unable to start Mamdou auth.";
+    applyQwenAuthState({
+      connected: false,
+      auth_state: "error",
+      last_error: err.message || "Unable to start Mamdou auth.",
+    });
     renderNudges();
+    return { ok: false, error: err.message || "Unable to start Mamdou auth." };
   }
+}
+
+async function reconnectQwenAuth(options = {}) {
+  return startQwenAuth({ ...options, force: true });
+}
+
+async function triggerQwenAuthLaunch(options = {}) {
+  const force = options.force === true || isQwenReconnectState(state.qwenAuth?.status);
+  const popup = options.popup === false ? null : preopenAuthWindow();
+  const result = force ? await reconnectQwenAuth({ force: true }) : await startQwenAuth();
+  if (result.ok && result.authUrl) {
+    openAuthWindow(result.authUrl, popup);
+    showToast(force ? "Reconnect Qwen in the opened tab." : "Finish Qwen login in the opened tab.");
+  } else {
+    if (popup && !popup.closed) popup.close();
+    showSystemBanner(result.error || "Unable to start Mamadou login.");
+  }
+  renderAssistantConnection();
+  renderSetupAgentConnection();
+  renderNudges();
+  return result;
 }
 
 function stopQwenPolling() {
@@ -2079,36 +2255,51 @@ async function pollQwenAuth() {
     });
     const data = await res.json().catch(() => ({}));
     if (data.status === "pending") {
-      state.qwenAuth.status = "pending";
-      state.qwenAuth.interval_seconds = data.interval_seconds || state.qwenAuth.interval_seconds || 5;
+      applyQwenAuthState({
+        connected: false,
+        auth_state: "pending",
+        session_id: state.qwenAuth.session_id,
+        verification_uri_complete: state.qwenAuth.verification_uri_complete,
+        interval_seconds: data.interval_seconds || state.qwenAuth.interval_seconds || 5,
+        pending_expires_at: state.qwenAuth.pending_expires_at,
+      });
       renderNudges();
       startQwenPolling();
       return;
     }
     if (data.status === "success") {
-      state.qwenAuth.connected = true;
-      state.qwenAuth.status = "connected";
-      stopQwenPolling();
+      applyQwenAuthState({
+        connected: true,
+        auth_state: "connected",
+        expires_at: data.expires_at || null,
+      });
       renderNudges();
       await refreshAll();
       return;
     }
     if (data.status === "expired") {
-      state.qwenAuth.status = "expired";
-      stopQwenPolling();
+      applyQwenAuthState({
+        connected: false,
+        auth_state: "reauth_required",
+        last_error: data.message || "Qwen login expired. Reconnect Mamdou.",
+      });
       renderNudges();
       return;
     }
     if (data.status === "error") {
-      state.qwenAuth.status = "error";
-      state.qwenAuth.error = data.message || "OAuth error";
-      stopQwenPolling();
+      applyQwenAuthState({
+        connected: false,
+        auth_state: "error",
+        last_error: data.message || "OAuth error",
+      });
       renderNudges();
     }
   } catch (err) {
-    state.qwenAuth.status = "error";
-    state.qwenAuth.error = err.message || "OAuth error";
-    stopQwenPolling();
+    applyQwenAuthState({
+      connected: false,
+      auth_state: "error",
+      last_error: err.message || "OAuth error",
+    });
     renderNudges();
   }
 }
@@ -2202,14 +2393,30 @@ async function saveChatMessage(role, text, meta = "") {
   }
 }
 
+function resetAssistantConversationState(statusMessage = "") {
+  state.llmHistory = [];
+  state.lastAgentInput = "";
+  state.lastAgentSubmittedAt = 0;
+  state.llmStatus = { status: "unknown", auth_url: null, error: null };
+  clearPendingAgentAction();
+  setAgentBusy(false);
+  setAgentStatus(statusMessage);
+  if (els.llmAgentInput) els.llmAgentInput.value = "";
+  if (els.agentInlineInput) els.agentInlineInput.value = "";
+  renderLlmHistory();
+  renderAssistantConnection();
+  renderSetupAgentConnection();
+  renderNudges();
+}
+
 async function clearChatHistory() {
   try {
     await fetch("/api/chat", { method: "DELETE" });
   } catch (err) {
     // ignore
   }
-  state.llmHistory = [];
-  renderLlmHistory();
+  resetAssistantConversationState("Chat cleared. Mamadou is ready for a fresh command.");
+  showToast("Mamdou chat cleared.");
 }
 
 function updateInstanceInState(updated) {
@@ -4834,11 +5041,10 @@ async function fetchNudges(events) {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      if (data.auth_url) {
-        state.llmStatus = { status: "auth_required", auth_url: data.auth_url, error: data.error || "" };
-      } else {
-        state.llmStatus = { status: "unavailable", auth_url: null, error: data.error || "Mamdou unavailable" };
+      if (getActiveProviderName() === "qwen-oauth") {
+        await loadQwenAuthStatus();
       }
+      setLlmUnavailableStateFromPayload(data, "Mamdou unavailable");
       state.nudges = fallbackNudges(events);
       state.lastNudgeKey = eventKey;
       state.lastNudgeAt = Date.now();
@@ -4852,7 +5058,7 @@ async function fetchNudges(events) {
     state.lastNudgeAt = Date.now();
     renderNudges();
   } catch (err) {
-    state.llmStatus = { status: "unavailable", auth_url: null, error: err.message || "Mamdou unavailable" };
+    setLlmUnavailableStateFromPayload({ error: err.message || "Mamdou unavailable" }, "Mamdou unavailable");
     state.nudges = fallbackNudges(events);
     state.lastNudgeKey = eventKey;
     state.lastNudgeAt = Date.now();
@@ -5960,11 +6166,10 @@ async function sendLlmAgent(source = "drawer") {
     if (!res.ok || !data?.ok) {
       const serverError = data?.error || "Mamdou unavailable";
       const displayError = requestId ? `${serverError} (ref: ${requestId})` : serverError;
-      if (data?.auth_url) {
-        state.llmStatus = { status: "auth_required", auth_url: data.auth_url, error: displayError };
-      } else {
-        state.llmStatus = { status: "unavailable", auth_url: null, error: displayError };
+      if (getActiveProviderName() === "qwen-oauth") {
+        await loadQwenAuthStatus();
       }
+      setLlmUnavailableStateFromPayload({ ...data, error: displayError }, displayError);
       renderNudges();
       setAgentStatus(displayError);
       pushLlmMessage("assistant", "Mamdou unavailable.", displayError);
@@ -6409,9 +6614,13 @@ function renderAssistantConnection() {
     title = "Agent connected";
     body = `Mamdou is ready via ${connection.label}.`;
   } else if (connection.provider === "qwen-oauth" && connection.pending && connection.authUrl) {
-    title = "Authorize Mamdou";
-    body = "Authorize in browser, then return here.";
+    title = "Finish Qwen login";
+    body = "Authorization is still pending. Complete it in browser, then return here.";
     action = { type: "link", label: "Open login", href: connection.authUrl };
+  } else if (connection.provider === "qwen-oauth" && state.qwenAuth?.status === "reauth_required") {
+    title = "Reconnect Qwen";
+    body = connection.lastError || "Your Qwen login expired. Reconnect Mamadou to continue.";
+    action = { type: "button", label: "Reconnect Qwen", onClick: () => triggerQwenAuthLaunch({ force: true }) };
   } else if (connection.provider === "qwen-oauth" && state.llmStatus?.status === "auth_required" && connection.authUrl) {
     title = "Mamdou login required";
     body = "Complete device authorization.";
@@ -6419,11 +6628,11 @@ function renderAssistantConnection() {
   } else if (connection.provider === "qwen-oauth" && state.qwenAuth?.status === "expired") {
     title = "Login expired";
     body = "Start Mamdou login again.";
-    action = { type: "button", label: "Start login", onClick: startQwenAuth };
+    action = { type: "button", label: "Reconnect Qwen", onClick: () => triggerQwenAuthLaunch({ force: true }) };
   } else if (connection.provider === "qwen-oauth" && state.qwenAuth?.status === "error") {
-    title = "Mamdou error";
+    title = "Qwen needs attention";
     body = connection.lastError || "Unable to start Mamdou auth.";
-    action = { type: "button", label: "Retry", onClick: startQwenAuth };
+    action = { type: "button", label: "Retry login", onClick: () => triggerQwenAuthLaunch({ force: true }) };
   } else if (connection.provider !== "qwen-oauth" && !connection.configured) {
     title = "Connect Mamdou";
     body = `Add your ${connection.label} API key in Setup.`;
@@ -6437,7 +6646,9 @@ function renderAssistantConnection() {
     body = `Activate ${connection.label} in Setup to continue.`;
     action = { type: "button", label: "Open Setup", onClick: openSetupAgentSection };
   } else if (!connection.connected) {
-    action = { type: "button", label: "Start login", onClick: startQwenAuth };
+    title = "Connect Mamdou";
+    body = "Use Qwen login to enable commands and insights.";
+    action = { type: "button", label: "Connect Qwen", onClick: () => triggerQwenAuthLaunch() };
   }
 
   els.assistantConnectionTitle.textContent = title;
@@ -6451,6 +6662,8 @@ function renderAssistantConnection() {
         els.assistantProviderHint.textContent = `Active provider: ${connection.label}.`;
       } else if (connection.provider === "qwen-oauth" && connection.pending) {
         els.assistantProviderHint.textContent = "Qwen authorization pending.";
+      } else if (connection.provider === "qwen-oauth" && state.qwenAuth?.status === "reauth_required") {
+        els.assistantProviderHint.textContent = connection.lastError || "Reconnect Qwen to continue.";
       } else if (connection.provider !== "qwen-oauth" && !connection.configured) {
         els.assistantProviderHint.textContent = `${connection.label} key not configured yet. Paste key and connect, or open Setup.`;
       } else if (connection.lastError) {
@@ -6489,7 +6702,13 @@ function renderAssistantConnection() {
     const needsKey = selectedProvider !== "qwen-oauth" && !selectedState.configured && !hasInlineKey;
     els.assistantProviderConnect.disabled = needsKey;
     if (selectedProvider === "qwen-oauth") {
-      els.assistantProviderConnect.textContent = connection.connected ? "Reconnect Qwen" : "Connect Mamdou";
+      if (connection.pending) {
+        els.assistantProviderConnect.textContent = "Resume Qwen login";
+      } else if (connection.connected || isQwenReconnectState(state.qwenAuth?.status)) {
+        els.assistantProviderConnect.textContent = "Reconnect Qwen";
+      } else {
+        els.assistantProviderConnect.textContent = "Connect Mamdou";
+      }
     } else {
       els.assistantProviderConnect.textContent = hasInlineKey
         ? `Save key & connect ${selectedState.label}`
@@ -6549,7 +6768,7 @@ function renderSetupAgentConnection() {
 
   if (!isActive) {
     if (selectedIsQwen && !connection.connected) {
-      els.setupAgentStatus.textContent = 'Selected provider: qwen-oauth. Click "Set provider", then "Start login".';
+      els.setupAgentStatus.textContent = 'Selected provider: qwen-oauth. Click "Set provider", then connect Qwen.';
     } else if (!selectedIsQwen && !connection.configured) {
       els.setupAgentStatus.textContent = `Selected provider: ${selectedProvider}. Enter API key, click "Connect key", then "Set provider".`;
     } else {
@@ -6559,11 +6778,13 @@ function renderSetupAgentConnection() {
     els.setupAgentStatus.textContent = `Agent connected via ${providerDisplayName(selectedProvider)}. Mamdou is ready.`;
     els.setupAgentDisconnect.classList.remove("hidden");
   } else if (selectedIsQwen && connection.pending) {
-    els.setupAgentStatus.textContent = "Qwen authorization pending. Complete login in browser, then refresh.";
+    els.setupAgentStatus.textContent = "Qwen authorization pending. Open login, finish authorization, then refresh if needed.";
+  } else if (selectedIsQwen && state.qwenAuth?.status === "reauth_required") {
+    els.setupAgentStatus.textContent = connection.lastError || "Qwen login expired. Reconnect Mamdou.";
   } else if (!selectedIsQwen && !connection.configured) {
     els.setupAgentStatus.textContent = `Enter ${selectedProvider} API key and click "Connect key".`;
   } else if (selectedIsQwen && state.qwenAuth?.status === "expired") {
-    els.setupAgentStatus.textContent = "Login expired. Start Mamdou login again.";
+    els.setupAgentStatus.textContent = "Login expired. Reconnect Qwen.";
   } else if (selectedIsQwen && state.qwenAuth?.status === "error") {
     els.setupAgentStatus.textContent = connection.lastError || "Unable to connect Mamdou right now.";
   } else if (!selectedIsQwen && connection.lastError) {
@@ -6573,6 +6794,11 @@ function renderSetupAgentConnection() {
   }
 
   if (selectedIsQwen) {
+    els.setupAgentStart.textContent = connection.pending
+      ? "Resume login"
+      : isQwenReconnectState(state.qwenAuth?.status)
+        ? "Reconnect Qwen"
+        : "Connect Qwen";
     if (connection.connected) {
       els.setupAgentDisconnect.classList.remove("hidden");
       return;
@@ -6623,11 +6849,16 @@ function renderNudges() {
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = `Connect Mamdou (${connection.label})`;
+    title.textContent =
+      connection.provider === "qwen-oauth" && isQwenReconnectState(state.qwenAuth?.status)
+        ? "Reconnect Qwen"
+        : `Connect Mamdou (${connection.label})`;
     const body = document.createElement("div");
     body.className = "meta";
     if (connection.provider === "qwen-oauth" && connection.pending && connection.authUrl) {
       body.textContent = "Authorize in browser, then return here.";
+    } else if (connection.provider === "qwen-oauth" && state.qwenAuth.status === "reauth_required") {
+      body.textContent = connection.lastError || "Reconnect Mamdou to keep using Qwen.";
     } else if (connection.provider === "qwen-oauth" && state.qwenAuth.status === "error") {
       body.textContent = connection.lastError || "Unable to start Mamdou auth.";
     } else if (connection.provider === "qwen-oauth" && state.qwenAuth.status === "expired") {
@@ -6652,8 +6883,12 @@ function renderNudges() {
     } else if (connection.provider === "qwen-oauth") {
       const action = document.createElement("button");
       action.className = "btn-small";
-      action.textContent = "Start login";
-      action.addEventListener("click", () => startQwenAuth());
+      action.textContent = isQwenReconnectState(state.qwenAuth?.status)
+        ? "Reconnect Qwen"
+        : "Connect Qwen";
+      action.addEventListener("click", () => {
+        triggerQwenAuthLaunch({ force: isQwenReconnectState(state.qwenAuth?.status) });
+      });
       row.appendChild(left);
       row.appendChild(action);
     } else {
@@ -8898,21 +9133,64 @@ async function runShannonMode(profile = "full") {
     els.shannonStatus.textContent = runProfile === "llm-runtime"
       ? "Starting Janitor LLM runtime probe..."
       : "Starting Janitor...";
-    const res = await apiFetch(
-      "/api/system/janitor/run",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      },
-      { silent: true }
-    );
+    if (els.shannonSummary) {
+      els.shannonSummary.textContent = "Waiting for the local server to acknowledge the run.";
+    }
+    let res;
+    try {
+      res = await fetchWithTimeout(
+        "/api/system/janitor/run",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+        JANITOR_START_TIMEOUT_MS
+      );
+    } catch (err) {
+      const statusRes = await apiFetch("/api/system/janitor/status", {}, { silent: true }).catch(
+        () => null
+      );
+      if (statusRes?.ok) {
+        const statusPayload = await readApiData(statusRes).catch(() => null);
+        const stateData = statusPayload?.state || statusPayload || {};
+        if (stateData && typeof stateData === "object") {
+          renderShannonState(stateData);
+          state.janitorReport = null;
+          renderJanitorDashboard(stateData);
+          if (stateData.running) {
+            showToast("Janitor is running. The launch request timed out, so the panel re-synced from live status.");
+            return;
+          }
+        }
+      }
+      const timedOut = err?.name === "AbortError";
+      const message = timedOut
+        ? "Janitor launch timed out before the server acknowledged it. Check the local server and try again."
+        : err?.message || "Unable to start Janitor.";
+      els.shannonStatus.textContent = message;
+      if (els.shannonSummary) {
+        els.shannonSummary.textContent = "Janitor did not confirm the run start.";
+      }
+      showSystemBanner(message);
+      return;
+    }
     const requestId = getRequestIdFromResponse(res);
     const payload = await readApiData(res);
     if (!res.ok) {
+      if (res.status === 409 && payload?.state) {
+        renderShannonState(payload.state);
+        state.janitorReport = null;
+        renderJanitorDashboard(payload.state);
+        showToast("Janitor is already running. Showing live status.");
+        return;
+      }
       const baseMessage = getErrorMessage(payload, `Unable to run Janitor (${res.status}).`);
       const message = requestId ? `${baseMessage} (ref: ${requestId})` : baseMessage;
       els.shannonStatus.textContent = message;
+      if (els.shannonSummary) {
+        els.shannonSummary.textContent = "Janitor did not start.";
+      }
       showSystemBanner(message);
       return;
     }
@@ -9884,6 +10162,10 @@ function renderView() {
   if (els.navReview) els.navReview.classList.toggle("active", isReview);
   if (els.navSetup) els.navSetup.classList.toggle("active", isSetup);
   if (els.navJanitor) els.navJanitor.classList.toggle("active", isJanitor);
+  if (els.mobileNavToday) els.mobileNavToday.classList.toggle("active", isToday);
+  if (els.mobileNavReview) els.mobileNavReview.classList.toggle("active", isReview);
+  if (els.mobileNavSetup) els.mobileNavSetup.classList.toggle("active", isSetup);
+  if (els.mobileNavJanitor) els.mobileNavJanitor.classList.toggle("active", isJanitor);
 
   updateSplitView(true);
   if (!isToday && els.detailsDrawer) {
@@ -10018,6 +10300,12 @@ function bindEvents() {
       renderView();
     });
   }
+  if (els.mobileNavReview) {
+    els.mobileNavReview.addEventListener("click", () => {
+      state.view = "review";
+      renderView();
+    });
+  }
 
   if (els.navSetup) {
     els.navSetup.addEventListener("click", () => {
@@ -10025,9 +10313,28 @@ function bindEvents() {
       renderView();
     });
   }
+  if (els.mobileNavSetup) {
+    els.mobileNavSetup.addEventListener("click", () => {
+      state.view = "setup";
+      renderView();
+    });
+  }
 
   if (els.navJanitor) {
     els.navJanitor.addEventListener("click", () => {
+      if (AJL_WEB_MODE) return;
+      state.view = "janitor";
+      renderView();
+    });
+  }
+  if (els.mobileNavToday) {
+    els.mobileNavToday.addEventListener("click", () => {
+      state.view = "today";
+      renderView();
+    });
+  }
+  if (els.mobileNavJanitor) {
+    els.mobileNavJanitor.addEventListener("click", () => {
       if (AJL_WEB_MODE) return;
       state.view = "janitor";
       renderView();
@@ -10766,8 +11073,14 @@ function bindEvents() {
 
   if (els.setupAgentStart) {
     els.setupAgentStart.addEventListener("click", async () => {
-      await startQwenAuth();
-      renderSetupAgentConnection();
+      if (state.qwenAuth?.status === "pending" && state.qwenAuth?.verification_uri_complete) {
+        openAuthWindow(state.qwenAuth.verification_uri_complete, preopenAuthWindow());
+        showToast("Qwen login reopened.");
+        return;
+      }
+      await triggerQwenAuthLaunch({
+        force: isQwenReconnectState(state.qwenAuth?.status),
+      });
     });
   }
 
@@ -10835,14 +11148,12 @@ function bindEvents() {
         return;
       }
       stopQwenPolling();
-      state.qwenAuth = {
+      applyQwenAuthState({
         connected: false,
-        status: "disconnected",
-        session_id: null,
-        verification_uri_complete: null,
-        interval_seconds: null,
-      };
-      state.llmStatus = { status: "unknown", auth_url: null, error: null };
+        auth_state: "disconnected",
+        can_reconnect: true,
+      });
+      resetAssistantConversationState("Mamdou disconnected.");
       await loadLlmProviderStatus({ silent: true });
       await loadQwenAuthStatus();
       renderNudges();

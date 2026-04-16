@@ -435,6 +435,10 @@ async function run() {
     const res = await request("GET", "/api/llm/qwen/oauth/status");
     assert.strictEqual(res.status, 200);
     assert.strictEqual(typeof res.data.connected, "boolean");
+    assert.strictEqual(typeof res.data.auth_state, "string");
+    assert.strictEqual(typeof res.data.can_reconnect, "boolean");
+    assert.ok("auth_url" in res.data);
+    assert.ok("last_error" in res.data);
   });
 
   test("advisor endpoint is deterministic when not connected", async () => {
@@ -454,7 +458,25 @@ async function run() {
           asText.toLowerCase().includes("required"),
         "Expected a clear unavailable/connect/validation message for advisor"
       );
+      if (res.status === 503) {
+        assert.ok(
+          "can_reconnect" in (res.data || {}) || "auth_url" in (res.data || {}),
+          "Expected reconnect metadata when advisor is unavailable"
+        );
+      }
     }
+  });
+
+  test("web shell assets include homescreen metadata", async () => {
+    const manifestPath = path.join(__dirname, "..", "public", "manifest.webmanifest");
+    const indexPath = path.join(__dirname, "..", "public", "index.html");
+    assert.ok(fs.existsSync(manifestPath), "public manifest.webmanifest missing");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    assert.strictEqual(manifest.display, "standalone");
+    const indexHtml = fs.readFileSync(indexPath, "utf8");
+    assert.ok(indexHtml.includes('apple-mobile-web-app-capable'));
+    assert.ok(indexHtml.includes('manifest.webmanifest'));
+    assert.ok(indexHtml.includes('apple-touch-icon'));
   });
 
   test("invalid template input returns 400", async () => {
@@ -2161,6 +2183,14 @@ async function run() {
       .replace(
         '<link rel="icon" href="/favicon.svg" type="image/svg+xml" />',
         '<link rel="icon" href="./favicon.svg" type="image/svg+xml" />'
+      )
+      .replace(
+        '<link rel="apple-touch-icon" href="/apple-touch-icon.png" />',
+        '<link rel="apple-touch-icon" href="./apple-touch-icon.png" />'
+      )
+      .replace(
+        '<link rel="manifest" href="/manifest.webmanifest" />',
+        '<link rel="manifest" href="./manifest.webmanifest" />'
       )
       .replace(
         '<link rel="stylesheet" href="/styles.css" />',

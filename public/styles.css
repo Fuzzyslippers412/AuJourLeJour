@@ -13,6 +13,8 @@
   --chip-bg: #eef2ff;
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
   --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.12);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 * {
@@ -25,6 +27,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-variant-numeric: tabular-nums;
+  padding-bottom: var(--safe-bottom);
 }
 
 body.web .local-only {
@@ -63,7 +66,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 20px;
+  padding: calc(12px + var(--safe-top)) 20px 12px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
   transition: box-shadow 0.2s ease;
@@ -160,6 +163,10 @@ select:focus {
   gap: 8px;
 }
 
+.mobile-tabbar {
+  display: none;
+}
+
 .tab-btn {
   border: 1px solid transparent;
   background: transparent;
@@ -179,7 +186,7 @@ select:focus {
 .container {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 16px 16px calc(16px + var(--safe-bottom));
 }
 
 .today-layout {
@@ -443,7 +450,7 @@ body.read-only .shared-header {
 
 .status-bar {
   position: sticky;
-  top: 64px;
+  top: calc(64px + var(--safe-top));
   z-index: 9;
   display: flex;
   justify-content: space-between;
@@ -490,6 +497,46 @@ body.read-only .shared-header {
 
 body.scrolled .status-bar {
   box-shadow: var(--shadow-sm);
+}
+
+.mobile-tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px calc(10px + var(--safe-bottom));
+  background: rgba(255, 255, 255, 0.94);
+  border-top: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 -12px 24px rgba(15, 23, 42, 0.08);
+}
+
+.mobile-tab-btn {
+  flex: 1 1 0;
+  min-height: 44px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 14px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-tab-btn.active {
+  background: var(--chip-bg);
+  border-color: #dbe5ff;
+  color: var(--accent);
+}
+
+.mobile-tab-icon {
+  display: block;
+  text-align: center;
 }
 
 .summary-panel {
@@ -2252,7 +2299,7 @@ body.landing #allocation-planner {
     justify-content: center;
   }
   .status-bar {
-    top: 96px;
+    top: calc(96px + var(--safe-top));
   }
 
   .janitor-hero {
@@ -2289,8 +2336,18 @@ body.landing #allocation-planner {
 }
 
 @media (max-width: 600px) {
+  .container {
+    padding-bottom: calc(104px + var(--safe-bottom));
+  }
+  .mode-tabs {
+    display: none;
+  }
+  .mobile-tabbar {
+    display: flex;
+  }
   .top-actions {
     flex-wrap: wrap;
+    justify-content: center;
   }
   .status-bar {
     flex-direction: column;
@@ -2339,7 +2396,6 @@ body.landing #allocation-planner {
     width: 100%;
     justify-content: flex-start;
   }
-
 }
 
 @media (min-width: 1024px) {
@@ -2347,5 +2403,11 @@ body.landing #allocation-planner {
   .item-row,
   .list-row {
     height: 64px;
+  }
+}
+
+@media (display-mode: standalone) {
+  body {
+    min-height: 100dvh;
   }
 }

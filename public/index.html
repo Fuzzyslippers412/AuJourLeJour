@@ -2,10 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Au Jour Le Jour — Essentials tracker</title>
     <meta name="description" content="Essentials bill tracker." />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Au Jour Le Jour" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -763,6 +769,21 @@ cd AuJourLeJour
         </section>
       </section>
     </main>
+
+    <nav class="mobile-tabbar" aria-label="Primary navigation">
+      <button id="mobile-nav-today" class="mobile-tab-btn active" aria-label="Today">
+        <span class="mobile-tab-icon">Today</span>
+      </button>
+      <button id="mobile-nav-review" class="mobile-tab-btn" aria-label="Review">
+        <span class="mobile-tab-icon">Review</span>
+      </button>
+      <button id="mobile-nav-setup" class="mobile-tab-btn" aria-label="Setup">
+        <span class="mobile-tab-icon">Setup</span>
+      </button>
+      <button id="mobile-nav-janitor" class="mobile-tab-btn local-only" aria-label="Janitor">
+        <span class="mobile-tab-icon">Janitor</span>
+      </button>
+    </nav>
 
     <div id="share-modal" class="modal hidden">
       <div class="modal-content">
