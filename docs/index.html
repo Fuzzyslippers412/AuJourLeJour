@@ -17,7 +17,9 @@
   <body>
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark">AJL</div>
+        <div class="brand-mark">
+          <img src="/favicon.svg" alt="" class="brand-mark-image" />
+        </div>
         <div>
           <div class="brand-title">Au Jour Le Jour</div>
           <div class="brand-sub">Essentials tracker</div>
@@ -38,6 +40,7 @@
         </label>
         <nav class="mode-tabs">
           <button id="nav-today" class="tab-btn active">Today</button>
+          <button id="nav-shared" class="tab-btn">Shared</button>
           <button id="nav-review" class="tab-btn">Review</button>
           <button id="nav-setup" class="tab-btn">Setup</button>
           <button id="nav-janitor" class="tab-btn local-only">Janitor</button>
@@ -73,6 +76,7 @@
           </div>
           <div class="app-install-actions">
             <button id="app-install-action" class="btn-small btn-primary">Install app</button>
+            <button id="app-phone-handoff" class="ghost-btn small">Open on phone</button>
             <button id="app-install-dismiss" class="ghost-btn small">Not now</button>
           </div>
         </section>
@@ -214,10 +218,10 @@
             <section id="assistant-inline" class="card assistant-inline local-only">
               <div class="assistant-inline-head">
                 <div>
-                  <div class="assistant-inline-title">Mamdou quick actions</div>
-                  <div id="agent-inline-connection" class="assistant-inline-sub">Connect Mamdou to run commands.</div>
+                  <div class="assistant-inline-title">Mamdou command bar</div>
+                  <div id="agent-inline-connection" class="assistant-inline-sub">Ask about this month or tell Mamadou what to do next.</div>
                 </div>
-                <button id="agent-inline-open" class="ghost-btn small">Open full panel</button>
+                <button id="agent-inline-open" class="ghost-btn small">Open workspace</button>
               </div>
               <div class="assistant-inline-input-row">
                 <input id="agent-inline-input" class="assistant-inline-input" type="text" placeholder='Try: "mark rent done", "show progress", "set yearly goal 24000"' />
@@ -376,6 +380,213 @@
         </div>
       </section>
 
+      <section id="shared-view" class="view hidden">
+        <section class="card household-hero">
+          <div class="card-header household-hero-head">
+            <div>
+              <div class="card-title">Shared household ledger</div>
+              <div id="household-status-copy" class="card-sub">
+                Link a spouse or family member without logins. Keep one shared ledger of what each person has covered this month.
+              </div>
+            </div>
+            <div class="household-hero-actions">
+              <button id="household-phone-guide" class="ghost-btn">Join on phone</button>
+              <button id="household-refresh" class="ghost-btn">Refresh</button>
+              <button id="household-sync" class="ghost-btn hidden">Sync current month</button>
+            </div>
+          </div>
+          <div class="household-hero-note">
+            No accounts. No passwords. Each invited device gets its own household token.
+          </div>
+        </section>
+
+        <section id="household-setup-card" class="card household-setup-card">
+          <div class="household-setup-grid">
+            <div class="household-setup-panel">
+              <div class="section-title">Create linked household</div>
+              <div class="meta">
+                Start from the month you already have open. Au Jour Le Jour will sync those bills into a shared ledger you can keep current across devices.
+              </div>
+              <label>
+                Household name
+                <input id="household-name" type="text" maxlength="120" placeholder="Mamdou household" />
+              </label>
+              <label>
+                Your display name
+                <input id="household-display-name" type="text" maxlength="80" placeholder="You" />
+              </label>
+              <button id="household-create" class="primary-btn">Create shared household</button>
+            </div>
+
+            <div class="household-setup-panel">
+              <div class="section-title">Join invite</div>
+              <div class="meta">
+                Paste an invite link or token from the household owner. This joins the shared ledger without creating a separate account.
+              </div>
+              <label>
+                Your display name
+                <input id="household-join-name" type="text" maxlength="80" placeholder="Erika" />
+              </label>
+              <label>
+                Invite link or token
+                <input id="household-join-token" type="text" placeholder="https://aujourlejour.xyz/?household_invite=..." />
+              </label>
+              <div id="household-join-tip" class="household-join-tip hidden">
+                Invite detected on this phone. Add your name and join to link this device.
+              </div>
+              <button id="household-join" class="ghost-btn">Join household</button>
+            </div>
+            <div class="household-setup-panel">
+              <div class="section-title">Recover owner access</div>
+              <div class="meta">
+                Use your saved owner recovery code on a new device. This restores the owner session without creating a login.
+              </div>
+              <label>
+                Owner display name
+                <input id="household-recovery-name" type="text" maxlength="80" placeholder="Chef" />
+              </label>
+              <label>
+                Recovery code
+                <input id="household-recovery-code" type="text" placeholder="ajl-owner:household_id:owner_key" />
+              </label>
+              <button id="household-recover" class="ghost-btn">Recover owner access</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="household-summary-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <div id="household-title" class="card-title">Shared household</div>
+              <div id="household-meta" class="card-sub">Waiting for sync…</div>
+            </div>
+            <div class="household-hero-actions">
+              <button id="household-copy-invite" class="btn-small btn-primary hidden">Copy invite</button>
+              <button id="household-share-invite" class="ghost-btn hidden">Share invite</button>
+              <button id="household-regenerate-invite" class="ghost-btn hidden">Refresh invite</button>
+              <button id="household-leave" class="ghost-btn danger">Leave</button>
+            </div>
+          </div>
+          <div id="household-guidance" class="household-guidance hidden">
+            <div class="household-guidance-main">
+              <div class="household-badges">
+                <span id="household-role-pill" class="household-status-pill open hidden">Owner</span>
+                <span id="household-device-pill" class="household-contributor-chip hidden">This device</span>
+              </div>
+              <div id="household-guidance-copy" class="meta">Shared household guidance appears after this device is linked.</div>
+            </div>
+            <button id="household-guidance-action" class="ghost-btn small hidden">Join on phone</button>
+          </div>
+          <div id="household-entry-notice" class="household-entry-notice hidden">
+            <div class="household-entry-main">
+              <div id="household-entry-title" class="section-title">This phone is linked</div>
+              <div id="household-entry-copy" class="meta">You can start logging shared updates here right away.</div>
+            </div>
+            <button id="household-entry-dismiss" class="ghost-btn small">Got it</button>
+          </div>
+          <div class="household-summary-grid">
+            <div class="summary-progress-card">
+              <div class="summary-label">Total shared due</div>
+              <div id="household-total-due" class="summary-value">$0.00</div>
+              <div class="summary-caption">This shared period</div>
+            </div>
+            <div class="summary-progress-card">
+              <div class="summary-label">Contributed</div>
+              <div id="household-total-paid" class="summary-value">$0.00</div>
+              <div class="summary-caption">Across all members</div>
+            </div>
+            <div class="summary-progress-card">
+              <div class="summary-label">Remaining</div>
+              <div id="household-total-remaining" class="summary-value">$0.00</div>
+              <div class="summary-caption">Still open in the shared ledger</div>
+            </div>
+            <div class="summary-progress-card">
+              <div class="summary-label">Items handled</div>
+              <div id="household-items-handled" class="summary-value">0 / 0</div>
+              <div class="summary-caption">Shared progress this period</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="household-invite-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Invite a member</div>
+              <div class="card-sub">Send this link to a spouse or family member. It opens the shared ledger directly on their device.</div>
+            </div>
+          </div>
+          <div class="share-row">
+            <input id="household-invite-link" class="share-link" type="text" readonly />
+            <button id="household-copy-invite-inline" class="btn-small btn-primary">Copy invite</button>
+            <button id="household-share-invite-inline" class="ghost-btn">Share invite</button>
+          </div>
+          <div id="household-invite-meta" class="meta">Invite not created yet.</div>
+          <div id="household-invite-qr-wrap" class="qr-panel hidden">
+            <img id="household-invite-qr-image" class="qr-image" alt="Shared household invite QR code" />
+            <div id="household-invite-qr-meta" class="meta">Scan to join the shared household on another device.</div>
+          </div>
+        </section>
+
+        <section id="household-recovery-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Owner recovery</div>
+              <div class="card-sub">Keep this recovery code somewhere safe. It lets you reconnect the owner session on a new device without creating an account.</div>
+            </div>
+          </div>
+          <div class="share-row">
+            <input id="household-recovery-code-display" class="share-link" type="text" readonly />
+            <button id="household-copy-recovery" class="btn-small btn-primary">Copy recovery code</button>
+          </div>
+          <div class="backup-actions">
+            <button id="household-rotate-recovery" class="ghost-btn">Rotate recovery code</button>
+          </div>
+          <div id="household-recovery-meta" class="meta">
+            Store this in Notes, a password manager, or another secure place. Anyone with this code can recover owner access.
+          </div>
+        </section>
+
+        <section id="household-members-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Members</div>
+              <div class="card-sub">See who is contributing inside the shared ledger.</div>
+            </div>
+          </div>
+          <div id="household-members-summary" class="household-members-summary hidden">
+            <div class="household-member-stat">
+              <div id="household-member-count" class="household-member-stat-value">0</div>
+              <div class="household-member-stat-label">Linked devices</div>
+            </div>
+            <div class="household-member-stat">
+              <div id="household-this-device-total" class="household-member-stat-value">$0.00</div>
+              <div class="household-member-stat-label">From this device</div>
+            </div>
+          </div>
+          <div id="household-members-list" class="household-members-list"></div>
+        </section>
+
+        <section id="household-ledger-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Shared items</div>
+              <div id="household-period" class="card-sub">No shared period yet.</div>
+            </div>
+          </div>
+          <div id="household-items-list" class="household-items-list"></div>
+        </section>
+
+        <section id="household-activity-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Shared activity</div>
+              <div class="card-sub">Every logged contribution is attributed to a household member.</div>
+            </div>
+          </div>
+          <div id="household-activity-list" class="activity-list"></div>
+        </section>
+      </section>
+
       <section id="setup-view" class="view hidden">
         <div class="page-title">Setup</div>
         <div class="page-sub">Templates, categories, backups, and reserved buckets.</div>
@@ -387,6 +598,7 @@
           </div>
           <div class="backup-actions">
             <button id="setup-install-action" class="primary-btn">Install app</button>
+            <button id="setup-install-phone" class="ghost-btn">Use on iPhone</button>
             <button id="setup-install-help" class="ghost-btn">How it works</button>
           </div>
           <div id="setup-install-status" class="meta">Checking app install support…</div>
@@ -468,10 +680,15 @@ cd AuJourLeJour
                 <button id="lan-copy" class="ghost-btn">Copy</button>
               </div>
               <div id="lan-hint" class="meta">Phones and tablets on the same Wi-Fi can open this editable URL.</div>
+              <div id="lan-qr-wrap" class="qr-panel hidden">
+                <img id="lan-qr-image" class="qr-image" alt="LAN access QR code" />
+                <div id="lan-qr-meta" class="meta">Scan on your phone to open the editable LAN app.</div>
+              </div>
             </div>
             <div class="device-access-card">
               <div class="meta">Share mode</div>
               <div id="share-network-mode" class="meta">Checking share routing…</div>
+              <button id="device-join-phone" class="ghost-btn">Open on phone</button>
               <button id="share-open-local-tools" class="ghost-btn">Open share controls</button>
             </div>
           </div>
@@ -802,6 +1019,12 @@ cd AuJourLeJour
         </span>
         <span class="mobile-tab-label">Today</span>
       </button>
+      <button id="mobile-nav-shared" class="mobile-tab-btn" aria-label="Shared">
+        <span class="mobile-tab-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M7.5 11a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm9 0a3 3 0 1 1 0-6 3 3 0 0 1 0 6ZM3 18a4.5 4.5 0 0 1 9 0v1H3v-1Zm10 1v-.75A3.75 3.75 0 0 1 16.75 14 4.25 4.25 0 0 1 21 18.25V19h-8Z" fill="currentColor"/></svg>
+        </span>
+        <span class="mobile-tab-label">Shared</span>
+      </button>
       <button id="mobile-nav-review" class="mobile-tab-btn" aria-label="Review">
         <span class="mobile-tab-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M4 5a2 2 0 0 1 2-2h1a1 1 0 1 1 0 2H6v14h12V5h-1a1 1 0 1 1 0-2h1a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Zm4 8a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Zm3-3a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H12a1 1 0 0 1-1-1Zm3 5a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H15a1 1 0 0 1-1-1Z" fill="currentColor"/></svg>
@@ -836,6 +1059,87 @@ cd AuJourLeJour
         <div id="install-sheet-hint" class="meta"></div>
         <div class="sheet-actions">
           <button id="install-sheet-action" class="btn-small btn-primary">Install app</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="phone-handoff-sheet" class="sheet hidden">
+      <div class="sheet-card phone-handoff-card">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-header">
+          <div>
+            <div class="sheet-title">Join on phone</div>
+            <div id="phone-handoff-summary" class="sheet-sub">
+              Use the best path for your phone: install here, open on the same Wi-Fi, or join the shared household anywhere.
+            </div>
+          </div>
+          <button id="phone-handoff-close" class="icon-btn" aria-label="Close">&times;</button>
+        </div>
+        <div id="phone-handoff-routes" class="phone-handoff-routes" aria-label="Phone handoff options">
+          <button id="phone-handoff-route-install" class="phone-handoff-route active" type="button">Install</button>
+          <button id="phone-handoff-route-lan" class="phone-handoff-route local-only" type="button">Same Wi-Fi</button>
+          <button id="phone-handoff-route-household" class="phone-handoff-route" type="button">Shared</button>
+          <button id="phone-handoff-route-import" class="phone-handoff-route" type="button">Import</button>
+        </div>
+        <div id="phone-handoff-recommendation" class="phone-handoff-recommendation">
+          <div class="phone-handoff-recommendation-label">Best next step</div>
+          <div id="phone-handoff-recommendation-copy" class="phone-handoff-recommendation-copy">
+            Install guidance appears here.
+          </div>
+        </div>
+        <div class="phone-handoff-grid">
+          <section class="phone-handoff-block" data-handoff-target="install">
+            <div class="section-title">Install on this iPhone</div>
+            <div id="phone-handoff-install-status" class="meta">Install guidance appears here.</div>
+            <ol id="phone-handoff-install-steps" class="install-steps compact"></ol>
+            <div class="sheet-actions">
+              <button id="phone-handoff-install-action" class="btn-small btn-primary">Install app</button>
+            </div>
+          </section>
+
+          <section id="phone-handoff-lan-block" class="phone-handoff-block local-only" data-handoff-target="lan">
+            <div class="section-title">Same Wi-Fi editable access</div>
+            <div class="meta">Best for your own phone or tablet when both devices stay on the same Wi-Fi.</div>
+            <div class="share-row">
+              <input id="phone-handoff-lan-url" class="share-link" type="text" readonly />
+              <button id="phone-handoff-lan-copy" class="btn-small btn-primary">Copy URL</button>
+            </div>
+            <div id="phone-handoff-lan-meta" class="meta">LAN guidance appears here.</div>
+            <div id="phone-handoff-lan-qr-wrap" class="qr-panel hidden">
+              <img id="phone-handoff-lan-qr-image" class="qr-image" alt="Editable LAN QR code" />
+              <div id="phone-handoff-lan-qr-meta" class="meta">Scan to open the editable app on your phone.</div>
+            </div>
+          </section>
+
+          <section id="phone-handoff-household-block" class="phone-handoff-block" data-handoff-target="household">
+            <div class="section-title">Linked household from anywhere</div>
+            <div id="phone-handoff-household-status" class="meta">
+              Create or refresh a linked household invite to keep two devices in sync without logins.
+            </div>
+            <div class="share-row">
+              <input id="phone-handoff-household-link" class="share-link" type="text" readonly />
+              <button id="phone-handoff-household-copy" class="btn-small btn-primary">Copy invite</button>
+              <button id="phone-handoff-household-share" class="ghost-btn">Share invite</button>
+            </div>
+            <div id="phone-handoff-household-meta" class="meta">Invite guidance appears here.</div>
+            <div id="phone-handoff-household-qr-wrap" class="qr-panel hidden">
+              <img id="phone-handoff-household-qr-image" class="qr-image" alt="Linked household invite QR code" />
+              <div id="phone-handoff-household-qr-meta" class="meta">Scan to join the linked household on another phone.</div>
+            </div>
+            <div class="sheet-actions">
+              <button id="phone-handoff-open-shared" class="ghost-btn">Open Shared</button>
+            </div>
+          </section>
+
+          <section id="phone-handoff-import-block" class="phone-handoff-block hidden" data-handoff-target="import">
+            <div class="section-title">Move local data to this phone</div>
+            <div class="meta">
+              Export a backup JSON from the local app, then import it in Setup on this device to carry your existing household forward cleanly.
+            </div>
+            <div class="sheet-actions">
+              <button id="phone-handoff-open-setup" class="ghost-btn">Open Setup</button>
+            </div>
+          </section>
         </div>
       </div>
     </div>
@@ -901,6 +1205,33 @@ cd AuJourLeJour
           <div class="modal-footer-hint">
             This link is read-only.
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="household-log-sheet" class="sheet hidden">
+      <div class="sheet-card">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-header">
+          <div>
+            <div class="sheet-title">Log shared update</div>
+            <div id="household-log-context" class="sheet-sub">Record what you covered in the household ledger.</div>
+          </div>
+          <button id="household-log-close" class="icon-btn" aria-label="Close">&times;</button>
+        </div>
+        <div class="sheet-section">
+          <label>
+            Amount covered
+            <input id="household-log-amount" type="number" min="0" step="0.01" placeholder="0.00" />
+          </label>
+          <label>
+            Note (optional)
+            <textarea id="household-log-note" rows="3" placeholder="Covered from this paycheck"></textarea>
+          </label>
+        </div>
+        <div class="sheet-actions">
+          <button id="household-log-submit" class="btn-small btn-primary">Log update</button>
+          <button id="household-log-cover" class="ghost-btn">Cover remaining</button>
         </div>
       </div>
     </div>
@@ -986,7 +1317,10 @@ cd AuJourLeJour
       <button id="toast-action" class="toast-action hidden">Undo</button>
     </div>
 
-    <button id="assistant-fab" class="fab local-only">Mamdou</button>
+    <button id="assistant-fab" class="fab local-only" aria-label="Open Mamadou">
+      <span class="fab-label">Mamdou</span>
+      <span id="assistant-fab-status" class="fab-status">Ready</span>
+    </button>
     <div id="assistant-drawer" class="drawer hidden local-only">
       <div class="drawer-scrim" data-close="assistant"></div>
       <div class="drawer-panel assistant-sheet">
@@ -994,7 +1328,8 @@ cd AuJourLeJour
         <div class="drawer-header">
           <div>
             <div class="drawer-title">Mamdou</div>
-            <div class="drawer-sub">Commands, suggestions, and intake.</div>
+            <div class="drawer-sub">Command workspace for this month.</div>
+            <div id="assistant-drawer-status" class="assistant-drawer-status">Connect Mamadou to start.</div>
           </div>
           <button class="icon-btn" data-close="assistant" aria-label="Close">&times;</button>
         </div>

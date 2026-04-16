@@ -71,6 +71,11 @@ const state = {
   shareToken: null,
   shareInfo: null,
   shareBusy: false,
+  householdSession: null,
+  householdInfo: null,
+  householdBusy: false,
+  householdLogTargetId: "",
+  householdEntryNotice: null,
   shareOwnerLabel: "",
   shareOwnerKey: "",
   shareExpiryPreset: "never",
@@ -92,6 +97,7 @@ const state = {
     dismissed: false,
     method: "unsupported",
   },
+  phoneHandoffFocus: "install",
   integrityStatus: "unknown",
   dataVersion: 0,
   summaryCache: null,
@@ -128,6 +134,12 @@ let sharePublishRetryTimer = null;
 let sharePublishInFlight = false;
 let sharePublishRetryCount = 0;
 let sharePublishDirty = false;
+let householdSyncTimer = null;
+let householdSyncRetryTimer = null;
+let householdSyncInFlight = false;
+let householdSyncRetryCount = 0;
+let householdSyncDirty = false;
+let householdLiveTimer = null;
 let diagnosticsInFlight = false;
 let lastDiagnosticsAt = 0;
 let shannonInFlight = false;
@@ -156,10 +168,12 @@ const LOCAL_BACKUP_REMINDER_KEY = "ajl_local_backup_reminder";
 const INSTALL_BANNER_DISMISSED_KEY = "ajl_install_banner_dismissed";
 const SHARE_OWNER_KEY = "ajl_share_owner_key";
 const SHARE_OPTIONS_KEY = "ajl_share_options";
+const HOUSEHOLD_SESSION_KEY = "ajl_household_session";
 const SHARE_LIVE_REFRESH_MS = 8000;
 const SHARE_RELAY_TIMEOUT_MS = 4500;
 const SHARE_PUBLISH_BASE_DELAY_MS = 1500;
 const SHARE_PUBLISH_MAX_DELAY_MS = 60000;
+const HOUSEHOLD_LIVE_REFRESH_MS = 12000;
 const MAMDOU_AUTH_TIMEOUT_MS = 8000;
 const JANITOR_START_TIMEOUT_MS = 7000;
 const PWA_DB_NAME = "ajl_pwa";
@@ -210,6 +224,49 @@ function getRequestIdFromResponse(res) {
   }
 }
 
+function sanitizeQrValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.slice(0, 4096);
+}
+
+function buildQrApiUrl(value, size = 176) {
+  const cleanValue = sanitizeQrValue(value);
+  if (!cleanValue) return "";
+  const params = new URLSearchParams({
+    value: cleanValue,
+    size: String(Math.max(96, Math.min(320, Number(size) || 176))),
+  });
+  return `/api/qr?${params.toString()}`;
+}
+
+async function renderQrImage(imgEl, wrapEl, value, metaEl = null, metaText = "") {
+  if (!imgEl || !wrapEl) return;
+  const cleanValue = sanitizeQrValue(value);
+  if (!cleanValue) {
+    imgEl.removeAttribute("src");
+    wrapEl.classList.add("hidden");
+    if (metaEl && metaText) metaEl.textContent = metaText;
+    return;
+  }
+  const endpoint = buildQrApiUrl(cleanValue);
+  if (!endpoint) {
+    wrapEl.classList.add("hidden");
+    return;
+  }
+  try {
+    const res = await fetch(endpoint, { credentials: "same-origin" });
+    if (!res.ok) throw new Error(`QR ${res.status}`);
+    const svg = await res.text();
+    imgEl.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    wrapEl.classList.remove("hidden");
+    if (metaEl && metaText) metaEl.textContent = metaText;
+  } catch (err) {
+    imgEl.removeAttribute("src");
+    wrapEl.classList.add("hidden");
+  }
+}
+
 async function apiFetch(url, options = {}, opts = {}) {
   const res = await fetch(url, options);
   if (!res.ok && !opts.silent) {
@@ -251,6 +308,15 @@ function setLlmUnavailableStateFromPayload(payload, fallback) {
   const authState = String(payload?.auth_state || state.qwenAuth?.status || "").toLowerCase();
   const authUrl = payload?.auth_url || state.qwenAuth?.verification_uri_complete || null;
   const error = getErrorMessage(payload, fallback);
+  if (getActiveProviderName() === "qwen-oauth") {
+    applyQwenAuthState({
+      connected: false,
+      auth_state: authState || "reauth_required",
+      auth_url: authUrl,
+      can_reconnect: payload?.can_reconnect !== false,
+      last_error: error,
+    });
+  }
   state.llmStatus = {
     status: authUrl || authState === "reauth_required" || authState === "pending"
       ? "auth_required"
@@ -405,10 +471,12 @@ const els = {
   systemBanner: document.getElementById("system-banner"),
   essentialsToggle: document.getElementById("essentials-toggle"),
   navToday: document.getElementById("nav-today"),
+  navShared: document.getElementById("nav-shared"),
   navReview: document.getElementById("nav-review"),
   navSetup: document.getElementById("nav-setup"),
   navJanitor: document.getElementById("nav-janitor"),
   mobileNavToday: document.getElementById("mobile-nav-today"),
+  mobileNavShared: document.getElementById("mobile-nav-shared"),
   mobileNavReview: document.getElementById("mobile-nav-review"),
   mobileNavSetup: document.getElementById("mobile-nav-setup"),
   mobileNavJanitor: document.getElementById("mobile-nav-janitor"),
@@ -457,7 +525,11 @@ const els = {
   lanUrl: document.getElementById("lan-url"),
   lanCopy: document.getElementById("lan-copy"),
   lanHint: document.getElementById("lan-hint"),
+  lanQrWrap: document.getElementById("lan-qr-wrap"),
+  lanQrImage: document.getElementById("lan-qr-image"),
+  lanQrMeta: document.getElementById("lan-qr-meta"),
   shareNetworkMode: document.getElementById("share-network-mode"),
+  deviceJoinPhone: document.getElementById("device-join-phone"),
   shareOpenLocalTools: document.getElementById("share-open-local-tools"),
   setupAgentStatus: document.getElementById("setup-agent-status"),
   setupAgentProvider: document.getElementById("setup-agent-provider"),
@@ -509,11 +581,13 @@ const els = {
   appInstallTitle: document.getElementById("app-install-title"),
   appInstallSub: document.getElementById("app-install-sub"),
   appInstallAction: document.getElementById("app-install-action"),
+  appPhoneHandoff: document.getElementById("app-phone-handoff"),
   appInstallDismiss: document.getElementById("app-install-dismiss"),
   setupInstall: document.getElementById("setup-install"),
   setupInstallCopy: document.getElementById("setup-install-copy"),
   setupInstallStatus: document.getElementById("setup-install-status"),
   setupInstallAction: document.getElementById("setup-install-action"),
+  setupInstallPhone: document.getElementById("setup-install-phone"),
   setupInstallHelp: document.getElementById("setup-install-help"),
   installSheet: document.getElementById("install-sheet"),
   installSheetTitle: document.getElementById("install-sheet-title"),
@@ -522,12 +596,51 @@ const els = {
   installSheetHint: document.getElementById("install-sheet-hint"),
   installSheetAction: document.getElementById("install-sheet-action"),
   installSheetClose: document.getElementById("install-sheet-close"),
+  phoneHandoffSheet: document.getElementById("phone-handoff-sheet"),
+  phoneHandoffClose: document.getElementById("phone-handoff-close"),
+  phoneHandoffSummary: document.getElementById("phone-handoff-summary"),
+  phoneHandoffInstallStatus: document.getElementById("phone-handoff-install-status"),
+  phoneHandoffInstallSteps: document.getElementById("phone-handoff-install-steps"),
+  phoneHandoffInstallAction: document.getElementById("phone-handoff-install-action"),
+  phoneHandoffLanBlock: document.getElementById("phone-handoff-lan-block"),
+  phoneHandoffLanUrl: document.getElementById("phone-handoff-lan-url"),
+  phoneHandoffLanCopy: document.getElementById("phone-handoff-lan-copy"),
+  phoneHandoffLanMeta: document.getElementById("phone-handoff-lan-meta"),
+  phoneHandoffLanQrWrap: document.getElementById("phone-handoff-lan-qr-wrap"),
+  phoneHandoffLanQrImage: document.getElementById("phone-handoff-lan-qr-image"),
+  phoneHandoffLanQrMeta: document.getElementById("phone-handoff-lan-qr-meta"),
+  phoneHandoffHouseholdBlock: document.getElementById("phone-handoff-household-block"),
+  phoneHandoffHouseholdStatus: document.getElementById("phone-handoff-household-status"),
+  phoneHandoffHouseholdLink: document.getElementById("phone-handoff-household-link"),
+  phoneHandoffHouseholdCopy: document.getElementById("phone-handoff-household-copy"),
+  phoneHandoffHouseholdShare: document.getElementById("phone-handoff-household-share"),
+  phoneHandoffHouseholdMeta: document.getElementById("phone-handoff-household-meta"),
+  phoneHandoffHouseholdQrWrap: document.getElementById("phone-handoff-household-qr-wrap"),
+  phoneHandoffHouseholdQrImage: document.getElementById("phone-handoff-household-qr-image"),
+  phoneHandoffHouseholdQrMeta: document.getElementById("phone-handoff-household-qr-meta"),
+  phoneHandoffImportBlock: document.getElementById("phone-handoff-import-block"),
+  phoneHandoffOpenSetup: document.getElementById("phone-handoff-open-setup"),
+  phoneHandoffOpenShared: document.getElementById("phone-handoff-open-shared"),
+  phoneHandoffRouteInstall: document.getElementById("phone-handoff-route-install"),
+  phoneHandoffRouteLan: document.getElementById("phone-handoff-route-lan"),
+  phoneHandoffRouteHousehold: document.getElementById("phone-handoff-route-household"),
+  phoneHandoffRouteImport: document.getElementById("phone-handoff-route-import"),
+  phoneHandoffRecommendation: document.getElementById("phone-handoff-recommendation"),
+  phoneHandoffRecommendationCopy: document.getElementById("phone-handoff-recommendation-copy"),
+  householdLogSheet: document.getElementById("household-log-sheet"),
+  householdLogContext: document.getElementById("household-log-context"),
+  householdLogAmount: document.getElementById("household-log-amount"),
+  householdLogNote: document.getElementById("household-log-note"),
+  householdLogSubmit: document.getElementById("household-log-submit"),
+  householdLogCover: document.getElementById("household-log-cover"),
+  householdLogClose: document.getElementById("household-log-close"),
   wizardModal: document.getElementById("first-run-modal"),
   wizardImport: document.getElementById("wizard-import"),
   wizardTemplate: document.getElementById("wizard-template"),
   wizardSkip: document.getElementById("wizard-skip"),
   wizardFile: document.getElementById("wizard-file"),
   todayView: document.getElementById("today-view"),
+  sharedView: document.getElementById("shared-view"),
   reviewView: document.getElementById("review-view"),
   setupView: document.getElementById("setup-view"),
   janitorView: document.getElementById("janitor-view"),
@@ -562,6 +675,64 @@ const els = {
   sharedHeader: document.getElementById("shared-header"),
   sharedOwner: document.getElementById("shared-owner"),
   sharedUpdated: document.getElementById("shared-updated"),
+  householdStatusCopy: document.getElementById("household-status-copy"),
+  householdPhoneGuide: document.getElementById("household-phone-guide"),
+  householdRefresh: document.getElementById("household-refresh"),
+  householdSync: document.getElementById("household-sync"),
+  householdSetupCard: document.getElementById("household-setup-card"),
+  householdName: document.getElementById("household-name"),
+  householdDisplayName: document.getElementById("household-display-name"),
+  householdCreate: document.getElementById("household-create"),
+  householdJoinName: document.getElementById("household-join-name"),
+  householdJoinToken: document.getElementById("household-join-token"),
+  householdJoin: document.getElementById("household-join"),
+  householdJoinTip: document.getElementById("household-join-tip"),
+  householdRecoveryName: document.getElementById("household-recovery-name"),
+  householdRecoveryCode: document.getElementById("household-recovery-code"),
+  householdRecover: document.getElementById("household-recover"),
+  householdSummaryCard: document.getElementById("household-summary-card"),
+  householdTitle: document.getElementById("household-title"),
+  householdMeta: document.getElementById("household-meta"),
+  householdCopyInvite: document.getElementById("household-copy-invite"),
+  householdShareInvite: document.getElementById("household-share-invite"),
+  householdRegenerateInvite: document.getElementById("household-regenerate-invite"),
+  householdLeave: document.getElementById("household-leave"),
+  householdGuidance: document.getElementById("household-guidance"),
+  householdRolePill: document.getElementById("household-role-pill"),
+  householdDevicePill: document.getElementById("household-device-pill"),
+  householdGuidanceCopy: document.getElementById("household-guidance-copy"),
+  householdGuidanceAction: document.getElementById("household-guidance-action"),
+  householdEntryNotice: document.getElementById("household-entry-notice"),
+  householdEntryTitle: document.getElementById("household-entry-title"),
+  householdEntryCopy: document.getElementById("household-entry-copy"),
+  householdEntryDismiss: document.getElementById("household-entry-dismiss"),
+  householdTotalDue: document.getElementById("household-total-due"),
+  householdTotalPaid: document.getElementById("household-total-paid"),
+  householdTotalRemaining: document.getElementById("household-total-remaining"),
+  householdItemsHandled: document.getElementById("household-items-handled"),
+  householdInviteCard: document.getElementById("household-invite-card"),
+  householdInviteLink: document.getElementById("household-invite-link"),
+  householdCopyInviteInline: document.getElementById("household-copy-invite-inline"),
+  householdShareInviteInline: document.getElementById("household-share-invite-inline"),
+  householdInviteMeta: document.getElementById("household-invite-meta"),
+  householdInviteQrWrap: document.getElementById("household-invite-qr-wrap"),
+  householdInviteQrImage: document.getElementById("household-invite-qr-image"),
+  householdInviteQrMeta: document.getElementById("household-invite-qr-meta"),
+  householdRecoveryCard: document.getElementById("household-recovery-card"),
+  householdRecoveryCodeDisplay: document.getElementById("household-recovery-code-display"),
+  householdCopyRecovery: document.getElementById("household-copy-recovery"),
+  householdRotateRecovery: document.getElementById("household-rotate-recovery"),
+  householdRecoveryMeta: document.getElementById("household-recovery-meta"),
+  householdMembersCard: document.getElementById("household-members-card"),
+  householdMembersSummary: document.getElementById("household-members-summary"),
+  householdMemberCount: document.getElementById("household-member-count"),
+  householdThisDeviceTotal: document.getElementById("household-this-device-total"),
+  householdMembersList: document.getElementById("household-members-list"),
+  householdLedgerCard: document.getElementById("household-ledger-card"),
+  householdPeriod: document.getElementById("household-period"),
+  householdItemsList: document.getElementById("household-items-list"),
+  householdActivityCard: document.getElementById("household-activity-card"),
+  householdActivityList: document.getElementById("household-activity-list"),
   queueOverdue: document.getElementById("queue-overdue"),
   queueSoon: document.getElementById("queue-soon"),
   queueLater: document.getElementById("queue-later"),
@@ -653,7 +824,9 @@ const els = {
   toastMessage: document.getElementById("toast-message"),
   toastAction: document.getElementById("toast-action"),
   assistantFab: document.getElementById("assistant-fab"),
+  assistantFabStatus: document.getElementById("assistant-fab-status"),
   assistantDrawer: document.getElementById("assistant-drawer"),
+  assistantDrawerStatus: document.getElementById("assistant-drawer-status"),
   assistantConnection: document.getElementById("assistant-connection"),
   assistantConnectionTitle: document.getElementById("assistant-connection-title"),
   assistantConnectionBody: document.getElementById("assistant-connection-body"),
@@ -790,6 +963,81 @@ function saveShareOptions() {
   } catch (err) {
     // ignore
   }
+}
+
+function normalizeHouseholdSession(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const householdId = String(raw.household_id || raw.householdId || "").trim();
+  const memberToken = String(raw.member_token || raw.memberToken || "").trim();
+  const ownerKey = String(raw.owner_key || raw.ownerKey || "").trim();
+  const role = String(raw.role || "").trim().toLowerCase();
+  if (!householdId || !memberToken) return null;
+  return {
+    household_id: householdId,
+    member_token: memberToken,
+    owner_key: ownerKey,
+    role: role === "owner" ? "owner" : "member",
+    member_name: String(raw.member_name || raw.memberName || "").trim(),
+  };
+}
+
+function loadHouseholdSession() {
+  try {
+    const raw = localStorage.getItem(HOUSEHOLD_SESSION_KEY);
+    if (!raw) return null;
+    return normalizeHouseholdSession(JSON.parse(raw));
+  } catch (err) {
+    return null;
+  }
+}
+
+function saveHouseholdSession(session) {
+  const normalized = normalizeHouseholdSession(session);
+  state.householdSession = normalized;
+  try {
+    if (!normalized) {
+      localStorage.removeItem(HOUSEHOLD_SESSION_KEY);
+      return;
+    }
+    localStorage.setItem(HOUSEHOLD_SESSION_KEY, JSON.stringify(normalized));
+  } catch (err) {
+    // ignore
+  }
+}
+
+function clearHouseholdSession() {
+  state.householdSession = null;
+  try {
+    localStorage.removeItem(HOUSEHOLD_SESSION_KEY);
+  } catch (err) {
+    // ignore
+  }
+}
+
+function hasHouseholdOwnerAccess() {
+  return !!(state.householdSession && state.householdSession.role === "owner" && state.householdSession.owner_key);
+}
+
+function getHouseholdInviteTokenFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  const direct = String(params.get("household_invite") || params.get("invite") || "").trim();
+  if (direct) return direct;
+  return "";
+}
+
+function clearHouseholdInviteQuery() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("household_invite") && !url.searchParams.has("invite")) return;
+  url.searchParams.delete("household_invite");
+  url.searchParams.delete("invite");
+  window.history.replaceState({}, "", url.toString());
+}
+
+function buildHouseholdRecoveryCode(householdId, ownerKey) {
+  const id = String(householdId || "").trim();
+  const key = String(ownerKey || "").trim();
+  if (!id || !key) return "";
+  return `ajl-owner:${id}:${key}`;
 }
 
 function normalizeProgressBasis(value) {
@@ -950,7 +1198,7 @@ function getInstallCopyBundle(install = state.installState || getInstallExperien
   if (install.method === "installed") {
     return {
       title: "Installed on this device",
-      sub: "Au Jour Le Jour is already running in app mode here.",
+      sub: "Au Jour Le Jour is already running in app mode here with the cleaner phone shell.",
       actionLabel: "Open tips",
       status: "Installed and ready.",
       steps: [
@@ -964,7 +1212,7 @@ function getInstallCopyBundle(install = state.installState || getInstallExperien
   if (install.method === "prompt") {
     return {
       title: "Install on this device",
-      sub: "Add Au Jour Le Jour to this device for faster launch, a cleaner shell, and better focus.",
+      sub: "Add Au Jour Le Jour to your phone for one-tap launch, cleaner chrome, and a tighter mobile layout.",
       actionLabel: "Install app",
       status: "Install prompt ready in this browser.",
       steps: [
@@ -978,7 +1226,7 @@ function getInstallCopyBundle(install = state.installState || getInstallExperien
   if (install.method === "ios-manual") {
     return {
       title: "Add to Home Screen",
-      sub: "On iPhone or iPad, save Au Jour Le Jour to your home screen for a native-feeling full-screen view.",
+      sub: "On iPhone or iPad, add Au Jour Le Jour to your home screen for the closest thing to a native app shell.",
       actionLabel: "Show steps",
       status: "Use Safari's Share menu to add this app to your home screen.",
       steps: [
@@ -991,7 +1239,7 @@ function getInstallCopyBundle(install = state.installState || getInstallExperien
   }
   return {
     title: "Use it like an app",
-    sub: "Install support is limited in this browser, but the tracker still works here.",
+    sub: "Install support is limited in this browser, but the tracker still works here and feels best in Safari on iPhone.",
     actionLabel: "How it works",
     status: "Install prompt not available in this browser.",
     steps: [
@@ -1003,12 +1251,209 @@ function getInstallCopyBundle(install = state.installState || getInstallExperien
   };
 }
 
+function getPhoneHandoffSectionMap() {
+  return {
+    install: els.phoneHandoffInstallStatus?.closest(".phone-handoff-block") || null,
+    lan: AJL_WEB_MODE ? null : els.phoneHandoffLanBlock,
+    household: els.phoneHandoffHouseholdBlock || null,
+    import: AJL_WEB_MODE ? els.phoneHandoffImportBlock : null,
+  };
+}
+
+function normalizePhoneHandoffTarget(target) {
+  const preferred = String(target || state.phoneHandoffFocus || "").trim();
+  const sections = getPhoneHandoffSectionMap();
+  const fallbacks = [preferred, AJL_WEB_MODE ? "install" : "lan", "household", "install", "import"];
+  return fallbacks.find((key) => key && sections[key]) || "install";
+}
+
+function scrollPhoneHandoffTarget(target, behavior = "smooth") {
+  const section = getPhoneHandoffSectionMap()[normalizePhoneHandoffTarget(target)];
+  if (!section || !els.phoneHandoffSheet || els.phoneHandoffSheet.classList.contains("hidden")) return;
+  section.scrollIntoView({ behavior, block: "start" });
+}
+
+function setPhoneHandoffTarget(target, options = {}) {
+  state.phoneHandoffFocus = normalizePhoneHandoffTarget(target);
+  renderPhoneHandoffSheet();
+  if (options.scroll === false) return;
+  requestAnimationFrame(() => {
+    scrollPhoneHandoffTarget(state.phoneHandoffFocus, options.behavior || "smooth");
+  });
+}
+
+function getPhoneHandoffRecommendation(target, context) {
+  if (target === "lan") {
+    if (context.lanUrl) return "Scan the editable LAN QR or copy the URL on the same Wi‑Fi. This is the fastest way to use your own phone with the local app.";
+    return "Keep the local server running and stay on the same Wi‑Fi, then come back here for the editable LAN route.";
+  }
+  if (target === "household") {
+    if (context.hasInvite) return "Use the shared invite QR for spouse or family devices. It opens the linked household directly and keeps the shared ledger in sync.";
+    if (context.ownerAccess) return "Open Shared, refresh the invite if needed, then use the QR to link another phone without a login.";
+    if (context.memberLinked) return "This device is already linked. Ask the owner for a fresh invite if you want to add another phone or rotate access.";
+    return "Create a linked household first if you want two devices to stay synced from anywhere without logins.";
+  }
+  if (target === "import") {
+    return AJL_WEB_MODE
+      ? "If you already use the local app, export a backup JSON there and import it here before setting up sharing on your phone."
+      : "Use the web app on your phone if you want to import a backup there, then create a linked household from that device.";
+  }
+  if (context.install.method === "installed") {
+    return "You already have the cleaner app shell here. Launch from the home screen for the most native-feeling phone experience.";
+  }
+  return "Start with install for the cleanest iPhone shell, then use the same sheet later for editable LAN access or a linked household invite.";
+}
+
+function renderPhoneHandoffSheet() {
+  const install = state.installState || getInstallExperience();
+  const copy = getInstallCopyBundle(install);
+  const inviteUrl = getHouseholdInviteUrl();
+  const hasInvite = !!inviteUrl;
+  const lanUrl = String(state.lanInfo?.urls?.[0] || "").trim();
+  const ownerAccess = hasHouseholdOwnerAccess() && state.householdInfo?.role === "owner";
+  const memberLinked = !!state.householdSession && state.householdInfo?.role === "member";
+  const activeTarget = normalizePhoneHandoffTarget(state.phoneHandoffFocus);
+  state.phoneHandoffFocus = activeTarget;
+  const sections = getPhoneHandoffSectionMap();
+  const routeButtons = {
+    install: els.phoneHandoffRouteInstall,
+    lan: els.phoneHandoffRouteLan,
+    household: els.phoneHandoffRouteHousehold,
+    import: els.phoneHandoffRouteImport,
+  };
+  const routeSummary = {
+    install: install.standalone
+      ? "Your iPhone already has the installed shell. Use this sheet for quick re-entry tips or to hand the app off to another phone."
+      : "Install first for the cleanest iPhone shell, then come back here if you also want LAN access or a linked household invite.",
+    lan: AJL_WEB_MODE
+      ? "Same-Wi‑Fi editable access is only available from the local app."
+      : "Use the same Wi‑Fi route when you want your own phone to open the full editable local app without moving any data.",
+    household: "Use the shared route when two phones need to stay in sync from anywhere with the same household ledger.",
+    import: AJL_WEB_MODE
+      ? "Import is the cleanest way to move an existing local household onto this phone in the web app."
+      : "Import is mainly for moving a local household into the web app on another phone when you do not want LAN-only access.",
+  };
+  if (els.phoneHandoffSummary) {
+    els.phoneHandoffSummary.textContent = routeSummary[activeTarget];
+  }
+  if (els.phoneHandoffRecommendationCopy) {
+    els.phoneHandoffRecommendationCopy.textContent = getPhoneHandoffRecommendation(activeTarget, {
+      install,
+      lanUrl,
+      hasInvite,
+      ownerAccess,
+      memberLinked,
+    });
+  }
+  Object.entries(routeButtons).forEach(([key, button]) => {
+    if (!button) return;
+    const available = !!sections[key];
+    button.classList.toggle("hidden", !available);
+    button.classList.toggle("active", key === activeTarget);
+    button.setAttribute("aria-pressed", key === activeTarget ? "true" : "false");
+  });
+  Object.entries(sections).forEach(([key, section]) => {
+    if (!section) return;
+    section.classList.toggle("is-focus", key === activeTarget);
+  });
+
+  if (els.phoneHandoffInstallStatus) {
+    els.phoneHandoffInstallStatus.textContent = copy.status;
+  }
+  if (els.phoneHandoffInstallSteps) {
+    els.phoneHandoffInstallSteps.innerHTML = "";
+    copy.steps.forEach((step) => {
+      const item = document.createElement("li");
+      item.textContent = step;
+      els.phoneHandoffInstallSteps.appendChild(item);
+    });
+  }
+  if (els.phoneHandoffInstallAction) {
+    els.phoneHandoffInstallAction.textContent = install.method === "installed" ? "Install details" : copy.actionLabel;
+  }
+
+  if (els.phoneHandoffImportBlock) {
+    els.phoneHandoffImportBlock.classList.toggle("hidden", !AJL_WEB_MODE);
+  }
+
+  if (els.phoneHandoffLanBlock) {
+    els.phoneHandoffLanBlock.classList.toggle("hidden", AJL_WEB_MODE);
+  }
+  if (!AJL_WEB_MODE) {
+    if (els.phoneHandoffLanUrl) {
+      els.phoneHandoffLanUrl.value = lanUrl;
+    }
+    if (els.phoneHandoffLanMeta) {
+      els.phoneHandoffLanMeta.textContent = lanUrl
+        ? "Scan or copy this LAN URL on the same Wi‑Fi to open the full editable app on your phone."
+        : "LAN URL unavailable right now. Keep the local server running and stay on the same Wi‑Fi.";
+    }
+    renderQrImage(
+      els.phoneHandoffLanQrImage,
+      els.phoneHandoffLanQrWrap,
+      lanUrl,
+      els.phoneHandoffLanQrMeta,
+      "Scan to open the editable app on your phone."
+    ).catch(() => {});
+    if (els.phoneHandoffLanCopy) {
+      els.phoneHandoffLanCopy.disabled = !lanUrl;
+    }
+  }
+
+  if (els.phoneHandoffHouseholdLink) {
+    els.phoneHandoffHouseholdLink.value = inviteUrl;
+  }
+  if (els.phoneHandoffHouseholdStatus) {
+    if (ownerAccess && hasInvite) {
+      els.phoneHandoffHouseholdStatus.textContent =
+        "Best for spouse/family or any second phone. This invite opens the linked household and stays in sync across devices.";
+    } else if (ownerAccess) {
+      els.phoneHandoffHouseholdStatus.textContent =
+        "Create or refresh the invite in Shared to link another phone without a login.";
+    } else if (memberLinked) {
+      els.phoneHandoffHouseholdStatus.textContent =
+        "This device is already linked as a member. Ask the owner for a fresh invite to add another phone.";
+    } else {
+      els.phoneHandoffHouseholdStatus.textContent =
+        "Create a linked household in Shared first if you want two devices to stay synced without logins.";
+    }
+  }
+  if (els.phoneHandoffHouseholdMeta) {
+    if (hasInvite) {
+      els.phoneHandoffHouseholdMeta.textContent =
+        "Use the QR code for the fastest phone handoff. Invitees can join immediately and log what they covered.";
+    } else if (AJL_WEB_MODE) {
+      els.phoneHandoffHouseholdMeta.textContent =
+        "If you already use the local app, import a backup here first, then create a linked household invite.";
+    } else {
+      els.phoneHandoffHouseholdMeta.textContent =
+        "Open Shared to create or refresh the invite before handing this off to another phone.";
+    }
+  }
+  renderQrImage(
+    els.phoneHandoffHouseholdQrImage,
+    els.phoneHandoffHouseholdQrWrap,
+    inviteUrl,
+    els.phoneHandoffHouseholdQrMeta,
+    "Scan to join the linked household on another phone."
+  ).catch(() => {});
+  if (els.phoneHandoffHouseholdCopy) {
+    els.phoneHandoffHouseholdCopy.disabled = !hasInvite;
+  }
+  if (els.phoneHandoffHouseholdShare) {
+    els.phoneHandoffHouseholdShare.disabled = !hasInvite;
+    els.phoneHandoffHouseholdShare.classList.toggle("hidden", !(hasInvite && navigator.share));
+  }
+}
+
 function syncOverlayState() {
   const open =
     (!!els.detailsDrawer && !els.detailsDrawer.classList.contains("hidden")) ||
     (!!els.assistantDrawer && !els.assistantDrawer.classList.contains("hidden")) ||
     (!!els.filterSheet && !els.filterSheet.classList.contains("hidden")) ||
     (!!els.installSheet && !els.installSheet.classList.contains("hidden")) ||
+    (!!els.phoneHandoffSheet && !els.phoneHandoffSheet.classList.contains("hidden")) ||
+    (!!els.householdLogSheet && !els.householdLogSheet.classList.contains("hidden")) ||
     (!!els.shareModal && !els.shareModal.classList.contains("hidden")) ||
     (!!els.wizardModal && !els.wizardModal.classList.contains("hidden"));
   document.body.classList.toggle("overlay-open", open);
@@ -1149,6 +1594,54 @@ async function shareFetch(path, options = {}) {
   }
 }
 
+function getHouseholdBaseUrl() {
+  return getShareBaseUrl();
+}
+
+async function householdFetch(path, options = {}) {
+  const base = getHouseholdBaseUrl();
+  const headers = new Headers(options.headers || {});
+  if (state.householdSession?.owner_key) {
+    headers.set("X-AJL-Household-Owner", state.householdSession.owner_key);
+  }
+  if (state.householdSession?.member_token) {
+    headers.set("X-AJL-Household-Member", state.householdSession.member_token);
+  }
+  const init = {
+    ...options,
+    headers,
+  };
+  const localInit = {
+    ...init,
+    credentials: "same-origin",
+  };
+  const remoteInit = {
+    ...init,
+    credentials: "omit",
+  };
+  if (!base) {
+    return fetch(path, localInit);
+  }
+  if (!AJL_WEB_MODE && Date.now() < Number(state.shareRelayBackoffUntil || 0)) {
+    return fetch(path, localInit);
+  }
+  try {
+    const remoteRes = await fetchWithTimeout(`${base}${path}`, remoteInit, SHARE_RELAY_TIMEOUT_MS);
+    if (!AJL_WEB_MODE && [401, 403, 404, 408, 429, 500, 502, 503, 504].includes(Number(remoteRes.status || 0))) {
+      state.shareRelayBackoffUntil = Date.now() + 15_000;
+      return fetch(path, localInit);
+    }
+    state.shareRelayBackoffUntil = 0;
+    return remoteRes;
+  } catch (err) {
+    if (!AJL_WEB_MODE) {
+      state.shareRelayBackoffUntil = Date.now() + 15_000;
+      return fetch(path, localInit);
+    }
+    throw new Error("Shared household relay is unavailable.");
+  }
+}
+
 async function readApiErrorMessage(res, fallbackMessage) {
   try {
     const payload = await res.clone().json();
@@ -1244,11 +1737,13 @@ function recordMutation() {
     state.webMeta.editCountSinceBackup = (state.webMeta.editCountSinceBackup || 0) + 1;
     saveWebMeta(state.webMeta);
     maybeShowBackupReminder();
+    scheduleHouseholdSync();
     return;
   }
   const current = loadLocalEditCount();
   saveLocalEditCount(current + 1);
   maybeShowBackupReminder();
+  scheduleHouseholdSync();
 }
 
 function maybeShowBackupReminder() {
@@ -3380,6 +3875,16 @@ function renderDeviceAccess() {
       ? `${network.message}${shareState} ${network.warning}`
       : `${network.message}${shareState}`;
   }
+  const lanUrl = String(els.lanUrl?.textContent || "").trim();
+  const qrValue = lanUrl && lanUrl !== "LAN URL unavailable" ? lanUrl : "";
+  renderQrImage(
+    els.lanQrImage,
+    els.lanQrWrap,
+    qrValue,
+    els.lanQrMeta,
+    "Scan on your phone to open the editable LAN app."
+  ).catch(() => {});
+  renderPhoneHandoffSheet();
 }
 
 function prioritizeInstancesForAgent(list) {
@@ -6520,6 +7025,7 @@ function setAgentStatus(text) {
   const message = String(text || "");
   if (els.llmAgentOutput) els.llmAgentOutput.textContent = message;
   if (els.agentInlineStatus) els.agentInlineStatus.textContent = message;
+  renderMamdouChrome();
 }
 
 function setAgentBusy(busy) {
@@ -6529,18 +7035,21 @@ function setAgentBusy(busy) {
   if (els.agentInlineSend) els.agentInlineSend.disabled = next;
   if (els.llmAgentInput) els.llmAgentInput.disabled = next;
   if (els.agentInlineInput) els.agentInlineInput.disabled = next;
+  renderMamdouChrome();
 }
 
 function setPendingAgentAction(action) {
   state.pendingAgentAction = action;
   if (els.llmAgentActions) els.llmAgentActions.classList.remove("hidden");
   if (els.agentInlineActions) els.agentInlineActions.classList.remove("hidden");
+  renderMamdouChrome();
 }
 
 function clearPendingAgentAction() {
   state.pendingAgentAction = null;
   if (els.llmAgentActions) els.llmAgentActions.classList.add("hidden");
   if (els.agentInlineActions) els.agentInlineActions.classList.add("hidden");
+  renderMamdouChrome();
 }
 
 function summarizeProposal(proposal) {
@@ -6675,6 +7184,78 @@ function canAutoExecuteProposal(proposal) {
   return proposal.needs_confirmation === false && intent.startsWith("SHOW_");
 }
 
+function getMamdouSurfaceState() {
+  if (AJL_WEB_MODE) {
+    return {
+      status: "Web only",
+      className: "state-error",
+      drawer: "Mamdou is available in the local app only.",
+    };
+  }
+  if (state.agentBusy) {
+    return {
+      status: "Working",
+      className: "state-working",
+      drawer: "Mamdou is working on your current request.",
+    };
+  }
+  if (state.pendingAgentAction) {
+    return {
+      status: "Confirm",
+      className: "state-pending",
+      drawer: "Mamdou is waiting for your confirmation.",
+    };
+  }
+  const connection = getProviderConnectionState(getActiveProviderName());
+  if (connection.connected) {
+    return {
+      status: "Ready",
+      className: "state-ready",
+      drawer: `Ready via ${connection.label}.`,
+    };
+  }
+  if (connection.provider === "qwen-oauth" && connection.pending) {
+    return {
+      status: "Login",
+      className: "state-pending",
+      drawer: "Finish Qwen login to keep using Mamadou.",
+    };
+  }
+  if (connection.provider === "qwen-oauth" && isQwenReconnectState(state.qwenAuth?.status)) {
+    return {
+      status: "Reconnect",
+      className: "state-reconnect",
+      drawer: connection.lastError || "Reconnect Qwen to keep using Mamadou.",
+    };
+  }
+  if (connection.provider !== "qwen-oauth" && !connection.configured) {
+    return {
+      status: "Connect",
+      className: "state-error",
+      drawer: `Add your ${connection.label} key or switch back to Qwen.`,
+    };
+  }
+  return {
+    status: "Connect",
+    className: "state-error",
+    drawer: "Connect Mamadou to run commands, receipts, and setup actions.",
+  };
+}
+
+function renderMamdouChrome() {
+  const surface = getMamdouSurfaceState();
+  if (els.assistantFab) {
+    els.assistantFab.classList.remove("state-ready", "state-pending", "state-reconnect", "state-error", "state-working");
+    els.assistantFab.classList.add(surface.className);
+  }
+  if (els.assistantFabStatus) {
+    els.assistantFabStatus.textContent = surface.status;
+  }
+  if (els.assistantDrawerStatus) {
+    els.assistantDrawerStatus.textContent = surface.drawer;
+  }
+}
+
 function renderAssistantConnection() {
   if (!els.assistantConnection || !els.assistantConnectionTitle || !els.assistantConnectionBody || !els.assistantConnectionAction) {
     renderSetupAgentConnection();
@@ -6711,6 +7292,7 @@ function renderAssistantConnection() {
     if (els.agentInlineConnection) {
       els.agentInlineConnection.textContent = "Mamdou unavailable on web.";
     }
+    renderMamdouChrome();
     renderSetupAgentConnection();
     return;
   }
@@ -6858,6 +7440,7 @@ function renderAssistantConnection() {
         : `Connect ${selectedState.label}`;
     }
   }
+  renderMamdouChrome();
   renderSetupAgentConnection();
 }
 
@@ -7380,6 +7963,24 @@ function startSharedLivePolling(token, mode) {
     if (document.hidden) return;
     loadSharedView(token, { silent: true }).catch(() => {});
   }, SHARE_LIVE_REFRESH_MS);
+}
+
+function stopHouseholdLivePolling() {
+  if (householdLiveTimer) {
+    clearInterval(householdLiveTimer);
+    householdLiveTimer = null;
+  }
+}
+
+function startHouseholdLivePolling() {
+  stopHouseholdLivePolling();
+  if (state.readOnly) return;
+  if (state.view !== "shared") return;
+  if (!state.householdSession?.household_id) return;
+  householdLiveTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadHouseholdState({ silent: true }).catch(() => {});
+  }, HOUSEHOLD_LIVE_REFRESH_MS);
 }
 
 async function refreshShareRelayStatus() {
@@ -8049,6 +8650,1023 @@ async function updateShareExpiry() {
   }
 }
 
+function getDefaultHouseholdDisplayName() {
+  return (
+    String(state.profileName || "").trim() ||
+    String(state.householdSession?.member_name || "").trim() ||
+    "You"
+  );
+}
+
+function parseHouseholdPeriod(period) {
+  const raw = String(period || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+  return { year, month };
+}
+
+function applyHouseholdResponse(data) {
+  const household = data?.household && typeof data.household === "object" ? data.household : null;
+  if (!household) return null;
+  state.householdInfo = household;
+  if (data?.session) {
+    saveHouseholdSession(data.session);
+  } else if (state.householdSession) {
+    saveHouseholdSession({
+      ...state.householdSession,
+      role: household.role || state.householdSession.role,
+      member_name: household.member_name || state.householdSession.member_name,
+    });
+  }
+  return household;
+}
+
+function buildHouseholdPayload() {
+  const derived = deriveInstances();
+  const base = getBaseInstances(derived);
+  return {
+    schema_version: "1",
+    period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
+    owner_label:
+      String(state.householdInfo?.owner_label || "").trim() ||
+      String(state.profileName || "").trim() ||
+      null,
+    items: base.map((item) => ({
+      id: item.id,
+      template_id: item.template_id,
+      year: item.year,
+      month: item.month,
+      name_snapshot: item.name_snapshot,
+      category_snapshot: item.category_snapshot || null,
+      amount: Number(item.amount || 0),
+      due_date: item.due_date,
+      status: item.status_derived || item.status || "pending",
+      paid_date: item.paid_date || null,
+      amount_paid: Number(item.amount_paid || 0),
+      amount_remaining: Number(item.amount_remaining || 0),
+      essential_snapshot: !!item.essential_snapshot,
+      autopay_snapshot: !!item.autopay_snapshot,
+      note: item.note || null,
+    })),
+    categories: Array.isArray(state.settings?.categories) ? state.settings.categories : [],
+  };
+}
+
+function setHouseholdBusy(busy) {
+  state.householdBusy = !!busy;
+  const disabled = state.householdBusy || state.readOnly;
+  if (els.householdCreate) els.householdCreate.disabled = disabled;
+  if (els.householdJoin) els.householdJoin.disabled = disabled;
+  if (els.householdRecover) els.householdRecover.disabled = disabled;
+  if (els.householdRefresh) els.householdRefresh.disabled = disabled;
+  if (els.householdSync) els.householdSync.disabled = disabled;
+  if (els.householdCopyInvite) els.householdCopyInvite.disabled = disabled;
+  if (els.householdShareInvite) els.householdShareInvite.disabled = disabled;
+  if (els.householdCopyInviteInline) els.householdCopyInviteInline.disabled = disabled;
+  if (els.householdShareInviteInline) els.householdShareInviteInline.disabled = disabled;
+  if (els.householdCopyRecovery) els.householdCopyRecovery.disabled = disabled;
+  if (els.householdRotateRecovery) els.householdRotateRecovery.disabled = disabled;
+  if (els.householdRegenerateInvite) els.householdRegenerateInvite.disabled = disabled;
+  if (els.householdLeave) els.householdLeave.disabled = disabled;
+  if (els.householdPhoneGuide) els.householdPhoneGuide.disabled = disabled;
+  if (els.householdGuidanceAction) els.householdGuidanceAction.disabled = disabled;
+  if (els.phoneHandoffHouseholdCopy) els.phoneHandoffHouseholdCopy.disabled = disabled;
+  if (els.phoneHandoffHouseholdShare) els.phoneHandoffHouseholdShare.disabled = disabled;
+  if (els.householdLogSubmit) els.householdLogSubmit.disabled = disabled;
+  if (els.householdLogCover) els.householdLogCover.disabled = disabled;
+}
+
+function clearHouseholdSyncTimers() {
+  if (householdSyncTimer) {
+    clearTimeout(householdSyncTimer);
+    householdSyncTimer = null;
+  }
+  if (householdSyncRetryTimer) {
+    clearTimeout(householdSyncRetryTimer);
+    householdSyncRetryTimer = null;
+  }
+}
+
+function canHouseholdSyncLive() {
+  return !state.readOnly && !!(state.householdInfo && hasHouseholdOwnerAccess());
+}
+
+function getHouseholdSyncRetryDelayMs() {
+  const factor = Math.min(householdSyncRetryCount, 6);
+  return Math.min(60_000, 1500 * (2 ** factor));
+}
+
+function dismissHouseholdEntryNotice() {
+  state.householdEntryNotice = null;
+  renderSharedHousehold();
+}
+
+function setHouseholdEntryNotice(notice) {
+  state.householdEntryNotice = notice || null;
+  renderSharedHousehold();
+}
+
+function renderHouseholdStatusCopy() {
+  if (!els.householdStatusCopy) return;
+  const inviteToken = getHouseholdInviteTokenFromLocation();
+  const household = state.householdInfo;
+  if (inviteToken && !state.householdSession) {
+    els.householdStatusCopy.textContent =
+      "Invite detected. Enter your display name to join this shared ledger on this device.";
+    return;
+  }
+  if (!state.householdSession) {
+    els.householdStatusCopy.textContent =
+      "Link a spouse or family member without logins. Keep one shared ledger of what each person has covered this month.";
+    return;
+  }
+  if (!household) {
+    els.householdStatusCopy.textContent = "Loading the linked household ledger for this device…";
+    return;
+  }
+  if (household.role === "owner") {
+    els.householdStatusCopy.textContent =
+      "Owner view. Sync the current month after edits, invite household members, and keep the recovery code somewhere safe. Rotate it if a device is lost.";
+    return;
+  }
+  const memberName = household.member_name || state.householdSession.member_name || "Member";
+  els.householdStatusCopy.textContent =
+    `${memberName} is linked to this household. Log what you covered and the shared ledger will track who handled what.`;
+}
+
+function renderHouseholdMembers() {
+  if (!els.householdMembersList) return;
+  els.householdMembersList.innerHTML = "";
+  const members = Array.isArray(state.householdInfo?.members) ? state.householdInfo.members : [];
+  if (members.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "No members yet.";
+    els.householdMembersList.appendChild(empty);
+    return;
+  }
+  const thisDeviceMember = members.find((member) => member.token && member.token === state.householdSession?.member_token) || null;
+  if (els.householdMembersSummary) {
+    els.householdMembersSummary.classList.toggle("hidden", members.length === 0);
+  }
+  if (els.householdMemberCount) {
+    els.householdMemberCount.textContent = String(members.length);
+  }
+  if (els.householdThisDeviceTotal) {
+    els.householdThisDeviceTotal.textContent = formatMoney(thisDeviceMember?.contributed || 0);
+  }
+  members.forEach((member) => {
+    const row = document.createElement("div");
+    row.className = "household-member-row";
+
+    const main = document.createElement("div");
+    main.className = "household-member-main";
+
+    const name = document.createElement("div");
+    name.className = "household-member-name";
+    name.textContent = member.display_name || "Member";
+
+    const meta = document.createElement("div");
+    meta.className = "household-member-meta";
+    const parts = [];
+    parts.push(member.role === "owner" ? "Owner" : "Member");
+    if (member.token && member.token === state.householdSession?.member_token) {
+      parts.push("This device");
+    }
+    if (member.last_seen_at) parts.push(`Seen ${formatDateTime(member.last_seen_at)}`);
+    meta.textContent = parts.join(" · ");
+
+    main.appendChild(name);
+    main.appendChild(meta);
+
+    const side = document.createElement("div");
+    side.className = "household-member-side";
+
+    const total = document.createElement("div");
+    total.className = "household-member-total";
+    total.textContent = formatMoney(member.contributed || 0);
+
+    side.appendChild(total);
+
+    if (
+      !state.readOnly &&
+      hasHouseholdOwnerAccess() &&
+      member.role !== "owner" &&
+      member.token &&
+      member.token !== state.householdSession?.member_token
+    ) {
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "ghost-btn small";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", () => {
+        removeHouseholdMember(member.token, member.display_name || "Member").catch(() => {});
+      });
+      side.appendChild(removeBtn);
+    }
+
+    row.appendChild(main);
+    row.appendChild(side);
+    els.householdMembersList.appendChild(row);
+  });
+}
+
+function renderHouseholdItems() {
+  if (!els.householdItemsList) return;
+  els.householdItemsList.innerHTML = "";
+  const items = Array.isArray(state.householdInfo?.items) ? state.householdInfo.items : [];
+  if (items.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "No shared items yet. Sync the current month to start the shared ledger.";
+    els.householdItemsList.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "household-item-row";
+
+    const head = document.createElement("div");
+    head.className = "household-item-head";
+
+    const left = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "household-item-name";
+    name.textContent = item.name_snapshot || "Bill";
+    const meta = document.createElement("div");
+    meta.className = "household-item-meta";
+    const parts = [`Due ${formatShortDate(item.due_date)}`];
+    if (item.category_snapshot) parts.push(item.category_snapshot);
+    meta.textContent = parts.join(" · ");
+    left.appendChild(name);
+    left.appendChild(meta);
+
+    const status = document.createElement("span");
+    status.className = `household-status-pill ${item.shared_status || "open"}`;
+    status.textContent =
+      item.shared_status === "done"
+        ? "Done"
+        : item.shared_status === "partial"
+          ? "Partial"
+          : "Open";
+
+    head.appendChild(left);
+    head.appendChild(status);
+
+    const amounts = document.createElement("div");
+    amounts.className = "household-item-amounts";
+    amounts.innerHTML = `<span>Due ${formatMoney(item.amount || 0)}</span><span>Covered ${formatMoney(
+      item.shared_amount_paid || 0
+    )}</span>`;
+
+    const remaining = document.createElement("div");
+    remaining.className = "household-item-remaining";
+    remaining.textContent = `${formatMoney(item.shared_remaining || 0)} remaining`;
+
+    const contrib = document.createElement("div");
+    contrib.className = "household-contributors";
+    const contributions = Array.isArray(item.contributions) ? item.contributions : [];
+    if (contributions.length === 0) {
+      const chip = document.createElement("span");
+      chip.className = "household-contributor-chip";
+      chip.textContent = "No contributions yet";
+      contrib.appendChild(chip);
+    } else {
+      contributions.slice(0, 4).forEach((entry) => {
+        const chip = document.createElement("span");
+        chip.className = "household-contributor-chip";
+        chip.textContent = `${entry.member_name}: ${formatMoney(entry.amount || 0)}`;
+        contrib.appendChild(chip);
+      });
+    }
+
+    const foot = document.createElement("div");
+    foot.className = "household-item-foot";
+    foot.appendChild(contrib);
+
+    if (!state.readOnly && state.householdSession) {
+      const actions = document.createElement("div");
+      actions.className = "household-item-actions";
+
+      const logBtn = document.createElement("button");
+      logBtn.className = "ghost-btn small";
+      logBtn.textContent = "Log update";
+      logBtn.addEventListener("click", () => openHouseholdLogSheet(item.id));
+
+      actions.appendChild(logBtn);
+      if (Number(item.shared_remaining || 0) > 0) {
+        const coverBtn = document.createElement("button");
+        coverBtn.className = "btn-small btn-primary";
+        coverBtn.textContent = "Cover remaining";
+        coverBtn.addEventListener("click", () => openHouseholdLogSheet(item.id, true));
+        actions.appendChild(coverBtn);
+      }
+      foot.appendChild(actions);
+    }
+
+    row.appendChild(head);
+    row.appendChild(amounts);
+    row.appendChild(remaining);
+    row.appendChild(foot);
+    els.householdItemsList.appendChild(row);
+  });
+}
+
+function renderHouseholdActivity() {
+  if (!els.householdActivityList) return;
+  els.householdActivityList.innerHTML = "";
+  const activity = Array.isArray(state.householdInfo?.activity) ? state.householdInfo.activity : [];
+  if (activity.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "No shared activity yet.";
+    els.householdActivityList.appendChild(empty);
+    return;
+  }
+  activity.slice(0, 40).forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "household-activity-row";
+
+    const title = document.createElement("div");
+    title.className = "household-activity-title";
+    title.textContent = `${entry.member_name || "Member"} logged ${formatMoney(entry.amount || 0)} → ${
+      entry.item_name || "Bill"
+    }`;
+
+    const meta = document.createElement("div");
+    meta.className = "household-activity-meta";
+    const parts = [formatDateTime(entry.created_at)];
+    if (entry.note) parts.push(entry.note);
+    meta.textContent = parts.join(" · ");
+
+    row.appendChild(title);
+    row.appendChild(meta);
+    els.householdActivityList.appendChild(row);
+  });
+}
+
+function renderSharedHousehold() {
+  const household = state.householdInfo;
+  const session = state.householdSession;
+  const inviteToken = getHouseholdInviteTokenFromLocation();
+  if (els.householdName && !els.householdName.value) {
+    const defaultName = state.profileName ? `${state.profileName}'s household` : "Shared household";
+    els.householdName.value = defaultName;
+  }
+  if (els.householdDisplayName && !els.householdDisplayName.value) {
+    els.householdDisplayName.value = getDefaultHouseholdDisplayName();
+  }
+  if (els.householdJoinName && !els.householdJoinName.value) {
+    els.householdJoinName.value = getDefaultHouseholdDisplayName();
+  }
+  if (els.householdRecoveryName && !els.householdRecoveryName.value) {
+    els.householdRecoveryName.value = getDefaultHouseholdDisplayName();
+  }
+  if (inviteToken && els.householdJoinToken && !els.householdJoinToken.value) {
+    els.householdJoinToken.value = inviteToken;
+  }
+  if (els.householdJoinTip) {
+    els.householdJoinTip.classList.toggle("hidden", !(inviteToken && !session));
+  }
+
+  renderHouseholdStatusCopy();
+  setHouseholdBusy(state.householdBusy);
+
+  const hasHousehold = !!household;
+  const showSetup = !session;
+  if (els.householdSetupCard) els.householdSetupCard.classList.toggle("hidden", !showSetup);
+  if (els.householdSummaryCard) els.householdSummaryCard.classList.toggle("hidden", !hasHousehold);
+  if (els.householdInviteCard) {
+    els.householdInviteCard.classList.toggle("hidden", !(hasHousehold && household.role === "owner"));
+  }
+  if (els.householdRecoveryCard) {
+    els.householdRecoveryCard.classList.toggle("hidden", !(hasHousehold && household.role === "owner"));
+  }
+  if (els.householdMembersCard) els.householdMembersCard.classList.toggle("hidden", !hasHousehold);
+  if (els.householdLedgerCard) els.householdLedgerCard.classList.toggle("hidden", !hasHousehold);
+  if (els.householdActivityCard) els.householdActivityCard.classList.toggle("hidden", !hasHousehold);
+  if (els.householdSync) {
+    els.householdSync.classList.toggle("hidden", !(hasHousehold && household.role === "owner"));
+  }
+  if (els.householdCopyInvite) {
+    els.householdCopyInvite.classList.toggle("hidden", !(hasHousehold && household.role === "owner"));
+  }
+  if (els.householdShareInvite) {
+    els.householdShareInvite.classList.toggle(
+      "hidden",
+      !(hasHousehold && household.role === "owner" && navigator.share)
+    );
+  }
+  if (els.householdRegenerateInvite) {
+    els.householdRegenerateInvite.classList.toggle("hidden", !(hasHousehold && household.role === "owner"));
+  }
+  if (els.householdShareInviteInline) {
+    els.householdShareInviteInline.classList.toggle(
+      "hidden",
+      !(hasHousehold && household.role === "owner" && navigator.share)
+    );
+  }
+
+  if (!hasHousehold) {
+    if (els.householdGuidance) els.householdGuidance.classList.add("hidden");
+    if (els.householdEntryNotice) els.householdEntryNotice.classList.add("hidden");
+    if (els.householdRolePill) els.householdRolePill.classList.add("hidden");
+    if (els.householdDevicePill) els.householdDevicePill.classList.add("hidden");
+    if (els.householdGuidanceAction) els.householdGuidanceAction.classList.add("hidden");
+    if (els.householdMembersList) els.householdMembersList.innerHTML = "";
+    if (els.householdItemsList) els.householdItemsList.innerHTML = "";
+    if (els.householdActivityList) els.householdActivityList.innerHTML = "";
+    if (els.householdRecoveryCodeDisplay) els.householdRecoveryCodeDisplay.value = "";
+    renderPhoneHandoffSheet();
+    return;
+  }
+
+  const summary = household.summary || {
+    total_due: 0,
+    total_contributed: 0,
+    total_remaining: 0,
+    done_count: 0,
+    item_count: 0,
+  };
+  if (els.householdTitle) {
+    els.householdTitle.textContent = household.name || "Shared household";
+  }
+  if (els.householdMeta) {
+    const parts = [];
+    if (household.role === "owner") parts.push("Owner");
+    else if (household.member_name) parts.push(household.member_name);
+    if (household.period) parts.push(household.period);
+    if (household.last_published_at) parts.push(`Updated ${formatDateTime(household.last_published_at)}`);
+    els.householdMeta.textContent = parts.join(" · ");
+  }
+  if (els.householdGuidance) {
+    els.householdGuidance.classList.remove("hidden");
+  }
+  if (els.householdRolePill) {
+    els.householdRolePill.classList.remove("hidden", "done", "partial", "open");
+    els.householdRolePill.textContent = household.role === "owner" ? "Owner controls" : "Member device";
+    els.householdRolePill.classList.add(household.role === "owner" ? "done" : "partial");
+  }
+  if (els.householdDevicePill) {
+    els.householdDevicePill.classList.toggle("hidden", !state.householdSession?.member_token);
+    els.householdDevicePill.textContent = "This device";
+  }
+  if (els.householdGuidanceCopy) {
+    if (household.role === "owner") {
+      els.householdGuidanceCopy.textContent =
+        "This device can invite members, refresh the shared month, and recover owner access later. Save the recovery code off this phone too, and rotate it if the phone is lost.";
+    } else {
+      const memberName = household.member_name || state.householdSession?.member_name || "This device";
+      els.householdGuidanceCopy.textContent =
+        `${memberName} can log shared updates here. Only the owner can rotate recovery codes, refresh invites, or remove linked devices.`;
+    }
+  }
+  if (els.householdGuidanceAction) {
+    els.householdGuidanceAction.classList.remove("hidden");
+    els.householdGuidanceAction.textContent = household.role === "owner" ? "Invite another phone" : "Open shared route";
+  }
+  if (els.householdEntryNotice && els.householdEntryTitle && els.householdEntryCopy) {
+    const notice = state.householdEntryNotice;
+    els.householdEntryNotice.classList.toggle("hidden", !notice);
+    if (notice) {
+      els.householdEntryTitle.textContent = notice.title || "This phone is linked";
+      els.householdEntryCopy.textContent = notice.body || "You can start logging shared updates here right away.";
+    }
+  }
+  if (els.householdTotalDue) els.householdTotalDue.textContent = formatMoney(summary.total_due || 0);
+  if (els.householdTotalPaid) {
+    els.householdTotalPaid.textContent = formatMoney(summary.total_contributed || 0);
+  }
+  if (els.householdTotalRemaining) {
+    els.householdTotalRemaining.textContent = formatMoney(summary.total_remaining || 0);
+  }
+  if (els.householdItemsHandled) {
+    els.householdItemsHandled.textContent = `${summary.done_count || 0} / ${summary.item_count || 0}`;
+  }
+  if (els.householdInviteLink) {
+    els.householdInviteLink.value = household.invite?.url || "";
+  }
+  if (els.householdInviteMeta) {
+    if (household.invite?.expires_at) {
+      els.householdInviteMeta.textContent = `Invite expires ${formatDateTime(
+        household.invite.expires_at
+      )}. Linked devices auto-refresh every ${Math.round(HOUSEHOLD_LIVE_REFRESH_MS / 1000)}s while this view is open.`;
+    } else if (household.invite?.url) {
+      els.householdInviteMeta.textContent = `Invite stays active until you rotate it. Linked devices auto-refresh every ${Math.round(
+        HOUSEHOLD_LIVE_REFRESH_MS / 1000
+      )}s while this view is open.`;
+    } else {
+      els.householdInviteMeta.textContent = "Invite not created yet.";
+    }
+  }
+  const recoveryCode = buildHouseholdRecoveryCode(
+    state.householdSession?.household_id,
+    state.householdSession?.owner_key
+  );
+  if (els.householdRecoveryCodeDisplay) {
+    els.householdRecoveryCodeDisplay.value = household.role === "owner" ? recoveryCode : "";
+  }
+  if (els.householdRecoveryMeta) {
+    els.householdRecoveryMeta.textContent =
+      household.role === "owner" && recoveryCode
+        ? "Store this off this phone too. Anyone with this code can recover owner access, so rotate it immediately if a device is lost."
+        : "Owner recovery becomes available after this device is linked as the household owner.";
+  }
+  renderQrImage(
+    els.householdInviteQrImage,
+    els.householdInviteQrWrap,
+    household.invite?.url || "",
+    els.householdInviteQrMeta,
+    "Scan to join the shared household on another device."
+  ).catch(() => {});
+  if (els.householdPeriod) {
+    els.householdPeriod.textContent = household.period
+      ? `Shared period · ${household.period}`
+      : "No shared period yet.";
+  }
+  renderHouseholdMembers();
+  renderHouseholdItems();
+  renderHouseholdActivity();
+  renderPhoneHandoffSheet();
+}
+
+async function loadHouseholdState(options = {}) {
+  const silent = !!options.silent;
+  if (!state.householdSession?.household_id) {
+    state.householdInfo = null;
+    renderSharedHousehold();
+    return null;
+  }
+  try {
+    const res = await householdFetch(`/api/households/${state.householdSession.household_id}`);
+    if (!res.ok) {
+      const message = await readApiErrorMessage(res, "Unable to load shared household.");
+      if ([401, 403, 404].includes(Number(res.status || 0))) {
+        clearHouseholdSession();
+        state.householdInfo = null;
+      }
+      if (!silent) showSystemBanner(message);
+      renderSharedHousehold();
+      return null;
+    }
+    hideSystemBanner();
+    const data = await res.json();
+    return applyHouseholdResponse(data);
+  } catch (err) {
+    if (!silent) showSystemBanner("Unable to load shared household.");
+    return null;
+  } finally {
+    renderSharedHousehold();
+  }
+}
+
+async function publishHouseholdPayload(payloadOverride = null) {
+  if (!canHouseholdSyncLive()) return;
+  const householdId = state.householdSession?.household_id;
+  if (!householdId) return;
+  const payload = payloadOverride || buildHouseholdPayload();
+  const ownerLabel =
+    String(state.householdInfo?.owner_label || "").trim() ||
+    String(state.profileName || "").trim() ||
+    null;
+  const res = await householdFetch(`/api/households/${householdId}/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      payload,
+      name: state.householdInfo?.name || null,
+      owner_label: ownerLabel,
+    }),
+  });
+  if (!res.ok) {
+    const message = await readApiErrorMessage(res, "Unable to sync shared household.");
+    throw new Error(message);
+  }
+  const data = await res.json();
+  applyHouseholdResponse(data);
+  renderSharedHousehold();
+}
+
+async function flushHouseholdSyncQueue() {
+  if (!canHouseholdSyncLive()) return;
+  if (householdSyncInFlight || !householdSyncDirty) return;
+  householdSyncInFlight = true;
+  householdSyncDirty = false;
+  try {
+    await publishHouseholdPayload();
+    householdSyncRetryCount = 0;
+    if (householdSyncRetryTimer) {
+      clearTimeout(householdSyncRetryTimer);
+      householdSyncRetryTimer = null;
+    }
+  } catch (err) {
+    householdSyncDirty = true;
+    householdSyncRetryCount += 1;
+    const delay = getHouseholdSyncRetryDelayMs();
+    if (state.view === "shared") {
+      showSystemBanner(`${String(err?.message || "Unable to sync household.")} Retrying in ${Math.round(delay / 1000)}s.`);
+    }
+    if (householdSyncRetryTimer) clearTimeout(householdSyncRetryTimer);
+    householdSyncRetryTimer = setTimeout(() => {
+      flushHouseholdSyncQueue().catch(() => {});
+    }, delay);
+  } finally {
+    householdSyncInFlight = false;
+    if (householdSyncDirty && !householdSyncRetryTimer) {
+      householdSyncTimer = setTimeout(() => {
+        flushHouseholdSyncQueue().catch(() => {});
+      }, 50);
+    }
+  }
+}
+
+function scheduleHouseholdSync(options = {}) {
+  if (!canHouseholdSyncLive()) return;
+  const immediate = options.immediate === true;
+  householdSyncDirty = true;
+  if (householdSyncTimer) clearTimeout(householdSyncTimer);
+  householdSyncTimer = setTimeout(() => {
+    flushHouseholdSyncQueue().catch(() => {});
+  }, immediate ? 0 : 1200);
+}
+
+async function createHousehold() {
+  if (state.householdBusy || state.readOnly) return;
+  const name = String(els.householdName?.value || "").trim() || "Shared household";
+  const displayName = String(els.householdDisplayName?.value || "").trim() || getDefaultHouseholdDisplayName();
+  setHouseholdBusy(true);
+  try {
+    const res = await householdFetch("/api/households", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        display_name: displayName,
+        owner_label: state.profileName || displayName,
+        payload: buildHouseholdPayload(),
+      }),
+    });
+    if (!res.ok) {
+      const message = await readApiErrorMessage(res, "Unable to create shared household.");
+      window.alert(message);
+      return;
+    }
+    const data = await res.json();
+    applyHouseholdResponse(data);
+    setHouseholdEntryNotice({
+      title: "Shared household ready",
+      body: "This device is now the owner. Invite another phone when you want a spouse or family member to join the shared ledger.",
+    });
+    await setOnboardingComplete(true);
+    state.view = "shared";
+    renderView();
+    renderSharedHousehold();
+    showToast("Shared household created.");
+  } finally {
+    setHouseholdBusy(false);
+  }
+}
+
+async function joinHousehold() {
+  if (state.householdBusy || state.readOnly) return;
+  const displayName = String(els.householdJoinName?.value || "").trim() || getDefaultHouseholdDisplayName();
+  const invite = String(els.householdJoinToken?.value || "").trim();
+  if (!invite) {
+    showSystemBanner("Paste an invite link or token to join the shared household.");
+    return;
+  }
+  setHouseholdBusy(true);
+  try {
+    const res = await householdFetch("/api/households/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        invite,
+        display_name: displayName,
+      }),
+    });
+    if (!res.ok) {
+      const message = await readApiErrorMessage(res, "Unable to join shared household.");
+      window.alert(message);
+      return;
+    }
+    const data = await res.json();
+    applyHouseholdResponse(data);
+    setHouseholdEntryNotice({
+      title: "This phone joined the household",
+      body: `${displayName} can now log shared updates here. The shared ledger will keep track of what this device handled.`,
+    });
+    clearHouseholdInviteQuery();
+    await setOnboardingComplete(true);
+    state.view = "shared";
+    renderView();
+    renderSharedHousehold();
+    showToast("Joined shared household.");
+  } finally {
+    setHouseholdBusy(false);
+  }
+}
+
+async function recoverHouseholdOwner() {
+  if (state.householdBusy || state.readOnly) return;
+  const recoveryCode = String(els.householdRecoveryCode?.value || "").trim();
+  const displayName =
+    String(els.householdRecoveryName?.value || "").trim() || getDefaultHouseholdDisplayName();
+  if (!recoveryCode) {
+    showSystemBanner("Paste your owner recovery code to reconnect this device.");
+    return;
+  }
+  setHouseholdBusy(true);
+  try {
+    const res = await householdFetch("/api/households/recover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recovery_code: recoveryCode,
+        display_name: displayName,
+      }),
+    });
+    if (!res.ok) {
+      const message = await readApiErrorMessage(res, "Unable to recover owner access.");
+      window.alert(message);
+      return;
+    }
+    const data = await res.json();
+    applyHouseholdResponse(data);
+    setHouseholdEntryNotice({
+      title: "Owner access restored",
+      body: "This phone can invite members, refresh the shared month, and rotate the owner recovery code. Copy the recovery code again if this is a new device.",
+    });
+    clearHouseholdInviteQuery();
+    await setOnboardingComplete(true);
+    state.view = "shared";
+    renderView();
+    renderSharedHousehold();
+    showToast("Owner access restored on this device.");
+  } finally {
+    setHouseholdBusy(false);
+  }
+}
+
+async function syncHouseholdNow() {
+  if (!canHouseholdSyncLive() || state.householdBusy) return;
+  setHouseholdBusy(true);
+  try {
+    await publishHouseholdPayload();
+    showToast("Shared household synced.");
+  } catch (err) {
+    showSystemBanner(String(err?.message || "Unable to sync shared household."));
+  } finally {
+    setHouseholdBusy(false);
+  }
+}
+
+async function regenerateHouseholdInvite() {
+  if (!hasHouseholdOwnerAccess() || state.householdBusy) return;
+  const confirmed = window.confirm("Create a fresh invite? The previous invite will stop working.");
+  if (!confirmed) return;
+  setHouseholdBusy(true);
+  try {
+    const res = await householdFetch(`/api/households/${state.householdSession.household_id}/invite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const message = await readApiErrorMessage(res, "Unable to refresh invite.");
+      showSystemBanner(message);
+      return;
+    }
+    const data = await res.json();
+    applyHouseholdResponse(data);
+    renderSharedHousehold();
+    showToast("Invite refreshed.");
+  } finally {
+    setHouseholdBusy(false);
+  }
+}
+
+function getHouseholdInviteUrl() {
+  return String(state.householdInfo?.invite?.url || "").trim();
+}
+
+async function copyHouseholdInvite() {
+  const link = getHouseholdInviteUrl();
+  if (!link) return;
+  try {
+    await navigator.clipboard.writeText(link);
+    showToast("Invite copied.");
+  } catch (err) {
+    if (els.householdInviteLink) {
+      els.householdInviteLink.select();
+      document.execCommand("copy");
+      showToast("Invite copied.");
+    }
+  }
+}
+
+async function shareHouseholdInvite() {
+  const link = getHouseholdInviteUrl();
+  if (!link) return;
+  const title = state.householdInfo?.name || "Shared household";
+  const text = `Join ${title} in Au Jour Le Jour. This link opens the shared household ledger on your device.`;
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, text, url: link });
+      showToast("Invite shared.");
+      return;
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+    }
+  }
+  await copyHouseholdInvite();
+}
+
+async function copyHouseholdRecoveryCode() {
+  const recoveryCode = buildHouseholdRecoveryCode(
+    state.householdSession?.household_id,
+    state.householdSession?.owner_key
+  );
+  if (!recoveryCode) return;
+  try {
+    await navigator.clipboard.writeText(recoveryCode);
+    showToast("Recovery code copied.");
+  } catch (err) {
+    if (els.householdRecoveryCodeDisplay) {
+      els.householdRecoveryCodeDisplay.select();
+      document.execCommand("copy");
+      showToast("Recovery code copied.");
+    }
+  }
+}
+
+async function rotateHouseholdRecoveryCode() {
+  if (!hasHouseholdOwnerAccess() || state.householdBusy || !state.householdSession?.household_id) return;
+  const confirmed = window.confirm(
+    "Rotate the owner recovery code? The previous recovery code will stop working immediately."
+  );
+  if (!confirmed) return;
+  setHouseholdBusy(true);
+  try {
+    const res = await householdFetch(
+      `/api/households/${state.householdSession.household_id}/owner-key`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+    if (!res.ok) {
+      const message = await readApiErrorMessage(res, "Unable to rotate owner recovery code.");
+      showSystemBanner(message);
+      return;
+    }
+    const data = await res.json();
+    applyHouseholdResponse(data);
+    renderSharedHousehold();
+    showToast("Recovery code rotated.");
+  } finally {
+    setHouseholdBusy(false);
+  }
+}
+
+function closeHouseholdLogSheet() {
+  state.householdLogTargetId = "";
+  if (els.householdLogAmount) els.householdLogAmount.value = "";
+  if (els.householdLogNote) els.householdLogNote.value = "";
+  if (els.householdLogSheet) els.householdLogSheet.classList.add("hidden");
+  syncOverlayState();
+}
+
+function openHouseholdLogSheet(itemId, coverRemaining = false) {
+  const target = (state.householdInfo?.items || []).find((item) => item.id === itemId);
+  if (!target || !els.householdLogSheet) return;
+  state.householdLogTargetId = itemId;
+  if (els.householdLogContext) {
+    els.householdLogContext.textContent = `${target.name_snapshot} · ${formatMoney(
+      target.shared_remaining || 0
+    )} still open`;
+  }
+  if (els.householdLogAmount) {
+    els.householdLogAmount.value = coverRemaining ? Number(target.shared_remaining || 0).toFixed(2) : "";
+  }
+  if (els.householdLogNote) els.householdLogNote.value = "";
+  els.householdLogSheet.classList.remove("hidden");
+  syncOverlayState();
+  if (els.householdLogAmount) {
+    setTimeout(() => els.householdLogAmount.focus(), 80);
+  }
+}
+
+async function submitHouseholdLog(options = {}) {
+  if (state.householdBusy || !state.householdSession?.household_id) return;
+  const target = (state.householdInfo?.items || []).find((item) => item.id === state.householdLogTargetId);
+  if (!target) {
+    closeHouseholdLogSheet();
+    return;
+  }
+  const amount = options.coverRemaining
+    ? Number(target.shared_remaining || 0)
+    : Number(els.householdLogAmount?.value || 0);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    showSystemBanner("Enter an amount greater than zero.");
+    return;
+  }
+  const note = String(els.householdLogNote?.value || "").trim();
+  setHouseholdBusy(true);
+  try {
+    const res = await householdFetch(`/api/households/${state.householdSession.household_id}/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        item_id: target.id,
+        amount,
+        note,
+      }),
+    });
+    if (!res.ok) {
+      const message = await readApiErrorMessage(res, "Unable to log shared update.");
+      showSystemBanner(message);
+      return;
+    }
+    const data = await res.json();
+    applyHouseholdResponse(data);
+    renderSharedHousehold();
+    closeHouseholdLogSheet();
+    showToast("Shared update logged.");
+  } finally {
+    setHouseholdBusy(false);
+  }
+}
+
+async function removeHouseholdMember(memberToken, memberName) {
+  if (!state.householdSession?.household_id || state.householdBusy) return;
+  const confirmed = window.confirm(`Remove ${memberName} from this shared household?`);
+  if (!confirmed) return;
+  setHouseholdBusy(true);
+  try {
+    const res = await householdFetch(
+      `/api/households/${state.householdSession.household_id}/members/${encodeURIComponent(memberToken)}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok) {
+      const message = await readApiErrorMessage(res, "Unable to remove household member.");
+      showSystemBanner(message);
+      return;
+    }
+    const data = await res.json();
+    applyHouseholdResponse(data);
+    renderSharedHousehold();
+    showToast(`${memberName} removed.`);
+  } finally {
+    setHouseholdBusy(false);
+  }
+}
+
+async function leaveHousehold() {
+  const householdName = state.householdInfo?.name || "this household";
+  const message = hasHouseholdOwnerAccess()
+    ? `Disconnect this device from ${householdName}? The household stays live for anyone else already linked.`
+    : `Leave ${householdName} on this device?`;
+  const confirmed = window.confirm(message);
+  if (!confirmed) return;
+  if (!hasHouseholdOwnerAccess() && state.householdSession?.household_id && state.householdSession?.member_token) {
+    setHouseholdBusy(true);
+    try {
+      const res = await householdFetch(
+        `/api/households/${state.householdSession.household_id}/members/${encodeURIComponent(
+          state.householdSession.member_token
+        )}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const message = await readApiErrorMessage(res, "Unable to leave shared household.");
+        showSystemBanner(message);
+        return;
+      }
+    } finally {
+      setHouseholdBusy(false);
+    }
+  }
+  clearHouseholdSession();
+  state.householdInfo = null;
+  householdSyncDirty = false;
+  householdSyncRetryCount = 0;
+  stopHouseholdLivePolling();
+  clearHouseholdSyncTimers();
+  clearHouseholdInviteQuery();
+  closeHouseholdLogSheet();
+  renderSharedHousehold();
+  if (state.view === "shared") {
+    state.view = "today";
+    renderView();
+  }
+  showToast("Household disconnected on this device.");
+}
+
 function setImportMode(mode) {
   if (!state.pendingImport) return;
   state.pendingImport.mode = mode;
@@ -8523,6 +10141,12 @@ function renderInstallExperience() {
       els.installSheetSteps.appendChild(item);
     });
   }
+  if (els.appPhoneHandoff) {
+    els.appPhoneHandoff.textContent = AJL_WEB_MODE ? "Use on iPhone" : "Open on phone";
+  }
+  if (els.setupInstallPhone) {
+    els.setupInstallPhone.textContent = AJL_WEB_MODE ? "Use on iPhone" : "Open on phone";
+  }
 
   const showBanner = install.available && install.mobile && !install.standalone && !install.dismissed && !suppressForHero;
   if (els.appInstallBanner) {
@@ -8531,6 +10155,7 @@ function renderInstallExperience() {
   if (els.setupInstall) {
     els.setupInstall.classList.toggle("hidden", state.readOnly || !install.available);
   }
+  renderPhoneHandoffSheet();
   syncOverlayState();
 }
 
@@ -8578,6 +10203,24 @@ function closeInstallSheet() {
   syncOverlayState();
 }
 
+function openPhoneHandoffSheet(target = null) {
+  if (!els.phoneHandoffSheet) return;
+  state.phoneHandoffFocus = normalizePhoneHandoffTarget(target);
+  renderInstallExperience();
+  renderPhoneHandoffSheet();
+  els.phoneHandoffSheet.classList.remove("hidden");
+  syncOverlayState();
+  requestAnimationFrame(() => {
+    scrollPhoneHandoffTarget(state.phoneHandoffFocus, "auto");
+  });
+}
+
+function closePhoneHandoffSheet() {
+  if (!els.phoneHandoffSheet) return;
+  els.phoneHandoffSheet.classList.add("hidden");
+  syncOverlayState();
+}
+
 function clearClientRuntimeKeys() {
   try {
     localStorage.removeItem(WEB_META_KEY);
@@ -8587,6 +10230,9 @@ function clearClientRuntimeKeys() {
     localStorage.removeItem(JANITOR_RUNTIME_BASE_KEY);
     localStorage.removeItem(JANITOR_RUNTIME_REQUIRED_KEY);
     localStorage.removeItem(INSTALL_BANNER_DISMISSED_KEY);
+    localStorage.removeItem(SHARE_OWNER_KEY);
+    localStorage.removeItem(SHARE_OPTIONS_KEY);
+    localStorage.removeItem(HOUSEHOLD_SESSION_KEY);
   } catch (err) {
     // ignore
   }
@@ -10434,21 +12080,35 @@ function renderView() {
   if (state.view === "janitor" && AJL_WEB_MODE) {
     state.view = "setup";
   }
+  if (state.view === "shared" && state.readOnly) {
+    state.view = "today";
+  }
   const isToday = state.view === "today";
+  const isShared = state.view === "shared";
   const isReview = state.view === "review";
   const isSetup = state.view === "setup";
   const isJanitor = state.view === "janitor";
+  const sharedAvailable = !state.readOnly;
 
   if (els.todayView) els.todayView.classList.toggle("hidden", !isToday);
+  if (els.sharedView) els.sharedView.classList.toggle("hidden", !isShared);
   if (els.reviewView) els.reviewView.classList.toggle("hidden", !isReview);
   if (els.setupView) els.setupView.classList.toggle("hidden", !isSetup);
   if (els.janitorView) els.janitorView.classList.toggle("hidden", !isJanitor);
 
   if (els.navToday) els.navToday.classList.toggle("active", isToday);
+  if (els.navShared) {
+    els.navShared.classList.toggle("active", isShared);
+    els.navShared.classList.toggle("hidden", !sharedAvailable);
+  }
   if (els.navReview) els.navReview.classList.toggle("active", isReview);
   if (els.navSetup) els.navSetup.classList.toggle("active", isSetup);
   if (els.navJanitor) els.navJanitor.classList.toggle("active", isJanitor);
   if (els.mobileNavToday) els.mobileNavToday.classList.toggle("active", isToday);
+  if (els.mobileNavShared) {
+    els.mobileNavShared.classList.toggle("active", isShared);
+    els.mobileNavShared.classList.toggle("hidden", !sharedAvailable);
+  }
   if (els.mobileNavReview) els.mobileNavReview.classList.toggle("active", isReview);
   if (els.mobileNavSetup) els.mobileNavSetup.classList.toggle("active", isSetup);
   if (els.mobileNavJanitor) els.mobileNavJanitor.classList.toggle("active", isJanitor);
@@ -10460,8 +12120,17 @@ function renderView() {
   if (!isToday && els.detailsPane) {
     els.detailsPane.classList.add("hidden");
   }
+  if (!isShared) {
+    stopHouseholdLivePolling();
+    closeHouseholdLogSheet();
+  } else {
+    startHouseholdLivePolling();
+  }
   if (!isJanitor) {
     stopShannonPolling();
+  }
+  if (isShared) {
+    renderSharedHousehold();
   }
   if (isSetup) {
     renderDefaults();
@@ -10510,6 +12179,7 @@ async function refreshAll() {
       loadChatHistory(),
     ]);
     await loadProgressData();
+    await loadHouseholdState({ silent: true });
     const valid = validateLoadedState();
     if (!valid.ok) {
       enterSafeMode(valid.reason);
@@ -10578,6 +12248,20 @@ function bindEvents() {
   if (els.navToday) {
     els.navToday.addEventListener("click", () => {
       state.view = "today";
+      renderView();
+    });
+  }
+  if (els.navShared) {
+    els.navShared.addEventListener("click", () => {
+      if (state.readOnly) return;
+      state.view = "shared";
+      renderView();
+    });
+  }
+  if (els.mobileNavShared) {
+    els.mobileNavShared.addEventListener("click", () => {
+      if (state.readOnly) return;
+      state.view = "shared";
       renderView();
     });
   }
@@ -10694,6 +12378,141 @@ function bindEvents() {
   }
   if (els.shareIncludeCategories) {
     els.shareIncludeCategories.addEventListener("change", syncSharePrivacy);
+  }
+
+  if (els.householdRefresh) {
+    els.householdRefresh.addEventListener("click", () => {
+      loadHouseholdState().catch(() => {});
+    });
+  }
+  if (els.householdPhoneGuide) {
+    els.householdPhoneGuide.addEventListener("click", () => {
+      openPhoneHandoffSheet("household");
+    });
+  }
+  if (els.householdSync) {
+    els.householdSync.addEventListener("click", () => {
+      syncHouseholdNow().catch(() => {});
+    });
+  }
+  if (els.householdCreate) {
+    els.householdCreate.addEventListener("click", () => {
+      createHousehold().catch(() => {});
+    });
+  }
+  if (els.householdJoin) {
+    els.householdJoin.addEventListener("click", () => {
+      joinHousehold().catch(() => {});
+    });
+  }
+  if (els.householdRecover) {
+    els.householdRecover.addEventListener("click", () => {
+      recoverHouseholdOwner().catch(() => {});
+    });
+  }
+  if (els.householdCopyInvite) {
+    els.householdCopyInvite.addEventListener("click", () => copyHouseholdInvite());
+  }
+  if (els.householdShareInvite) {
+    els.householdShareInvite.addEventListener("click", () => {
+      shareHouseholdInvite().catch(() => {});
+    });
+  }
+  if (els.householdCopyInviteInline) {
+    els.householdCopyInviteInline.addEventListener("click", () => copyHouseholdInvite());
+  }
+  if (els.householdShareInviteInline) {
+    els.householdShareInviteInline.addEventListener("click", () => {
+      shareHouseholdInvite().catch(() => {});
+    });
+  }
+  if (els.householdCopyRecovery) {
+    els.householdCopyRecovery.addEventListener("click", () => {
+      copyHouseholdRecoveryCode().catch(() => {});
+    });
+  }
+  if (els.householdRotateRecovery) {
+    els.householdRotateRecovery.addEventListener("click", () => {
+      rotateHouseholdRecoveryCode().catch(() => {});
+    });
+  }
+  if (els.householdRegenerateInvite) {
+    els.householdRegenerateInvite.addEventListener("click", () => {
+      regenerateHouseholdInvite().catch(() => {});
+    });
+  }
+  if (els.householdLeave) {
+    els.householdLeave.addEventListener("click", () => {
+      leaveHousehold().catch(() => {});
+    });
+  }
+  if (els.householdGuidanceAction) {
+    els.householdGuidanceAction.addEventListener("click", () => {
+      openPhoneHandoffSheet("household");
+    });
+  }
+  if (els.householdEntryDismiss) {
+    els.householdEntryDismiss.addEventListener("click", () => {
+      dismissHouseholdEntryNotice();
+    });
+  }
+  if (els.householdLogClose) {
+    els.householdLogClose.addEventListener("click", () => closeHouseholdLogSheet());
+  }
+  if (els.householdLogSheet) {
+    els.householdLogSheet.addEventListener("click", (event) => {
+      if (event.target === els.householdLogSheet) closeHouseholdLogSheet();
+    });
+  }
+  if (els.householdLogSubmit) {
+    els.householdLogSubmit.addEventListener("click", () => {
+      submitHouseholdLog().catch(() => {});
+    });
+  }
+  if (els.householdLogCover) {
+    els.householdLogCover.addEventListener("click", () => {
+      submitHouseholdLog({ coverRemaining: true }).catch(() => {});
+    });
+  }
+  if (els.householdJoinToken) {
+    els.householdJoinToken.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        joinHousehold().catch(() => {});
+      }
+    });
+  }
+  if (els.householdJoinName) {
+    els.householdJoinName.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        joinHousehold().catch(() => {});
+      }
+    });
+  }
+  if (els.householdRecoveryCode) {
+    els.householdRecoveryCode.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        recoverHouseholdOwner().catch(() => {});
+      }
+    });
+  }
+  if (els.householdRecoveryName) {
+    els.householdRecoveryName.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        recoverHouseholdOwner().catch(() => {});
+      }
+    });
+  }
+  if (els.householdDisplayName) {
+    els.householdDisplayName.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        createHousehold().catch(() => {});
+      }
+    });
   }
 
   if (els.backupOpen) {
@@ -11288,8 +13107,10 @@ function bindEvents() {
 
   if (els.assistantFab && els.assistantDrawer) {
     els.assistantFab.addEventListener("click", () => {
+      renderMamdouChrome();
       els.assistantDrawer.classList.remove("hidden");
       syncOverlayState();
+      focusAgentInput({ scroll: true });
     });
   }
 
@@ -11336,6 +13157,12 @@ function bindEvents() {
     });
   }
 
+  if (els.appPhoneHandoff) {
+    els.appPhoneHandoff.addEventListener("click", () => {
+      openPhoneHandoffSheet(AJL_WEB_MODE ? "install" : "lan");
+    });
+  }
+
   if (els.appInstallDismiss) {
     els.appInstallDismiss.addEventListener("click", () => {
       dismissInstallBanner();
@@ -11348,9 +13175,91 @@ function bindEvents() {
     });
   }
 
+  if (els.setupInstallPhone) {
+    els.setupInstallPhone.addEventListener("click", () => {
+      openPhoneHandoffSheet("install");
+    });
+  }
+
   if (els.setupInstallHelp) {
     els.setupInstallHelp.addEventListener("click", () => {
       openInstallSheet();
+    });
+  }
+
+  if (els.phoneHandoffSheet) {
+    els.phoneHandoffSheet.addEventListener("click", (event) => {
+      if (event.target === els.phoneHandoffSheet) {
+        closePhoneHandoffSheet();
+      }
+    });
+  }
+
+  if (els.phoneHandoffClose) {
+    els.phoneHandoffClose.addEventListener("click", () => {
+      closePhoneHandoffSheet();
+    });
+  }
+
+  [[els.phoneHandoffRouteInstall, "install"], [els.phoneHandoffRouteLan, "lan"], [els.phoneHandoffRouteHousehold, "household"], [els.phoneHandoffRouteImport, "import"]].forEach(([button, target]) => {
+    if (!button) return;
+    button.addEventListener("click", () => {
+      setPhoneHandoffTarget(target);
+    });
+  });
+
+  if (els.phoneHandoffInstallAction) {
+    els.phoneHandoffInstallAction.addEventListener("click", async () => {
+      if (state.installState?.standalone) {
+        openInstallSheet();
+        return;
+      }
+      await promptInstallExperience();
+    });
+  }
+
+  if (els.phoneHandoffLanCopy) {
+    els.phoneHandoffLanCopy.addEventListener("click", async () => {
+      const text = String(els.phoneHandoffLanUrl?.value || "").trim();
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast("Phone LAN URL copied.");
+      } catch (err) {
+        showToast("Unable to copy LAN URL.");
+      }
+    });
+  }
+
+  if (els.phoneHandoffHouseholdCopy) {
+    els.phoneHandoffHouseholdCopy.addEventListener("click", () => {
+      copyHouseholdInvite().catch(() => {});
+    });
+  }
+
+  if (els.phoneHandoffHouseholdShare) {
+    els.phoneHandoffHouseholdShare.addEventListener("click", () => {
+      shareHouseholdInvite().catch(() => {});
+    });
+  }
+
+  if (els.phoneHandoffOpenSetup) {
+    els.phoneHandoffOpenSetup.addEventListener("click", () => {
+      closePhoneHandoffSheet();
+      state.view = "setup";
+      renderView();
+      els.backupSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  if (els.phoneHandoffOpenShared) {
+    els.phoneHandoffOpenShared.addEventListener("click", () => {
+      closePhoneHandoffSheet();
+      if (!state.readOnly) {
+        state.view = "shared";
+        renderView();
+        els.sharedView?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     });
   }
 
@@ -11400,6 +13309,12 @@ function bindEvents() {
   if (els.shareOpenLocalTools) {
     els.shareOpenLocalTools.addEventListener("click", () => {
       openShareModal();
+    });
+  }
+
+  if (els.deviceJoinPhone) {
+    els.deviceJoinPhone.addEventListener("click", () => {
+      openPhoneHandoffSheet(AJL_WEB_MODE ? "import" : "lan");
     });
   }
 
@@ -11917,12 +13832,14 @@ async function init() {
   const flags = getQueryFlags();
   const crashGuard = checkCrashGuard();
   const shareToken = getShareTokenFromPath();
+  const householdInviteToken = getHouseholdInviteTokenFromLocation();
   document.body.classList.toggle("web", AJL_WEB_MODE);
   document.body.classList.toggle("local", !AJL_WEB_MODE);
   setupInstallExperienceHooks();
   renderInstallExperience();
   state.shareOwnerKey = loadShareOwnerKey();
   state.shareOptions = loadShareOptions();
+  state.householdSession = loadHouseholdSession();
   if (shareToken) {
     state.shareToken = shareToken;
     setReadOnlyMode(true);
@@ -11935,6 +13852,9 @@ async function init() {
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && state.readOnly && state.shareToken) {
         loadSharedView(state.shareToken, { silent: true }).catch(() => {});
+      }
+      if (!document.hidden && !state.readOnly && state.view === "shared" && state.householdSession?.household_id) {
+        loadHouseholdState({ silent: true }).catch(() => {});
       }
     });
     return;
@@ -11960,6 +13880,9 @@ async function init() {
     state.lastBackupAt = loadLastBackupAt();
   }
   state.view = "today";
+  if (householdInviteToken && !state.readOnly && !state.householdSession) {
+    state.view = "shared";
+  }
   if (flags.safe || crashGuard) {
     enterSafeMode(flags.safe ? "Safe mode requested." : "Repeated crashes detected.");
     state.view = "setup";
@@ -11969,6 +13892,22 @@ async function init() {
   }
   bindEvents();
   renderView();
+  if (householdInviteToken && els.householdJoinToken && !state.householdSession) {
+    els.householdJoinToken.value = householdInviteToken;
+    if (els.householdJoinName && !els.householdJoinName.value) {
+      els.householdJoinName.value = getDefaultHouseholdDisplayName();
+    }
+    renderSharedHousehold();
+    requestAnimationFrame(() => {
+      els.householdSetupCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+      try {
+        els.householdJoinName?.focus({ preventScroll: true });
+      } catch (err) {
+        els.householdJoinName?.focus();
+      }
+      els.householdJoinName?.select?.();
+    });
+  }
   loadLanInfo();
   if (AJL_WEB_MODE && state.webMeta?.readOnlyPreview) {
     applyReadOnlyPreview(true);
@@ -11980,6 +13919,14 @@ async function init() {
     }
     renderDeviceAccess();
     scheduleSharePublish();
+  });
+  if (state.householdSession?.household_id) {
+    loadHouseholdState({ silent: true }).catch(() => {});
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !state.readOnly && state.view === "shared" && state.householdSession?.household_id) {
+      loadHouseholdState({ silent: true }).catch(() => {});
+    }
   });
   if (els.fundMonths && els.fundCadence && els.fundCadence.value !== "custom_months") {
     els.fundMonths.disabled = true;

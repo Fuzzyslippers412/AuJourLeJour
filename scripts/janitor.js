@@ -55,6 +55,67 @@ function createWebAdapterSandbox(options = {}) {
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }
+    if (url.includes("/api/households")) {
+      return new Response(
+        JSON.stringify({
+          household: {
+            id: "household_abcdefghijklmnopqrstuvwxyz",
+            name: "Household",
+            role: "owner",
+            member_name: "Owner",
+            period: "2026-02",
+            invite: {
+              token: "invite_abcdefghijklmnopqrstuvwxyz",
+              url: "https://aujourlejour.xyz/?household_invite=invite_abcdefghijklmnopqrstuvwxyz",
+              expires_at: null,
+            },
+            summary: {
+              item_count: 1,
+              done_count: 0,
+              open_count: 1,
+              total_due: 90,
+              total_contributed: 0,
+              total_remaining: 90,
+            },
+            members: [
+              {
+                token: "member_abcdefghijklmnopqrstuvwxyz",
+                display_name: "Owner",
+                role: "owner",
+                contributed: 0,
+              },
+            ],
+            items: [
+              {
+                id: "bill_1",
+                name_snapshot: "Internet",
+                due_date: "2026-02-10",
+                amount: 90,
+                shared_amount_paid: 0,
+                shared_remaining: 90,
+                shared_status: "open",
+                contributions: [],
+              },
+            ],
+            activity: [],
+          },
+          session: {
+            household_id: "household_abcdefghijklmnopqrstuvwxyz",
+            owner_key: "household_owner_key_abcdefghijklmnopqrstuvwxyz",
+            member_token: "member_abcdefghijklmnopqrstuvwxyz",
+            role: "owner",
+            member_name: "Owner",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (url.includes("/api/qr")) {
+      return new Response("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><rect width=\"10\" height=\"10\" fill=\"#fff\"/><rect x=\"1\" y=\"1\" width=\"8\" height=\"8\" fill=\"#111\"/></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      });
+    }
     return new Response("upstream", {
       status: 200,
       headers: { "Content-Type": "text/plain" },
@@ -240,6 +301,18 @@ async function run() {
     assert.strictEqual(typeof res.data.started_at, "string");
     const requestId = res.headers.get("x-request-id");
     assert.ok(requestId && requestId.length >= 8, "missing x-request-id header");
+  });
+
+  test("qr endpoint returns svg payload", async () => {
+    const res = await request("GET", "/api/qr?value=https%3A%2F%2Faujourlejour.xyz%2Fjoin&size=160", undefined, {
+      useCookie: false,
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(String(res.data).includes("<svg"), "QR endpoint should return SVG");
+    assert.ok(
+      String(res.headers.get("content-type") || "").includes("image/svg+xml"),
+      "QR endpoint must return SVG content type"
+    );
   });
 
   test("metrics endpoint responds with telemetry shape", async () => {
@@ -984,6 +1057,211 @@ async function run() {
     assert.ok(oldRes.status === 410 || oldRes.status === 404);
   });
 
+  test("shared household lifecycle works without login", async () => {
+    const createRes = await request(
+      "POST",
+      "/api/households",
+      {
+        name: "Lamido household",
+        display_name: "Lamido",
+        payload: {
+          schema_version: "1",
+          period: "2026-02",
+          items: [
+            {
+              id: "bill_internet",
+              name_snapshot: "Internet",
+              due_date: "2026-02-10",
+              amount: 90,
+            },
+          ],
+        },
+      },
+      { useCookie: false }
+    );
+    assert.strictEqual(createRes.status, 200);
+    assert.ok(createRes.data.household);
+    assert.ok(createRes.data.session);
+    const householdId = createRes.data.household.id;
+    const ownerKey = createRes.data.session.owner_key;
+    const ownerMemberToken = createRes.data.session.member_token;
+    assert.ok(typeof householdId === "string" && householdId.length >= 18);
+    assert.ok(typeof ownerKey === "string" && ownerKey.length >= 24);
+    assert.ok(typeof ownerMemberToken === "string" && ownerMemberToken.length >= 24);
+    assert.strictEqual(createRes.data.household.role, "owner");
+    assert.ok(createRes.data.household.invite?.url.includes("household_invite="));
+    const recoveryCode = `ajl-owner:${householdId}:${ownerKey}`;
+
+    const ownerHeaders = {
+      "X-AJL-Household-Owner": ownerKey,
+      "X-AJL-Household-Member": ownerMemberToken,
+    };
+
+    const ownerReadRes = await request(
+      "GET",
+      `/api/households/${householdId}`,
+      undefined,
+      { useCookie: false, headers: ownerHeaders }
+    );
+    assert.strictEqual(ownerReadRes.status, 200);
+    assert.strictEqual(ownerReadRes.data.household.name, "Lamido household");
+    assert.strictEqual(ownerReadRes.data.household.summary.total_due, 90);
+
+    const joinRes = await request(
+      "POST",
+      "/api/households/join",
+      {
+        invite: createRes.data.household.invite.url,
+        display_name: "Erika",
+      },
+      { useCookie: false }
+    );
+    assert.strictEqual(joinRes.status, 200);
+    assert.strictEqual(joinRes.data.household.role, "member");
+    const memberHeaders = {
+      "X-AJL-Household-Member": joinRes.data.session.member_token,
+    };
+
+    const memberEventRes = await request(
+      "POST",
+      `/api/households/${householdId}/events`,
+      {
+        item_id: "bill_internet",
+        amount: 45,
+        note: "Covered half",
+      },
+      { useCookie: false, headers: memberHeaders }
+    );
+    assert.strictEqual(memberEventRes.status, 200);
+    assert.strictEqual(memberEventRes.data.household.summary.total_contributed, 45);
+    assert.strictEqual(memberEventRes.data.household.items[0].shared_status, "partial");
+
+    const memberInviteRes = await request(
+      "POST",
+      `/api/households/${householdId}/invite`,
+      {},
+      { useCookie: false, headers: memberHeaders }
+    );
+    assert.strictEqual(memberInviteRes.status, 403);
+
+    const publishRes = await request(
+      "POST",
+      `/api/households/${householdId}/publish`,
+      {
+        payload: {
+          schema_version: "1",
+          period: "2026-03",
+          items: [
+            {
+              id: "bill_internet",
+              name_snapshot: "Internet",
+              due_date: "2026-03-10",
+              amount: 90,
+            },
+            {
+              id: "bill_power",
+              name_snapshot: "Electric / Gas",
+              due_date: "2026-03-18",
+              amount: 140,
+            },
+          ],
+        },
+      },
+      { useCookie: false, headers: ownerHeaders }
+    );
+    assert.strictEqual(publishRes.status, 200);
+    assert.strictEqual(publishRes.data.household.period, "2026-03");
+    assert.strictEqual(publishRes.data.household.items.length, 2);
+
+    const memberReadRes = await request(
+      "GET",
+      `/api/households/${householdId}`,
+      undefined,
+      { useCookie: false, headers: memberHeaders }
+    );
+    assert.strictEqual(memberReadRes.status, 200);
+    assert.strictEqual(memberReadRes.data.household.invite, null);
+    assert.strictEqual(memberReadRes.data.household.members.length, 2);
+
+    const removeMemberRes = await request(
+      "DELETE",
+      `/api/households/${householdId}/members/${joinRes.data.session.member_token}`,
+      undefined,
+      { useCookie: false, headers: ownerHeaders }
+    );
+    assert.strictEqual(removeMemberRes.status, 200);
+    assert.strictEqual(removeMemberRes.data.removed_member_name, "Erika");
+    assert.strictEqual(removeMemberRes.data.household.members.length, 1);
+
+    const recoveredRes = await request(
+      "POST",
+      "/api/households/recover",
+      {
+        recovery_code: recoveryCode,
+        display_name: "Lamido iPhone",
+      },
+      { useCookie: false }
+    );
+    assert.strictEqual(recoveredRes.status, 200);
+    assert.strictEqual(recoveredRes.data.session.role, "owner");
+    assert.strictEqual(recoveredRes.data.session.display_name, "Lamido iPhone");
+    assert.strictEqual(recoveredRes.data.household.members.length, 1);
+
+    const recoveredHeaders = {
+      "X-AJL-Household-Owner": recoveredRes.data.session.owner_key,
+      "X-AJL-Household-Member": recoveredRes.data.session.member_token,
+    };
+    const recoveredReadRes = await request(
+      "GET",
+      `/api/households/${householdId}`,
+      undefined,
+      { useCookie: false, headers: recoveredHeaders }
+    );
+    assert.strictEqual(recoveredReadRes.status, 200);
+    assert.strictEqual(recoveredReadRes.data.household.member_name, "Lamido iPhone");
+
+    const rotateOwnerKeyRes = await request(
+      "POST",
+      `/api/households/${householdId}/owner-key`,
+      {},
+      { useCookie: false, headers: recoveredHeaders }
+    );
+    assert.strictEqual(rotateOwnerKeyRes.status, 200);
+    assert.strictEqual(rotateOwnerKeyRes.data.session.role, "owner");
+    assert.notStrictEqual(rotateOwnerKeyRes.data.session.owner_key, recoveredRes.data.session.owner_key);
+
+    const staleRecoveryRes = await request(
+      "POST",
+      "/api/households/recover",
+      {
+        recovery_code: recoveryCode,
+        display_name: "Old recovery",
+      },
+      { useCookie: false }
+    );
+    assert.strictEqual(staleRecoveryRes.status, 401);
+
+    const rotatedOwnerHeaders = {
+      "X-AJL-Household-Owner": rotateOwnerKeyRes.data.session.owner_key,
+      "X-AJL-Household-Member": rotateOwnerKeyRes.data.session.member_token,
+    };
+    const rotatedOwnerInviteRes = await request(
+      "POST",
+      `/api/households/${householdId}/invite`,
+      {},
+      { useCookie: false, headers: rotatedOwnerHeaders }
+    );
+    assert.strictEqual(rotatedOwnerInviteRes.status, 200);
+
+    const removedMemberReadRes = await request(
+      "GET",
+      `/api/households/${householdId}`,
+      undefined,
+      { useCookie: false, headers: memberHeaders }
+    );
+    assert.strictEqual(removedMemberReadRes.status, 401);
+  });
+
   test("share disable blocks access", async () => {
     const shareRes = await request("POST", "/api/shares", { mode: "live" });
     const token = shareRes.data.shareToken;
@@ -1603,11 +1881,40 @@ async function run() {
       assert.ok(content.includes('id="allocation-plan-list"'));
       assert.ok(content.includes('class="migration-callout"'));
       assert.ok(content.includes('id="app-install-banner"'));
+      assert.ok(content.includes('id="app-phone-handoff"'));
       assert.ok(content.includes('id="setup-install"'));
+      assert.ok(content.includes('id="setup-install-phone"'));
       assert.ok(content.includes('id="install-sheet"'));
+      assert.ok(content.includes('id="phone-handoff-sheet"'));
+      assert.ok(content.includes('id="phone-handoff-route-install"'));
+      assert.ok(content.includes('id="phone-handoff-route-household"'));
+      assert.ok(content.includes('id="phone-handoff-recommendation-copy"'));
+      assert.ok(content.includes('id="household-members-summary"'));
       assert.ok(content.includes('id="app-install-action"'));
       assert.ok(content.includes('id="setup-install-action"'));
       assert.ok(content.includes('id="install-sheet-action"'));
+      assert.ok(content.includes('id="nav-shared"'));
+      assert.ok(content.includes('id="mobile-nav-shared"'));
+      assert.ok(content.includes('id="shared-view"'));
+      assert.ok(content.includes('id="household-create"'));
+      assert.ok(content.includes('id="household-join"'));
+      assert.ok(content.includes('id="household-recover"'));
+      assert.ok(content.includes('id="household-sync"'));
+      assert.ok(content.includes('id="household-share-invite"'));
+      assert.ok(content.includes('id="household-share-invite-inline"'));
+      assert.ok(content.includes('id="household-phone-guide"'));
+      assert.ok(content.includes('id="household-guidance"'));
+      assert.ok(content.includes('id="household-entry-notice"'));
+      assert.ok(content.includes('id="household-join-tip"'));
+      assert.ok(content.includes('id="household-invite-qr-wrap"'));
+      assert.ok(content.includes('id="household-recovery-card"'));
+      assert.ok(content.includes('id="household-copy-recovery"'));
+      assert.ok(content.includes('id="household-rotate-recovery"'));
+      assert.ok(content.includes('id="lan-qr-wrap"'));
+      assert.ok(content.includes('id="device-join-phone"'));
+      assert.ok(content.includes('id="assistant-fab-status"'));
+      assert.ok(content.includes('id="assistant-drawer-status"'));
+      assert.ok(content.includes('id="household-log-sheet"'));
       assert.ok(content.includes('class="mobile-tab-svg"'));
       assert.ok(content.includes('class="drawer-handle"'));
       assert.ok(content.includes('class="sheet-handle"'));
@@ -1749,7 +2056,7 @@ async function run() {
     assert.ok(appFile.includes("function setShareBusy("), "setShareBusy helper missing");
   });
 
-  test("planner and household overview are wired in app logic", () => {
+  test("planner and shared household flows are wired in app logic", () => {
     const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
     const requiredSnippets = [
       "function loadMonthSettings()",
@@ -1759,11 +2066,36 @@ async function run() {
       "function renderHomeOverview(",
       "function renderAllocationPlanner(",
       "function renderDeviceAccess(",
+      "function renderPhoneHandoffSheet(",
+      "function normalizePhoneHandoffTarget(",
+      "function setPhoneHandoffTarget(",
+      "function scrollPhoneHandoffTarget(",
+      "function openPhoneHandoffSheet(",
+      "function closePhoneHandoffSheet(",
       "available_now",
       "SHOW_ALLOCATION_PLAN",
       "SET_AVAILABLE_NOW",
       "renderHomeOverview(base)",
       "renderAllocationPlanner(base)",
+      "HOUSEHOLD_SESSION_KEY",
+      "function householdFetch(",
+      "function buildHouseholdPayload(",
+      "function dismissHouseholdEntryNotice(",
+      "function setHouseholdEntryNotice(",
+      "function renderSharedHousehold(",
+      "function createHousehold(",
+      "function joinHousehold(",
+      "function recoverHouseholdOwner(",
+      "function scheduleHouseholdSync(",
+      "function shareHouseholdInvite(",
+      "function getMamdouSurfaceState(",
+      "function renderMamdouChrome(",
+      "function copyHouseholdRecoveryCode(",
+      "function rotateHouseholdRecoveryCode(",
+      "function startHouseholdLivePolling(",
+      "function stopHouseholdLivePolling(",
+      "function buildQrApiUrl(",
+      "function renderQrImage(",
     ];
     requiredSnippets.forEach((snippet) => {
       assert.ok(appFile.includes(snippet), `public/app.js missing planner wiring: ${snippet}`);
@@ -1876,14 +2208,21 @@ async function run() {
     );
   });
 
-  test("web adapter exposes relay-backed share support hooks", () => {
+  test("web adapter exposes relay-backed share and household hooks", () => {
     const adapter = fs.readFileSync(path.join(__dirname, "..", "docs", "web-adapter.js"), "utf8");
     assert.ok(adapter.includes("const SHARE_BASE_URL"), "web-adapter missing SHARE_BASE_URL config");
     assert.ok(adapter.includes("X-AJL-Share-Owner"), "web-adapter must pass owner key header");
+    assert.ok(adapter.includes("X-AJL-Household-Owner"), "web-adapter must pass household owner header");
+    assert.ok(adapter.includes("X-AJL-Household-Member"), "web-adapter must pass household member header");
     assert.ok(
       adapter.includes("if (path.startsWith(\"/api/shares\"))"),
       "web-adapter missing /api/shares branch"
     );
+    assert.ok(
+      adapter.includes("if (path.startsWith(\"/api/households\"))"),
+      "web-adapter missing /api/households branch"
+    );
+    assert.ok(adapter.includes("if (path === \"/api/qr\")"), "web-adapter missing /api/qr branch");
   });
 
   test("today list virtualization primitives exist in both builds", () => {
@@ -2602,6 +2941,40 @@ async function run() {
       );
     }
 
+    const householdsRes = await sandbox.window.fetch(`${base}/api/households`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-AJL-Household-Owner": "household_owner_key_abcdefghijklmnopqrstuvwxyz",
+        "X-AJL-Household-Member": "member_abcdefghijklmnopqrstuvwxyz",
+      },
+      body: JSON.stringify({
+        name: "Web Household",
+        display_name: "Owner",
+        payload: {
+          schema_version: "1",
+          period: "2026-02",
+          items: [{ id: "bill_1", name_snapshot: "Internet", due_date: "2026-02-10", amount: 90 }],
+        },
+      }),
+    });
+    assert.strictEqual(householdsRes.status, 200);
+    const householdsData = await householdsRes.json();
+    assert.ok(householdsData.household);
+    assert.ok(
+      upstreamCalls.some((call) => String(call.input).includes("/api/households")),
+      "household calls should route through relay when configured"
+    );
+
+    const qrRes = await sandbox.window.fetch(`${base}/api/qr?value=${encodeURIComponent("https://aujourlejour.xyz")}`);
+    assert.strictEqual(qrRes.status, 200);
+    const qrMarkup = await qrRes.text();
+    assert.ok(qrMarkup.includes("<svg"));
+    assert.ok(
+      upstreamCalls.some((call) => String(call.input).includes("/api/qr")),
+      "QR calls should route through relay when configured"
+    );
+
     const advisorRes = await sandbox.window.fetch(`${base}/internal/advisor/query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2650,6 +3023,35 @@ async function run() {
     assert.strictEqual(String(call.input), "https://relay.example.test/api/shares");
     const headers = new Headers(call.init.headers || {});
     assert.strictEqual(headers.get("X-AJL-Share-Owner"), ownerKey);
+  });
+
+  test("web adapter forwards household headers for shared household endpoints", async () => {
+    const { sandbox, upstreamCalls } = createWebAdapterSandbox({
+      shareBaseUrl: "https://relay.example.test",
+    });
+    const base = "https://example.test";
+    const res = await sandbox.window.fetch(
+      `${base}/api/households/household_abcdefghijklmnopqrstuvwxyz`,
+      {
+        headers: {
+          "X-AJL-Household-Owner": "household_owner_key_abcdefghijklmnopqrstuvwxyz",
+          "X-AJL-Household-Member": "member_abcdefghijklmnopqrstuvwxyz",
+        },
+      }
+    );
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(upstreamCalls.length, 1);
+    const call = upstreamCalls[0];
+    assert.strictEqual(
+      String(call.input),
+      "https://relay.example.test/api/households/household_abcdefghijklmnopqrstuvwxyz"
+    );
+    const headers = new Headers(call.init.headers || {});
+    assert.strictEqual(
+      headers.get("X-AJL-Household-Owner"),
+      "household_owner_key_abcdefghijklmnopqrstuvwxyz"
+    );
+    assert.strictEqual(headers.get("X-AJL-Household-Member"), "member_abcdefghijklmnopqrstuvwxyz");
   });
 
   for (const t of tests) {
