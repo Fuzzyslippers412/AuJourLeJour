@@ -680,6 +680,196 @@ body.scrolled .status-bar {
   color: var(--text);
 }
 
+.migration-callout {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.migration-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.migration-copy {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.device-access-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.device-access-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  background: #fff;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.systems-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.system-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%);
+  display: grid;
+  gap: 10px;
+}
+
+.system-card.status-overdue {
+  border-color: rgba(239, 68, 68, 0.24);
+  background: linear-gradient(180deg, #fff 0%, #fef2f2 100%);
+}
+
+.system-card.status-soon {
+  border-color: rgba(245, 158, 11, 0.24);
+  background: linear-gradient(180deg, #fff 0%, #fffbeb 100%);
+}
+
+.system-card.status-done {
+  border-color: rgba(22, 163, 74, 0.2);
+  background: linear-gradient(180deg, #fff 0%, #f0fdf4 100%);
+}
+
+.system-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.system-card-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.system-card-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.system-card-amount {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.system-card-copy {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.system-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.allocation-controls {
+  margin-top: 8px;
+}
+
+.allocation-label {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.allocation-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.allocation-prefix {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.allocation-input-row .compact-input {
+  width: min(220px, 100%);
+}
+
+.allocation-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.allocation-row {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.allocation-row-main {
+  display: grid;
+  gap: 5px;
+}
+
+.allocation-row-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.allocation-row-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.allocation-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.allocation-badge {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #f8fafc;
+  color: var(--muted);
+}
+
+.allocation-badge.full {
+  color: #166534;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.allocation-badge.partial {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
 .diagnostics-output {
   margin: 12px 0 0;
   background: #f8fafc;
@@ -1518,7 +1708,9 @@ body.landing #items-card,
 body.landing #recent-strip,
 body.landing #status-bar,
 body.landing #summary-panel,
-body.landing #zero-state {
+body.landing #zero-state,
+body.landing #home-overview,
+body.landing #allocation-planner {
   display: none !important;
 }
 
@@ -2134,6 +2326,18 @@ body.landing #zero-state {
   }
   .assistant-provider-row .select {
     min-width: 100%;
+  }
+  .device-access-grid,
+  .systems-grid {
+    grid-template-columns: 1fr;
+  }
+  .allocation-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .allocation-row-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
 }

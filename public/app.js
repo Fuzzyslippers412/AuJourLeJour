@@ -78,6 +78,11 @@ const state = {
   dataVersion: 0,
   summaryCache: null,
   progressData: null,
+  monthSettings: {
+    cashStart: 0,
+    availableNow: 0,
+  },
+  behaviorFeatures: null,
   janitorReport: null,
   janitorSelectedId: "",
   janitorFilter: {
@@ -118,6 +123,7 @@ const MAX_LLM_INSTANCES = 20;
 const MAX_LLM_TEMPLATES = 20;
 const MAX_LLM_FUNDS = 10;
 const MAX_LLM_DUE = 6;
+const MAX_ALLOCATION_PLAN_ITEMS = 6;
 const NUDGE_CACHE_TTL_MS = 45_000;
 const AGENT_DUPLICATE_WINDOW_MS = 1200;
 const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
@@ -142,6 +148,16 @@ const BACKUP_REMINDER_THRESHOLD = 25;
 const STORAGE_HEALTH_WARNING_BYTES = 4_000_000;
 const JANITOR_RUNTIME_BASE_KEY = "ajl_janitor_runtime_base";
 const JANITOR_RUNTIME_REQUIRED_KEY = "ajl_janitor_runtime_required";
+const HOUSEHOLD_SYSTEMS = [
+  { key: "shelter", label: "Shelter" },
+  { key: "utilities", label: "Utilities" },
+  { key: "food", label: "Food" },
+  { key: "transport", label: "Transport" },
+  { key: "protection", label: "Protection" },
+  { key: "debt", label: "Debt" },
+  { key: "household", label: "Household" },
+  { key: "other", label: "Other" },
+];
 
 function looksLikeStorageError(err) {
   const message = String(err?.message || err || "");
@@ -389,8 +405,18 @@ const els = {
   resetLocalInline: document.getElementById("reset-local-inline"),
   clearFilters: document.getElementById("clear-filters"),
   storageHealth: document.getElementById("storage-health"),
+  homeOverviewGrid: document.getElementById("home-overview-grid"),
+  availableNowInput: document.getElementById("available-now-input"),
+  availableNowSave: document.getElementById("available-now-save"),
+  availableNowClear: document.getElementById("available-now-clear"),
+  allocationSummary: document.getElementById("allocation-summary"),
+  allocationPlanList: document.getElementById("allocation-plan-list"),
+  currentDeviceUrl: document.getElementById("current-device-url"),
   lanUrl: document.getElementById("lan-url"),
   lanCopy: document.getElementById("lan-copy"),
+  lanHint: document.getElementById("lan-hint"),
+  shareNetworkMode: document.getElementById("share-network-mode"),
+  shareOpenLocalTools: document.getElementById("share-open-local-tools"),
   setupAgentStatus: document.getElementById("setup-agent-status"),
   setupAgentProvider: document.getElementById("setup-agent-provider"),
   setupAgentModel: document.getElementById("setup-agent-model"),
@@ -2193,7 +2219,7 @@ function updateInstanceInState(updated) {
 }
 
 async function addPayment(instanceId, amount) {
-  if (state.readOnly) return;
+  if (state.readOnly) return false;
   const res = await apiFetch(`/api/instances/${instanceId}/payments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2202,7 +2228,7 @@ async function addPayment(instanceId, amount) {
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     window.alert(data.error || "Unable to log update.");
-    return;
+    return false;
   }
   const data = await readApiData(res);
   if (data.instance) updateInstanceInState(data.instance);
@@ -2212,6 +2238,7 @@ async function addPayment(instanceId, amount) {
   renderDashboard();
   recordMutation();
   scheduleSharePublish();
+  return true;
 }
 
 function normalizeInstanceIds(instanceIds) {
@@ -2296,11 +2323,12 @@ async function markPaid(instanceId, options = {}) {
   const outcome = await markInstancesDone([instanceId]);
   if (!outcome.ok && outcome.done === 0) {
     window.alert(outcome.failed?.[0]?.error || outcome.error || "Unable to mark done.");
-    return;
+    return false;
   }
   if (!options.silent) {
     showToast("Marked done.", "Undo", () => markPending(instanceId));
   }
+  return outcome.done > 0;
 }
 
 async function markPending(instanceId) {
@@ -2532,6 +2560,478 @@ function getSummaryTotals(list) {
   return totals;
 }
 
+function roundMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 0;
+  return Number(amount.toFixed(2));
+}
+
+async function loadMonthSettings() {
+  const res = await apiFetch(
+    `/api/month-settings?year=${state.selectedYear}&month=${state.selectedMonth}`,
+    {},
+    { silent: true }
+  );
+  if (!res.ok) {
+    state.monthSettings = { cashStart: 0, availableNow: 0 };
+    return;
+  }
+  const data = await readApiData(res);
+  state.monthSettings = {
+    cashStart: roundMoney(data?.cash_start || 0),
+    availableNow: roundMoney(data?.available_now || 0),
+  };
+}
+
+async function saveMonthSettings(nextValues = {}, options = {}) {
+  const payload = {
+    year: state.selectedYear,
+    month: state.selectedMonth,
+    cash_start: roundMoney(
+      nextValues.cashStart !== undefined ? nextValues.cashStart : state.monthSettings.cashStart
+    ),
+    available_now: roundMoney(
+      nextValues.availableNow !== undefined ? nextValues.availableNow : state.monthSettings.availableNow
+    ),
+  };
+  const res = await apiFetch(
+    "/api/month-settings",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { silent: true }
+  );
+  if (!res.ok) {
+    if (!options.silent) {
+      const data = await res.json().catch(() => ({}));
+      window.alert(getErrorMessage(data, "Unable to save month settings."));
+    }
+    return false;
+  }
+  state.monthSettings = {
+    cashStart: payload.cash_start,
+    availableNow: payload.available_now,
+  };
+  return true;
+}
+
+async function loadBehaviorFeatures() {
+  const params = new URLSearchParams();
+  params.set("year", String(state.selectedYear));
+  params.set("month", String(state.selectedMonth));
+  params.set("window", "3");
+  const res = await apiFetch(`/internal/behavior/features?${params.toString()}`, {}, { silent: true });
+  if (!res.ok) {
+    state.behaviorFeatures = null;
+    return;
+  }
+  const data = await readApiData(res);
+  state.behaviorFeatures = data?.features && typeof data.features === "object" ? data.features : null;
+}
+
+function normalizeMatcherText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function classifyHouseholdSystem(item) {
+  const haystack = normalizeMatcherText(
+    `${item?.category_snapshot || item?.category || ""} ${item?.name_snapshot || item?.name || ""}`
+  );
+  if (
+    /(rent|mortgage|housing|hoa|property tax|property insurance escrow|shelter)/.test(haystack)
+  ) {
+    return "shelter";
+  }
+  if (
+    /(electric|gas|internet|comcast|water|trash|republic|utility|utilities|phone|cell|wireless|sewer|power)/.test(
+      haystack
+    )
+  ) {
+    return "utilities";
+  }
+  if (/(food|grocery|groceries|meal|meals|kitchen|pantry)/.test(haystack)) {
+    return "food";
+  }
+  if (/(auto|car|tesla|transport|transit|fuel|gasoline|parking|rideshare|uber|lyft)/.test(haystack)) {
+    return "transport";
+  }
+  if (/(insurance|health|medical|doctor|dentist|vision|pharmacy|protection)/.test(haystack)) {
+    return "protection";
+  }
+  if (/(loan|debt|student|credit|finance|payment)/.test(haystack)) {
+    return "debt";
+  }
+  if (/(subscription|household|buffer|child|school|daycare|hair|workout|gym|misc)/.test(haystack)) {
+    return "household";
+  }
+  return "other";
+}
+
+function buildSystemOverview(list) {
+  const today = getTodayDateString();
+  const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
+  const buckets = new Map(
+    HOUSEHOLD_SYSTEMS.map((system) => [
+      system.key,
+      {
+        key: system.key,
+        label: system.label,
+        items: 0,
+        open: 0,
+        overdue: 0,
+        dueSoon: 0,
+        done: 0,
+        required: 0,
+        remaining: 0,
+      },
+    ])
+  );
+
+  list.forEach((item) => {
+    const bucket = buckets.get(classifyHouseholdSystem(item)) || buckets.get("other");
+    if (!bucket) return;
+    bucket.items += 1;
+    if (item.status_derived !== "skipped") {
+      bucket.required += Number(item.amount || 0);
+      bucket.remaining += Number(item.amount_remaining || 0);
+    }
+    if (item.status_derived === "paid" || Number(item.amount_remaining || 0) <= 0) {
+      bucket.done += 1;
+      return;
+    }
+    if (item.status_derived === "skipped") return;
+    bucket.open += 1;
+    const daysUntil = diffDays(item.due_date, today);
+    if (daysUntil < 0) bucket.overdue += 1;
+    else if (daysUntil <= dueSoonDays) bucket.dueSoon += 1;
+  });
+
+  return Array.from(buckets.values())
+    .filter((bucket) => bucket.items > 0)
+    .map((bucket) => ({
+      ...bucket,
+      required: roundMoney(bucket.required),
+      remaining: roundMoney(bucket.remaining),
+      status:
+        bucket.overdue > 0
+          ? "overdue"
+          : bucket.open === 0
+          ? "done"
+          : bucket.dueSoon > 0
+          ? "soon"
+          : "steady",
+    }))
+    .sort((a, b) => {
+      if (b.overdue !== a.overdue) return b.overdue - a.overdue;
+      if (b.open !== a.open) return b.open - a.open;
+      if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+      return a.label.localeCompare(b.label);
+    });
+}
+
+function getBehaviorFeatureMap() {
+  const map = new Map();
+  const perBill = Array.isArray(state.behaviorFeatures?.per_bill) ? state.behaviorFeatures.per_bill : [];
+  perBill.forEach((row) => {
+    if (row?.template_id) {
+      map.set(`template:${row.template_id}`, row);
+    }
+    if (row?.name) {
+      map.set(`name:${normalizeMatcherText(row.name)}`, row);
+    }
+  });
+  return map;
+}
+
+function describePlannerReason(item, feature, dueDiff, plannedAmount, fullyCovered) {
+  const parts = [];
+  if (dueDiff < 0) {
+    parts.push(`${Math.abs(dueDiff)} day${Math.abs(dueDiff) === 1 ? "" : "s"} overdue`);
+  } else if (dueDiff === 0) {
+    parts.push("due today");
+  } else {
+    parts.push(`due in ${dueDiff} day${dueDiff === 1 ? "" : "s"}`);
+  }
+  if (item.essential_snapshot) {
+    parts.push("essential");
+  }
+  if (feature) {
+    const rank = Number(feature.typical_payment_order_rank || 0);
+    const lateness = Number(feature.lateness_trend || 0);
+    if (lateness >= 0.34) {
+      parts.push("often drifts late");
+    } else if (rank > 0 && rank <= 2.5) {
+      parts.push("usually handled early");
+    }
+  }
+  if (plannedAmount > 0) {
+    parts.push(fullyCovered ? "fits your amount" : "good partial candidate");
+  }
+  return parts.slice(0, 3).join(" · ");
+}
+
+function buildAllocationPlan(list) {
+  const openItems = list.filter(
+    (item) => item.status_derived !== "skipped" && Number(item.amount_remaining || 0) > 0
+  );
+  const availableNow = roundMoney(state.monthSettings.availableNow || 0);
+  if (openItems.length === 0) {
+    return {
+      availableNow,
+      totalOpen: 0,
+      fullyCovered: 0,
+      partialCovered: 0,
+      remainingPool: availableNow,
+      items: [],
+    };
+  }
+
+  const today = getTodayDateString();
+  const dueSoonDays = Number(state.settings.defaults?.dueSoonDays || 7);
+  const featureMap = getBehaviorFeatureMap();
+  const scored = openItems
+    .map((item) => {
+      const diff = diffDays(item.due_date, today);
+      const feature =
+        featureMap.get(`template:${item.template_id}`) ||
+        featureMap.get(`name:${normalizeMatcherText(item.name_snapshot)}`) ||
+        null;
+      let score = 0;
+      if (diff < 0) score += 420 + Math.min(120, Math.abs(diff) * 12);
+      else score += Math.max(0, 140 - diff * 10);
+      if (item.essential_snapshot) score += 80;
+      if (!item.autopay_snapshot) score += 8;
+      if (feature) {
+        const onTime = Number(feature.on_time_rate || 0);
+        const lateness = Number(feature.lateness_trend || 0);
+        const rank = Number(feature.typical_payment_order_rank || 99);
+        const consistency = Number(feature.payment_consistency_score || 0);
+        score += Math.round((1 - onTime) * 40);
+        score += Math.round(lateness * 35);
+        if (Number.isFinite(rank) && rank > 0) score += Math.max(0, 15 - rank * 2);
+        score += Math.round(consistency * 10);
+      }
+      if (availableNow > 0) {
+        if (Number(item.amount_remaining || 0) <= availableNow) score += 18;
+        else if (Number(item.amount_remaining || 0) <= availableNow * 1.5) score += 8;
+      }
+      return {
+        item,
+        feature,
+        dueDiff: diff,
+        score,
+      };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.dueDiff !== b.dueDiff) return a.dueDiff - b.dueDiff;
+      return Number(a.item.amount_remaining || 0) - Number(b.item.amount_remaining || 0);
+    });
+
+  let pool = availableNow;
+  let fullyCovered = 0;
+  let partialCovered = 0;
+  const recommendations = scored.map((entry) => {
+    const remaining = roundMoney(entry.item.amount_remaining || 0);
+    const plannedAmount = pool > 0 ? roundMoney(Math.min(pool, remaining)) : 0;
+    const fully = plannedAmount > 0 && plannedAmount >= remaining - 0.009;
+    if (fully) fullyCovered += 1;
+    else if (plannedAmount > 0) partialCovered += 1;
+    pool = roundMoney(Math.max(0, pool - plannedAmount));
+    return {
+      ...entry,
+      remaining,
+      plannedAmount,
+      fullyCovered: fully,
+      reason: describePlannerReason(entry.item, entry.feature, entry.dueDiff, plannedAmount, fully),
+      urgencyLabel:
+        entry.dueDiff < 0
+          ? "Overdue"
+          : entry.dueDiff <= dueSoonDays
+          ? "Due soon"
+          : "Later",
+    };
+  });
+
+  return {
+    availableNow,
+    totalOpen: roundMoney(openItems.reduce((sum, item) => sum + Number(item.amount_remaining || 0), 0)),
+    fullyCovered,
+    partialCovered,
+    remainingPool: pool,
+    items: recommendations.slice(0, MAX_ALLOCATION_PLAN_ITEMS),
+  };
+}
+
+async function applyAllocationRecommendation(item, plannedAmount) {
+  const amount = roundMoney(plannedAmount);
+  if (!item?.id || amount <= 0) return;
+  const full = amount >= roundMoney(item.amount_remaining || 0) - 0.009;
+  const applied = full
+    ? await markPaid(item.id, { silent: true })
+    : await addPayment(item.id, amount);
+  if (!applied) return;
+  const nextAvailable = roundMoney(Math.max(0, Number(state.monthSettings.availableNow || 0) - amount));
+  if (nextAvailable !== roundMoney(state.monthSettings.availableNow || 0)) {
+    state.monthSettings.availableNow = nextAvailable;
+    if (els.availableNowInput) els.availableNowInput.value = nextAvailable ? String(nextAvailable) : "";
+    await saveMonthSettings({ availableNow: nextAvailable }, { silent: true });
+  }
+  renderDashboard();
+  showToast(full ? "Handled from planner." : "Partial update logged from planner.");
+}
+
+function renderHomeOverview(baseList) {
+  if (!els.homeOverviewGrid) return;
+  els.homeOverviewGrid.innerHTML = "";
+  const systems = buildSystemOverview(baseList);
+  if (systems.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "Add essentials to see what keeps the home running.";
+    els.homeOverviewGrid.appendChild(empty);
+    return;
+  }
+  systems.forEach((system) => {
+    const card = document.createElement("div");
+    card.className = `system-card status-${system.status}`;
+    card.innerHTML = `
+      <div class="system-card-head">
+        <div class="system-card-title">${system.label}</div>
+        <div class="system-card-status">${system.open === 0 ? "Handled" : `${system.open} open`}</div>
+      </div>
+      <div class="system-card-amount">${formatMoneyDisplay(system.remaining)}</div>
+      <div class="system-card-copy">Still open this month</div>
+      <div class="system-card-meta">
+        <span class="allocation-badge">${system.done} done</span>
+        <span class="allocation-badge">${system.dueSoon} due soon</span>
+        <span class="allocation-badge ${system.overdue > 0 ? "partial" : ""}">${system.overdue} overdue</span>
+      </div>
+    `;
+    els.homeOverviewGrid.appendChild(card);
+  });
+}
+
+function renderAllocationPlanner(baseList) {
+  if (!els.allocationSummary || !els.allocationPlanList) return;
+  if (state.readOnly) {
+    const section = document.getElementById("allocation-planner");
+    if (section) section.classList.add("hidden");
+    return;
+  }
+  const section = document.getElementById("allocation-planner");
+  if (section) section.classList.remove("hidden");
+  if (els.availableNowInput && document.activeElement !== els.availableNowInput) {
+    els.availableNowInput.value = state.monthSettings.availableNow
+      ? String(state.monthSettings.availableNow)
+      : "";
+  }
+  els.allocationPlanList.innerHTML = "";
+
+  const plan = buildAllocationPlan(baseList);
+  if (plan.items.length === 0) {
+    els.allocationSummary.textContent =
+      plan.totalOpen > 0
+        ? "Save an amount to see a recommended order."
+        : "Everything currently visible is already handled.";
+    return;
+  }
+
+  if (plan.availableNow <= 0) {
+    els.allocationSummary.textContent =
+      `Next up: ${plan.items[0].item.name_snapshot}. Save an amount to see what you can fully cover right now.`;
+  } else {
+    const partialPhrase =
+      plan.partialCovered > 0
+        ? ` and partially cover ${plan.partialCovered} more`
+        : "";
+    els.allocationSummary.textContent =
+      `${formatMoney(plan.availableNow)} available now can fully cover ${plan.fullyCovered} item${plan.fullyCovered === 1 ? "" : "s"}${partialPhrase}. Ranked by urgency, essentials, and your payment history.`;
+  }
+
+  plan.items.forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "allocation-row";
+
+    const main = document.createElement("div");
+    main.className = "allocation-row-main";
+    const title = document.createElement("div");
+    title.className = "allocation-row-title";
+    title.textContent = entry.item.name_snapshot;
+    const sub = document.createElement("div");
+    sub.className = "allocation-row-sub";
+    sub.textContent = `${entry.urgencyLabel} · ${formatShortDate(entry.item.due_date)} · ${entry.reason}`;
+    main.appendChild(title);
+    main.appendChild(sub);
+
+    const actions = document.createElement("div");
+    actions.className = "allocation-row-actions";
+    const remaining = document.createElement("div");
+    remaining.className = "item-amount";
+    remaining.textContent = formatMoneyDisplay(entry.remaining);
+    actions.appendChild(remaining);
+
+    if (entry.plannedAmount > 0) {
+      const badge = document.createElement("div");
+      badge.className = `allocation-badge ${entry.fullyCovered ? "full" : "partial"}`;
+      badge.textContent = entry.fullyCovered
+        ? `Handle ${formatMoney(entry.plannedAmount)}`
+        : `Put ${formatMoney(entry.plannedAmount)} here`;
+      actions.appendChild(badge);
+
+      const action = document.createElement("button");
+      action.className = "btn-small btn-primary";
+      action.textContent = entry.fullyCovered ? "Mark done" : "Log update";
+      action.addEventListener("click", async () => {
+        await applyAllocationRecommendation(entry.item, entry.plannedAmount);
+      });
+      actions.appendChild(action);
+    } else {
+      const details = document.createElement("button");
+      details.className = "ghost-btn small";
+      details.textContent = "Open";
+      details.addEventListener("click", () => openInstanceDetail(entry.item.id));
+      actions.appendChild(details);
+    }
+
+    row.appendChild(main);
+    row.appendChild(actions);
+    els.allocationPlanList.appendChild(row);
+  });
+}
+
+function renderDeviceAccess() {
+  if (AJL_WEB_MODE) return;
+  if (els.currentDeviceUrl) {
+    els.currentDeviceUrl.textContent = window.location.origin;
+  }
+  if (els.lanUrl) {
+    const urls = Array.isArray(state.lanInfo?.urls) ? state.lanInfo.urls : [];
+    els.lanUrl.textContent = urls[0] || "LAN URL unavailable";
+    if (urls.length > 1) {
+      els.lanUrl.title = urls.join("\n");
+    }
+  }
+  if (els.lanHint) {
+    const urls = Array.isArray(state.lanInfo?.urls) ? state.lanInfo.urls : [];
+    els.lanHint.textContent = urls.length > 0
+      ? "Phones and tablets on the same Wi-Fi can open this editable URL."
+      : "No LAN address detected yet. Keep the local server running and stay on the same Wi-Fi.";
+  }
+  if (els.shareNetworkMode) {
+    const network = getShareNetworkMode();
+    const shareState =
+      state.shareInfo && state.shareInfo.is_active
+        ? ` Active share: ${state.shareInfo.mode === "snapshot" ? "snapshot" : "live"}.`
+        : "";
+    els.shareNetworkMode.textContent = network.warning
+      ? `${network.message}${shareState} ${network.warning}`
+      : `${network.message}${shareState}`;
+  }
+}
+
 function prioritizeInstancesForAgent(list) {
   const today = getTodayDateString();
   const scored = list.map((item) => {
@@ -2622,6 +3122,8 @@ function buildLlmContext() {
   const derived = deriveInstances();
   const base = getBaseInstances(derived);
   const totals = computeTotals(base);
+  const systemOverview = buildSystemOverview(base).slice(0, 6);
+  const allocationPlan = buildAllocationPlan(base);
   const today = getTodayDateString();
   const overdue = base.filter(
     (item) =>
@@ -2690,6 +3192,22 @@ function buildLlmContext() {
         yearly_goal: Number(defaults.yearlyGoalAmount || 0),
       },
     },
+    available_now: Number(state.monthSettings.availableNow || 0),
+    home_systems: systemOverview.map((system) => ({
+      name: system.label,
+      open: system.open,
+      overdue: system.overdue,
+      due_soon: system.dueSoon,
+      remaining: system.remaining,
+    })),
+    allocation_plan: allocationPlan.items.map((entry) => ({
+      name: entry.item.name_snapshot,
+      remaining: entry.remaining,
+      planned_amount: entry.plannedAmount,
+      reason: entry.reason,
+      urgency: entry.urgencyLabel,
+    })),
+    behavior_features: state.behaviorFeatures || null,
     templates_count: state.templates.length,
     items_count: base.length,
   };
@@ -3037,6 +3555,38 @@ function parseFastProgressIntent(input) {
       needs_confirmation: true,
       target: { type: "none", name: null },
       payload: { year_scope: normalizeYearScope(scopeMatch[1]) },
+    };
+  }
+  return null;
+}
+
+function parseFastAllocationIntent(input) {
+  const text = String(input || "").trim();
+  const lower = text.toLowerCase();
+  if (
+    /^(?:show|open)\s+(?:the\s+)?(?:available\s+now\s+)?plan(?:ner)?$/.test(lower) ||
+    /^(?:what should i do next|what should i handle next)\??$/.test(lower)
+  ) {
+    return {
+      intent: "SHOW_ALLOCATION_PLAN",
+      confidence: 0.98,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
+  const availableMatch = text.match(
+    /^(?:set|update)?\s*(?:available\s+now|available|pocket)\s*(?:to|=)?\s*\$?\s*(\d+(?:\.\d+)?)$/i
+  );
+  if (availableMatch) {
+    const amount = parseMoney(availableMatch[1]);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    return {
+      intent: "SET_AVAILABLE_NOW",
+      confidence: 0.97,
+      needs_confirmation: true,
+      target: { type: "month", name: null, period: `${state.selectedYear}-${pad2(state.selectedMonth)}` },
+      payload: { amount },
     };
   }
   return null;
@@ -3514,6 +4064,9 @@ function parseFastCommand(userText) {
 
   const progressIntent = parseFastProgressIntent(text);
   if (progressIntent) return progressIntent;
+
+  const allocationIntent = parseFastAllocationIntent(text);
+  if (allocationIntent) return allocationIntent;
 
   const exportIntent = parseFastExportIntent(text);
   if (exportIntent) return exportIntent;
@@ -4601,6 +5154,13 @@ async function applyProposal(proposal) {
     return { ok: true, message: "Opened the requested section." };
   }
 
+  if (intent === "SHOW_ALLOCATION_PLAN") {
+    state.view = "today";
+    renderView();
+    document.getElementById("allocation-planner")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return { ok: true, message: "Opened the available now planner." };
+  }
+
   if (intent === "SET_MONTH") {
     const period = proposal.target?.period || "";
     let year = state.selectedYear;
@@ -4683,6 +5243,18 @@ async function applyProposal(proposal) {
     renderDefaults();
     renderDashboard();
     return { ok: true, message: `Year progress scope set to ${scope === "full" ? "full year" : "YTD"}.` };
+  }
+  if (intent === "SET_AVAILABLE_NOW") {
+    const amount = roundMoney(proposal.payload?.amount);
+    const saved = await saveMonthSettings({ availableNow: amount });
+    if (!saved) {
+      return { ok: false, message: "Unable to save available now." };
+    }
+    if (els.availableNowInput) {
+      els.availableNowInput.value = amount ? String(amount) : "";
+    }
+    renderDashboard();
+    return { ok: true, message: `Available now set to ${formatMoney(amount)}.` };
   }
   if (
     intent === "LOCAL_SUMMARY_REMAINING" ||
@@ -5697,8 +6269,10 @@ function summarizeProposal(proposal) {
   if (intent === "SET_PROGRESS_MONTHLY_GOAL") return "Set monthly progress goal";
   if (intent === "SET_PROGRESS_YEARLY_GOAL") return "Set yearly progress goal";
   if (intent === "SET_PROGRESS_YEAR_SCOPE") return "Set year progress scope";
+  if (intent === "SET_AVAILABLE_NOW") return "Set available now";
   if (intent === "SHOW_SUMMARY") return "Show Today";
   if (intent === "SHOW_PROGRESS") return "Show progress overview";
+  if (intent === "SHOW_ALLOCATION_PLAN") return "Show available now planner";
   if (intent === "SHOW_SHARE") return "Open share controls";
   if (intent === "CREATE_SHARE") return "Create share link";
   if (intent === "REFRESH_SHARE") return "Refresh shared view";
@@ -5727,6 +6301,7 @@ const AUTO_EXECUTE_INTENTS = new Set([
   "SHOW_TEMPLATES",
   "SHOW_SUMMARY",
   "SHOW_PROGRESS",
+  "SHOW_ALLOCATION_PLAN",
   "SHOW_DASHBOARD",
   "SHOW_BACKUP",
   "SHOW_PIGGY",
@@ -7559,7 +8134,10 @@ async function updateStorageHealth() {
 
 async function loadLanInfo() {
   if (AJL_WEB_MODE || !els.lanUrl) return;
-  if (state.lanInfo) return;
+  if (state.lanInfo) {
+    renderDeviceAccess();
+    return;
+  }
   try {
     const res = await fetch("/api/lan");
     if (!res.ok) return;
@@ -7572,6 +8150,7 @@ async function loadLanInfo() {
         els.lanUrl.title = urls.join("\n");
       }
     }
+    renderDeviceAccess();
   } catch (err) {
     // ignore
   }
@@ -9277,6 +9856,8 @@ function renderDashboard() {
   renderFirstVisitHero();
   renderZeroState();
   renderStatusBar(base);
+  renderHomeOverview(base);
+  renderAllocationPlanner(base);
   renderActionQueue(base);
   renderRecentStrip();
   renderCategoryFilter(base);
@@ -9320,6 +9901,7 @@ function renderView() {
     renderBackupStatus();
     renderImportPreview();
     renderSetupCta();
+    renderDeviceAccess();
     updateStorageHealth();
     renderIntegrityStatus();
     renderSetupAgentConnection();
@@ -9350,6 +9932,8 @@ async function refreshAll() {
       loadPayments(),
       loadActivityEvents(),
       loadFunds(),
+      loadMonthSettings(),
+      loadBehaviorFeatures(),
       loadLlmProviderStatus({ silent: true }),
       loadQwenAuthStatus(),
       loadCommandLog(),
@@ -9529,6 +10113,40 @@ function bindEvents() {
     els.statusExpand.addEventListener("click", () => {
       state.summaryExpanded = !state.summaryExpanded;
       renderDashboard();
+    });
+  }
+
+  if (els.availableNowSave) {
+    els.availableNowSave.addEventListener("click", async () => {
+      const amount = parseMoney(els.availableNowInput?.value || 0);
+      if (!Number.isFinite(amount) || amount < 0) {
+        showToast("Enter a valid amount.");
+        return;
+      }
+      const saved = await saveMonthSettings({ availableNow: amount });
+      if (!saved) return;
+      recordMutation();
+      renderDashboard();
+      showToast("Available now saved.");
+    });
+  }
+
+  if (els.availableNowClear) {
+    els.availableNowClear.addEventListener("click", async () => {
+      const saved = await saveMonthSettings({ availableNow: 0 });
+      if (!saved) return;
+      if (els.availableNowInput) els.availableNowInput.value = "";
+      recordMutation();
+      renderDashboard();
+      showToast("Available now cleared.");
+    });
+  }
+
+  if (els.availableNowInput) {
+    els.availableNowInput.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      if (els.availableNowSave) els.availableNowSave.click();
     });
   }
 
@@ -10140,6 +10758,12 @@ function bindEvents() {
     });
   }
 
+  if (els.shareOpenLocalTools) {
+    els.shareOpenLocalTools.addEventListener("click", () => {
+      openShareModal();
+    });
+  }
+
   if (els.setupAgentStart) {
     els.setupAgentStart.addEventListener("click", async () => {
       await startQwenAuth();
@@ -10708,6 +11332,7 @@ async function init() {
     if (state.shareInfo?.owner_label) {
       state.shareOwnerLabel = state.shareInfo.owner_label;
     }
+    renderDeviceAccess();
     scheduleSharePublish();
   });
   if (els.fundMonths && els.fundCadence && els.fundCadence.value !== "custom_months") {

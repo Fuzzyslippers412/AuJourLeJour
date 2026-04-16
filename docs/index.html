@@ -140,6 +140,38 @@
               </div>
             </div>
 
+            <section id="home-overview" class="card essentials-map">
+              <div class="card-header">
+                <div>
+                  <div class="card-title">What keeps the home running</div>
+                  <div class="card-sub">A household view of essentials by system.</div>
+                </div>
+              </div>
+              <div id="home-overview-grid" class="systems-grid"></div>
+            </section>
+
+            <section id="allocation-planner" class="card allocation-planner">
+              <div class="card-header">
+                <div>
+                  <div class="card-title">Available now planner</div>
+                  <div class="card-sub">Enter what you can allocate right now. AJL will rank what to handle next from urgency and your payment history.</div>
+                </div>
+              </div>
+              <div class="allocation-controls readonly-hide">
+                <label class="allocation-label">
+                  <span>Available now</span>
+                  <div class="allocation-input-row">
+                    <span class="allocation-prefix">$</span>
+                    <input id="available-now-input" class="compact-input" type="number" min="0" step="0.01" placeholder="0.00" />
+                    <button id="available-now-save" class="btn-small btn-primary">Save</button>
+                    <button id="available-now-clear" class="ghost-btn small">Clear</button>
+                  </div>
+                </label>
+              </div>
+              <div id="allocation-summary" class="meta">Save an amount to see a recommended order.</div>
+              <div id="allocation-plan-list" class="allocation-plan-list"></div>
+            </section>
+
             <div id="first-visit-hero" class="first-visit-hero hidden">
               <div class="first-visit-card">
                 <div class="first-visit-eyebrow">Private bill tracker</div>
@@ -150,9 +182,9 @@
                   <li>Fast mark-done workflow with full history</li>
                   <li>Local-first with export and backup control</li>
                 </ul>
-                <div id="first-visit-web-note" class="first-visit-note hidden">Web version stores data in your browser. Export backups regularly.</div>
+                <div id="first-visit-web-note" class="first-visit-note hidden">Web version stores data in this browser. Export a backup from the local app, then import it here to carry your household forward cleanly.</div>
                 <div class="first-visit-actions">
-                  <button id="first-visit-import" class="primary-btn">Import your backup</button>
+                  <button id="first-visit-import" class="primary-btn">Import from local app</button>
                   <button id="first-visit-template" class="ghost-btn">Create your first template</button>
                 </div>
                 <button id="first-visit-continue" class="link-btn">Continue without setup</button>
@@ -343,7 +375,7 @@ cd AuJourLeJour
           <div class="block-title">You’re almost ready</div>
           <div class="block-sub">Import a backup or add your first template to get started.</div>
           <div class="backup-actions">
-            <button id="cta-import" class="primary-btn">Import backup</button>
+            <button id="cta-import" class="primary-btn">Import from local app</button>
             <button id="cta-template" class="ghost-btn">Create template</button>
           </div>
         </section>
@@ -351,6 +383,12 @@ cd AuJourLeJour
         <section id="backup-section" class="setup-block">
           <div class="block-title">Backup & Restore</div>
           <div class="block-sub">Keep your tracker portable. Export saves everything.</div>
+          <div class="migration-callout">
+            <div class="migration-title">Move data from the local app</div>
+            <div class="migration-copy">
+              In the local app, open <strong>Setup → Backup &amp; Restore → Export backup JSON</strong>. Drop that file here to bring over templates, monthly items, update history, progress defaults, and categories.
+            </div>
+          </div>
           <div class="backup-actions">
             <button id="export-backup" class="primary-btn">Export backup JSON</button>
             <button id="export-month" class="ghost-btn">Export month CSV</button>
@@ -385,12 +423,26 @@ cd AuJourLeJour
         </section>
 
         <section id="local-tools" class="setup-block local-only">
-          <div class="block-title">Local tools</div>
-          <div class="block-sub">LAN access and direct database download.</div>
-          <div class="lan-row">
-            <div class="meta">LAN access</div>
-            <div id="lan-url" class="mono">—</div>
-            <button id="lan-copy" class="ghost-btn">Copy</button>
+          <div class="block-title">Device access</div>
+          <div class="block-sub">Open the editable app on phones and tablets on the same Wi-Fi, or create a read-only share link for anywhere access.</div>
+          <div class="device-access-grid">
+            <div class="device-access-card">
+              <div class="meta">This device</div>
+              <div id="current-device-url" class="mono">—</div>
+            </div>
+            <div class="device-access-card">
+              <div class="meta">Best LAN URL</div>
+              <div class="lan-row">
+                <div id="lan-url" class="mono">—</div>
+                <button id="lan-copy" class="ghost-btn">Copy</button>
+              </div>
+              <div id="lan-hint" class="meta">Phones and tablets on the same Wi-Fi can open this editable URL.</div>
+            </div>
+            <div class="device-access-card">
+              <div class="meta">Share mode</div>
+              <div id="share-network-mode" class="meta">Checking share routing…</div>
+              <button id="share-open-local-tools" class="ghost-btn">Open share controls</button>
+            </div>
           </div>
         </section>
 

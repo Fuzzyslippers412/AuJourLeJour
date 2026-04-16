@@ -10,7 +10,7 @@ const qwenOauth = require("./qwen_oauth");
 const { runMigrations } = require("./migrations");
 const { createShareRuntime } = require("./modules/share_runtime");
 
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const SCHEMA_VERSION = "2";
 
 const app = express();
@@ -469,6 +469,7 @@ function createSchemaV2() {
       year INTEGER NOT NULL,
       month INTEGER NOT NULL,
       cash_start REAL NOT NULL DEFAULT 0,
+      available_now REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (year, month)
     );
@@ -618,6 +619,7 @@ function ensureMonthSettingsTable() {
       year INTEGER NOT NULL,
       month INTEGER NOT NULL,
       cash_start REAL NOT NULL DEFAULT 0,
+      available_now REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (year, month)
     );
@@ -1190,6 +1192,10 @@ function initSchema() {
   ensurePaymentsTable();
   ensureInstanceEventsTable();
   ensureMonthSettingsTable();
+  const monthSettingsInfo = getTableInfo("month_settings");
+  if (!hasColumn(monthSettingsInfo, "available_now")) {
+    db.exec("ALTER TABLE month_settings ADD COLUMN available_now REAL NOT NULL DEFAULT 0");
+  }
   ensureMetaTable();
   ensureSinkingTables();
   ensureSharesTable();
@@ -2459,6 +2465,13 @@ function diffDays(dateA, dateB) {
   return Math.round((a - b) / (1000 * 60 * 60 * 24));
 }
 
+function getTodayDateString() {
+  const now = new Date();
+  return `${now.getFullYear()}-${ledger.pad2(now.getMonth() + 1)}-${ledger.pad2(
+    now.getDate()
+  )}`;
+}
+
 function computeBehaviorFeatures(year, month, windowSize) {
   const months = getLastNMonths(year, month, windowSize);
   const indices = months.map((m) => monthIndex(m.year, m.month));
@@ -3692,25 +3705,39 @@ app.get("/api/month-settings", (req, res) => {
     year: parsed.year,
     month: parsed.month,
     cash_start: row ? Number(row.cash_start || 0) : 0,
+    available_now: row ? Number(row.available_now || 0) : 0,
   });
 });
 
 app.post("/api/month-settings", (req, res) => {
   const year = Number(req.body?.year);
   const month = Number(req.body?.month);
-  const cashStart = Number(req.body?.cash_start);
   if (!Number.isInteger(year) || !Number.isInteger(month)) {
     return res.status(400).json({ error: "Invalid year/month" });
   }
-  if (!Number.isFinite(cashStart) || cashStart < 0) {
+  const current =
+    db.prepare("SELECT * FROM month_settings WHERE year = ? AND month = ?").get(year, month) || {};
+  const rawCashStart =
+    req.body?.cash_start !== undefined ? Number(req.body?.cash_start) : Number(current.cash_start || 0);
+  const rawAvailableNow =
+    req.body?.available_now !== undefined
+      ? Number(req.body?.available_now)
+      : Number(current.available_now || 0);
+  if (!Number.isFinite(rawCashStart) || rawCashStart < 0) {
     return res.status(400).json({ error: "cash_start must be >= 0" });
   }
+  if (!Number.isFinite(rawAvailableNow) || rawAvailableNow < 0) {
+    return res.status(400).json({ error: "available_now must be >= 0" });
+  }
   db.prepare(
-    `INSERT INTO month_settings (year, month, cash_start, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(year, month) DO UPDATE SET cash_start = excluded.cash_start, updated_at = excluded.updated_at`
-  ).run(year, month, cashStart, nowIso());
-  res.json({ ok: true });
+    `INSERT INTO month_settings (year, month, cash_start, available_now, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(year, month) DO UPDATE SET
+       cash_start = excluded.cash_start,
+       available_now = excluded.available_now,
+       updated_at = excluded.updated_at`
+  ).run(year, month, rawCashStart, rawAvailableNow, nowIso());
+  res.json({ ok: true, year, month, cash_start: rawCashStart, available_now: rawAvailableNow });
 });
 
 app.get("/api/llm/qwen/oauth/status", async (req, res) => {
@@ -4461,9 +4488,12 @@ app.post("/api/import/backup", (req, res) => {
   );
 
   const upsertMonthSettings = db.prepare(
-    `INSERT INTO month_settings (year, month, cash_start, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(year, month) DO UPDATE SET cash_start = excluded.cash_start, updated_at = excluded.updated_at`
+    `INSERT INTO month_settings (year, month, cash_start, available_now, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(year, month) DO UPDATE SET
+       cash_start = excluded.cash_start,
+       available_now = excluded.available_now,
+       updated_at = excluded.updated_at`
   );
 
   const stamp = nowIso();
@@ -4582,12 +4612,15 @@ app.post("/api/import/backup", (req, res) => {
       const year = Number(setting.year);
       const month = Number(setting.month);
       const cashStart = Number(setting.cash_start);
+      const availableNow = Number(setting.available_now ?? 0);
       if (!Number.isInteger(year) || !Number.isInteger(month)) continue;
       if (!Number.isFinite(cashStart) || cashStart < 0) continue;
+      if (!Number.isFinite(availableNow) || availableNow < 0) continue;
       upsertMonthSettings.run(
         year,
         month,
         cashStart,
+        availableNow,
         setting.updated_at || stamp
       );
     }
@@ -4957,11 +4990,39 @@ app.post("/api/v1/actions", (req, res) => {
         if (!Number.isFinite(cashStart) || cashStart < 0) {
           throw new Error("cash_start must be >= 0");
         }
+        const existing =
+          db.prepare("SELECT * FROM month_settings WHERE year = ? AND month = ?").get(year, month) || {};
         db.prepare(
-          `INSERT INTO month_settings (year, month, cash_start, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(year, month) DO UPDATE SET cash_start = excluded.cash_start, updated_at = excluded.updated_at`
-        ).run(year, month, cashStart, nowIso());
+          `INSERT INTO month_settings (year, month, cash_start, available_now, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(year, month) DO UPDATE SET
+             cash_start = excluded.cash_start,
+             available_now = excluded.available_now,
+             updated_at = excluded.updated_at`
+        ).run(year, month, cashStart, Number(existing.available_now || 0), nowIso());
+        result = { ok: true };
+        break;
+      }
+      case "SET_AVAILABLE_NOW": {
+        const year = Number(action.year);
+        const month = Number(action.month);
+        const availableNow = Number(action.available_now);
+        if (!Number.isInteger(year) || !Number.isInteger(month)) {
+          throw new Error("year and month are required");
+        }
+        if (!Number.isFinite(availableNow) || availableNow < 0) {
+          throw new Error("available_now must be >= 0");
+        }
+        const existing =
+          db.prepare("SELECT * FROM month_settings WHERE year = ? AND month = ?").get(year, month) || {};
+        db.prepare(
+          `INSERT INTO month_settings (year, month, cash_start, available_now, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(year, month) DO UPDATE SET
+             cash_start = excluded.cash_start,
+             available_now = excluded.available_now,
+             updated_at = excluded.updated_at`
+        ).run(year, month, Number(existing.cash_start || 0), availableNow, nowIso());
         result = { ok: true };
         break;
       }

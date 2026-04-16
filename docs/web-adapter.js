@@ -236,6 +236,13 @@
     return { year, month };
   }
 
+  function diffDays(dateA, dateB) {
+    const first = new Date(`${dateA}T00:00:00`);
+    const second = new Date(`${dateB}T00:00:00`);
+    if (Number.isNaN(first.valueOf()) || Number.isNaN(second.valueOf())) return 0;
+    return Math.round((first - second) / 86400000);
+  }
+
   function resolveMonthsPerCycle(cadence, monthsPerCycle) {
     if (cadence === "yearly") return 12;
     if (cadence === "quarterly") return 3;
@@ -380,6 +387,166 @@
       required: roundMoney(required),
       done: roundMoney(done),
       remaining: roundMoney(remaining),
+    };
+  }
+
+  function monthIndex(year, month) {
+    return year * 12 + (month - 1);
+  }
+
+  function getLastNMonths(year, month, count) {
+    const total = Math.max(1, Number(count) || 1);
+    const months = [];
+    let y = year;
+    let m = month;
+    for (let i = 0; i < total; i += 1) {
+      months.unshift({ year: y, month: m });
+      m -= 1;
+      if (m < 1) {
+        m = 12;
+        y -= 1;
+      }
+    }
+    return months;
+  }
+
+  function computeBehaviorFeatures(db, year, month, windowSize) {
+    const months = getLastNMonths(year, month, windowSize);
+    const indices = months.map((m) => monthIndex(m.year, m.month));
+    const minIndex = Math.min(...indices);
+    const maxIndex = Math.max(...indices);
+    const scopedInstances = getInstances(db).filter((inst) => {
+      const idx = monthIndex(Number(inst.year || 0), Number(inst.month || 0));
+      return idx >= minIndex && idx <= maxIndex;
+    });
+
+    const scopedIds = new Set(scopedInstances.map((inst) => inst.id));
+    const paymentTotals = new Map();
+    const paymentDates = new Map();
+    getPayments(db).forEach((payment) => {
+      if (!scopedIds.has(payment.instance_id)) return;
+      paymentTotals.set(
+        payment.instance_id,
+        Number(paymentTotals.get(payment.instance_id) || 0) + Number(payment.amount || 0)
+      );
+      const currentDate = String(paymentDates.get(payment.instance_id) || "");
+      const nextDate = String(payment.paid_date || "");
+      if (!currentDate || nextDate > currentDate) {
+        paymentDates.set(payment.instance_id, nextDate);
+      }
+    });
+
+    const templateStats = new Map();
+    const perMonthRanks = new Map();
+    const monthKey = (y, m) => `${y}-${pad2(m)}`;
+
+    scopedInstances.forEach((inst) => {
+      const templateId = inst.template_id;
+      const totalPaid = Number(paymentTotals.get(inst.id) || 0);
+      const lastDate = paymentDates.get(inst.id) || null;
+      if (!templateStats.has(templateId)) {
+        templateStats.set(templateId, {
+          template_id: templateId,
+          name: inst.name_snapshot,
+          category: inst.category_snapshot || null,
+          total_instances: 0,
+          paid_instances: 0,
+          on_time_paid: 0,
+          late_paid: 0,
+          sum_offset: 0,
+          offset_count: 0,
+          rank_sum: 0,
+          rank_count: 0,
+          per_month_paid: new Map(),
+        });
+      }
+
+      const stat = templateStats.get(templateId);
+      stat.total_instances += 1;
+      const paidFlag = totalPaid >= Number(inst.amount || 0) && Number(inst.amount || 0) > 0;
+      const periodKey = monthKey(inst.year, inst.month);
+      stat.per_month_paid.set(periodKey, paidFlag);
+
+      if (paidFlag && lastDate) {
+        stat.paid_instances += 1;
+        const offset = diffDays(lastDate, inst.due_date);
+        stat.sum_offset += offset;
+        stat.offset_count += 1;
+        if (offset <= 0) stat.on_time_paid += 1;
+        if (offset > 0) stat.late_paid += 1;
+      }
+
+      if (lastDate) {
+        const list = perMonthRanks.get(periodKey) || [];
+        list.push({ template_id: templateId, last_date: lastDate });
+        perMonthRanks.set(periodKey, list);
+      }
+    });
+
+    perMonthRanks.forEach((list) => {
+      list.sort((a, b) => String(a.last_date).localeCompare(String(b.last_date)));
+      list.forEach((entry, index) => {
+        const stat = templateStats.get(entry.template_id);
+        if (!stat) return;
+        stat.rank_sum += index + 1;
+        stat.rank_count += 1;
+      });
+    });
+
+    const lastThree = getLastNMonths(year, month, 3).map((m) => monthKey(m.year, m.month));
+    const perBill = Array.from(templateStats.values()).map((stat) => {
+      const avgOffset = stat.offset_count ? stat.sum_offset / stat.offset_count : 0;
+      const onTimeRate = stat.paid_instances ? stat.on_time_paid / stat.paid_instances : 0;
+      const lateRate = stat.paid_instances ? stat.late_paid / stat.paid_instances : 0;
+      const consistency = stat.total_instances ? stat.paid_instances / stat.total_instances : 0;
+      const typicalRank = stat.rank_count ? stat.rank_sum / stat.rank_count : null;
+      const lastFlags = lastThree.map((key) => stat.per_month_paid.get(key) || false);
+      return {
+        template_id: stat.template_id,
+        name: stat.name,
+        category: stat.category,
+        avg_pay_day_offset: roundMoney(avgOffset),
+        on_time_rate: roundMoney(onTimeRate),
+        typical_payment_order_rank: typicalRank ? roundMoney(typicalRank) : null,
+        last_3_months_paid_flag: lastFlags,
+        payment_consistency_score: roundMoney(consistency),
+        lateness_trend: roundMoney(lateRate),
+        typical_pay_window_days: stat.offset_count ? roundMoney(Math.abs(avgOffset)) : null,
+      };
+    });
+
+    const currentInstances = getInstancesForMonth(db, year, month);
+    const essentials = currentInstances.filter((inst) => inst.essential_snapshot);
+    const essentialsRequired = essentials
+      .filter((inst) => inst.status_derived !== "skipped")
+      .reduce((sum, inst) => sum + Number(inst.amount || 0), 0);
+    const essentialsPaid = essentials
+      .filter((inst) => inst.status_derived !== "skipped")
+      .reduce((sum, inst) => sum + Math.min(Number(inst.amount || 0), Number(inst.amount_paid || 0)), 0);
+    const percentEssentialsPaid = essentialsRequired
+      ? roundMoney(essentialsPaid / essentialsRequired)
+      : 0;
+
+    const today = todayDate();
+    const nextDue = currentInstances
+      .filter((inst) => inst.status_derived !== "skipped" && Number(inst.amount_remaining || 0) > 0)
+      .map((inst) => diffDays(inst.due_date, today))
+      .filter((diff) => diff >= 0)
+      .sort((a, b) => a - b)[0];
+
+    const summary = computeSummary(currentInstances, {
+      year,
+      month,
+      essentialsOnly: true,
+    });
+
+    return {
+      global: {
+        percent_essentials_paid: percentEssentialsPaid,
+        days_until_next_due: Number.isFinite(nextDue) ? nextDue : null,
+        current_free_for_month_flag: summary.free_for_month,
+      },
+      per_bill: perBill,
     };
   }
 
@@ -1123,6 +1290,61 @@
       return ok({ instance_id: payment.instance_id, instance: instance ? attachPayments(db, [instance])[0] : null });
     }
 
+    if (path === "/api/month-settings" && req.method === "GET") {
+      const parsed = parseYearMonth(params);
+      if (!parsed) return bad("INVALID_INPUT", "Invalid year/month");
+      const row = getMonthSettings(db).find(
+        (entry) => Number(entry.year) === parsed.year && Number(entry.month) === parsed.month
+      );
+      return ok({
+        year: parsed.year,
+        month: parsed.month,
+        cash_start: roundMoney(row?.cash_start || 0),
+        available_now: roundMoney(row?.available_now || 0),
+      });
+    }
+
+    if (path === "/api/month-settings" && req.method === "POST") {
+      const bodyRes = await parseJsonBody(req);
+      if (!bodyRes.ok) return jsonResponse(400, { ok: false, error: bodyRes.error });
+      const body = bodyRes.body || {};
+      const year = Number(body.year);
+      const month = Number(body.month);
+      if (!validYearMonth(year, month)) return bad("INVALID_INPUT", "Invalid year/month");
+      const rows = getMonthSettings(db);
+      const existing =
+        rows.find((entry) => Number(entry.year) === year && Number(entry.month) === month) || null;
+      const cashStart =
+        body.cash_start !== undefined ? Number(body.cash_start) : Number(existing?.cash_start || 0);
+      const availableNow =
+        body.available_now !== undefined
+          ? Number(body.available_now)
+          : Number(existing?.available_now || 0);
+      if (!Number.isFinite(cashStart) || cashStart < 0) {
+        return bad("INVALID_INPUT", "cash_start must be >= 0");
+      }
+      if (!Number.isFinite(availableNow) || availableNow < 0) {
+        return bad("INVALID_INPUT", "available_now must be >= 0");
+      }
+      const nextRow = {
+        year,
+        month,
+        cash_start: roundMoney(cashStart),
+        available_now: roundMoney(availableNow),
+        updated_at: new Date().toISOString(),
+      };
+      if (existing) {
+        existing.cash_start = nextRow.cash_start;
+        existing.available_now = nextRow.available_now;
+        existing.updated_at = nextRow.updated_at;
+      } else {
+        rows.push(nextRow);
+      }
+      const saved = safeSaveDb(db);
+      if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
+      return ok(nextRow);
+    }
+
     if (path === "/api/sinking-funds" && req.method === "GET") {
       const parsed = parseYearMonth(params);
       if (!parsed) return bad("INVALID_INPUT", "Invalid year/month");
@@ -1499,12 +1721,45 @@
         if (!validYearMonth(year, month)) return bad("INVALID_INPUT", "year and month required");
         ensureMonth(db, year, month);
         payload = { ok: true };
+      } else if (type === "SET_AVAILABLE_NOW") {
+        const year = Number(action.year);
+        const month = Number(action.month);
+        if (!validYearMonth(year, month)) return bad("INVALID_INPUT", "year and month required");
+        const availableNow = Number(action.available_now);
+        if (!Number.isFinite(availableNow) || availableNow < 0) {
+          return bad("INVALID_INPUT", "available_now must be >= 0");
+        }
+        const rows = getMonthSettings(db);
+        const existing =
+          rows.find((entry) => Number(entry.year) === year && Number(entry.month) === month) || null;
+        const nextRow = existing || { year, month, cash_start: 0, available_now: 0, updated_at: "" };
+        nextRow.available_now = roundMoney(availableNow);
+        nextRow.updated_at = new Date().toISOString();
+        if (!existing) rows.push(nextRow);
+        payload = { ok: true };
       } else {
         return bad("INVALID_INPUT", "Unknown action type");
       }
       const saved = safeSaveDb(db);
       if (!saved.ok) return jsonResponse(500, { ok: false, error: saved.error });
       return ok(payload);
+    }
+
+    if (path === "/internal/behavior/features" && req.method === "GET") {
+      const parsed = parseYearMonth(params);
+      if (!parsed) return bad("INVALID_INPUT", "Invalid year/month");
+      const windowRaw = Number(params.get("window") || 3);
+      const safeWindow = Number.isInteger(windowRaw) && windowRaw > 0 ? windowRaw : 3;
+      const features = computeBehaviorFeatures(db, parsed.year, parsed.month, safeWindow);
+      return ok({
+        app: "au-jour-le-jour",
+        app_version: "web",
+        schema_version: "1",
+        period: `${parsed.year}-${pad2(parsed.month)}`,
+        window_months: safeWindow,
+        generated_at: nowIsoLocal(),
+        features,
+      });
     }
 
     if (path === "/api/chat") {
@@ -1519,6 +1774,13 @@
   window.fetch = async (input, init) => {
     const req = input instanceof Request ? input : new Request(input, init);
     const url = new URL(req.url, window.location.origin);
+    if (url.pathname === "/internal/behavior/features") {
+      try {
+        return await handleApi(req);
+      } catch (err) {
+        return jsonResponse(500, { ok: false, error: { code: "INTERNAL", message: "Unexpected error", details: {} } });
+      }
+    }
     if (url.pathname.startsWith("/internal/")) {
       return jsonResponse(503, {
         ok: false,

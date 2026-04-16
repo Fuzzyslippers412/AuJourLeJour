@@ -771,6 +771,7 @@ async function run() {
       year: 2026,
       month: 2,
       cash_start: 0,
+      available_now: 275.5,
     });
     assert.strictEqual(setRes.status, 200);
     const getRes = await request(
@@ -778,6 +779,18 @@ async function run() {
       "/api/month-settings?year=2026&month=2"
     );
     assert.strictEqual(getRes.data.cash_start, 0);
+    assertApprox(getRes.data.available_now, 275.5);
+  });
+
+  test("behavior features endpoint returns deterministic shape", async () => {
+    const res = await request("GET", "/internal/behavior/features?year=2026&month=2&window=3");
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(typeof res.data.period, "string");
+    assert.strictEqual(typeof res.data.window_months, "number");
+    assert.ok(res.data.features && typeof res.data.features === "object");
+    assert.ok(res.data.features.global && typeof res.data.features.global === "object");
+    assert.ok(Array.isArray(res.data.features.per_bill));
+    assert.strictEqual(typeof res.data.features.global.percent_essentials_paid, "number");
   });
 
   test("chat history roundtrip + clear", async () => {
@@ -1514,7 +1527,7 @@ async function run() {
       const content = fs.readFileSync(file, "utf8");
       assert.ok(content.includes("Private bill tracker"));
       assert.ok(content.includes("Know what’s due. Stay in control."));
-      assert.ok(content.includes("Import your backup"));
+      assert.ok(content.includes("Import from local app"));
     });
   });
 
@@ -1530,7 +1543,7 @@ async function run() {
       "Clear monthly view of upcoming and overdue bills",
       "Fast mark-done workflow with full history",
       "Local-first with export and backup control",
-      "Import your backup",
+      "Import from local app",
       "Create your first template",
       "No financial connections. Your data stays under your control.",
     ];
@@ -1560,7 +1573,24 @@ async function run() {
       assert.ok(content.includes('id="shannon-run-llm-runtime"'));
       assert.ok(content.includes('value="llm-runtime"'));
       assert.ok(content.includes('value="skipped"'));
+      assert.ok(content.includes('id="home-overview"'));
+      assert.ok(content.includes('id="home-overview-grid"'));
+      assert.ok(content.includes('id="allocation-planner"'));
+      assert.ok(content.includes('id="available-now-input"'));
+      assert.ok(content.includes('id="available-now-save"'));
+      assert.ok(content.includes('id="allocation-plan-list"'));
+      assert.ok(content.includes('class="migration-callout"'));
     });
+  });
+
+  test("setup migration and device access cues exist where expected", () => {
+    const localHtml = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+    const webHtml = fs.readFileSync(path.join(__dirname, "..", "docs", "index.html"), "utf8");
+    assert.ok(localHtml.includes('id="current-device-url"'));
+    assert.ok(localHtml.includes('id="share-network-mode"'));
+    assert.ok(localHtml.includes('id="share-open-local-tools"'));
+    assert.ok(localHtml.includes("Move data from the local app"));
+    assert.ok(webHtml.includes("Move data from the local app"));
   });
 
   test("mini summary controls and inline panel exist in both builds", () => {
@@ -1686,6 +1716,27 @@ async function run() {
       "web relay unavailable message missing"
     );
     assert.ok(appFile.includes("function setShareBusy("), "setShareBusy helper missing");
+  });
+
+  test("planner and household overview are wired in app logic", () => {
+    const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    const requiredSnippets = [
+      "function loadMonthSettings()",
+      "function loadBehaviorFeatures()",
+      "function buildSystemOverview(",
+      "function buildAllocationPlan(",
+      "function renderHomeOverview(",
+      "function renderAllocationPlanner(",
+      "function renderDeviceAccess(",
+      "available_now",
+      "SHOW_ALLOCATION_PLAN",
+      "SET_AVAILABLE_NOW",
+      "renderHomeOverview(base)",
+      "renderAllocationPlanner(base)",
+    ];
+    requiredSnippets.forEach((snippet) => {
+      assert.ok(appFile.includes(snippet), `public/app.js missing planner wiring: ${snippet}`);
+    });
   });
 
   test("share token routing supports query and path", () => {
@@ -2477,6 +2528,29 @@ async function run() {
     const afterImportTemplates = await afterImportTemplatesRes.json();
     assert.strictEqual(Array.isArray(afterImportTemplates.data), true);
     assert.strictEqual(afterImportTemplates.data.length, 1);
+
+    const monthSettingsSave = await sandbox.window.fetch(`${base}/api/month-settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ year: 2026, month: 2, available_now: 180, cash_start: 0 }),
+    });
+    assert.strictEqual(monthSettingsSave.status, 200);
+    const monthSettingsRead = await sandbox.window.fetch(
+      `${base}/api/month-settings?year=2026&month=2`
+    );
+    assert.strictEqual(monthSettingsRead.status, 200);
+    const monthSettingsPayload = await monthSettingsRead.json();
+    assert.strictEqual(monthSettingsPayload.ok, true);
+    assert.strictEqual(Number(monthSettingsPayload.data.available_now), 180);
+
+    const featuresRes = await sandbox.window.fetch(
+      `${base}/internal/behavior/features?year=2026&month=2&window=3`
+    );
+    assert.strictEqual(featuresRes.status, 200);
+    const featuresData = await featuresRes.json();
+    assert.strictEqual(featuresData.ok, true);
+    assert.ok(featuresData.data.features);
+    assert.ok(Array.isArray(featuresData.data.features.per_bill));
 
     const sharesRes = await sandbox.window.fetch(`${base}/api/shares`, {
       method: "GET",
