@@ -1844,7 +1844,7 @@ async function run() {
       "Fast mark-done workflow with full history",
       "Local-first with export and backup control",
       "Import from local app",
-      "Create your first template",
+      "Add my bills",
       "No financial connections. Your data stays under your control.",
     ];
     for (const file of files) {
@@ -1906,6 +1906,33 @@ async function run() {
       assert.ok(content.includes('id="household-guidance"'));
       assert.ok(content.includes('id="household-entry-notice"'));
       assert.ok(content.includes('id="household-join-tip"'));
+      assert.ok(content.includes('id="household-entry-action"'));
+      assert.ok(content.includes('id="household-you-covered"'));
+      assert.ok(content.includes('id="household-others-covered"'));
+      assert.ok(content.includes('id="household-open-items"'));
+      assert.ok(content.includes('id="household-you-share"'));
+      assert.ok(content.includes('id="household-summary-note"'));
+      assert.ok(content.includes('id="household-other-device-total"'));
+      assert.ok(content.includes('id="household-open-item-count"'));
+      assert.ok(content.includes('id="setup-guide"'));
+      assert.ok(content.includes('id="setup-path-builder"'));
+      assert.ok(content.includes('id="setup-path-import"'));
+      assert.ok(content.includes('id="setup-path-shared"'));
+      assert.ok(content.includes('id="first-visit-shared"'));
+      assert.ok(content.includes('id="template-autopay"'));
+      assert.ok(content.includes('id="template-shared-household"'));
+      assert.ok(content.includes('id="count-shared"'));
+      assert.ok(content.includes('id="summary-count-shared"'));
+      assert.ok(content.includes('data-review-scope="personal"'));
+      assert.ok(content.includes('data-review-scope="shared"'));
+      assert.ok(content.includes('id="share-link-state"'));
+      assert.ok(content.includes('id="share-publish-state"'));
+      assert.ok(content.includes('id="share-last-published"'));
+      assert.ok(content.includes('Read-only link'));
+      assert.ok(content.includes('Shared household'));
+      assert.ok(content.includes('id="template-text-parse"'));
+      assert.ok(content.includes('id="template-drafts-save"'));
+      assert.ok(content.includes('id="template-drafts-list"'));
       assert.ok(content.includes('id="household-invite-qr-wrap"'));
       assert.ok(content.includes('id="household-recovery-card"'));
       assert.ok(content.includes('id="household-copy-recovery"'));
@@ -2034,7 +2061,7 @@ async function run() {
       "function syncJanitorRuntimeControls",
       "function applyJanitorRuntimeControlUpdate",
       "runtime_required:",
-      "payload.runtime_base = runtimeBase",
+      "runPayload.runtime_base = runtimeBase",
       "els.janitorRuntimeBase.addEventListener(\"change\"",
       "els.janitorRuntimeRequired.addEventListener(\"change\"",
     ];
@@ -2072,6 +2099,12 @@ async function run() {
       "function scrollPhoneHandoffTarget(",
       "function openPhoneHandoffSheet(",
       "function closePhoneHandoffSheet(",
+      "function getHouseholdContributionSnapshot()",
+      "function triggerHouseholdEntryAction()",
+      "function getReviewScopeLabel(",
+      "function getReviewScopeItems(",
+      "function updateShareLifecycleState(",
+      "showTemporarySystemBanner(",
       "available_now",
       "SHOW_ALLOCATION_PLAN",
       "SET_AVAILABLE_NOW",
@@ -2080,8 +2113,18 @@ async function run() {
       "HOUSEHOLD_SESSION_KEY",
       "function householdFetch(",
       "function buildHouseholdPayload(",
+      "isSharedHouseholdItem(item)",
+      "shared_household",
       "function dismissHouseholdEntryNotice(",
       "function setHouseholdEntryNotice(",
+      "function createTemplateDraft(",
+      "function parseTemplateDraftText(",
+      "function renderTemplateDrafts(",
+      "function renderSetupGuide(",
+      "function saveTemplateDraftBatch(",
+      "function setSetupPath(",
+      "JSON.stringify(runPayload)",
+      "const responsePayload = await readApiData(res);",
       "function renderSharedHousehold(",
       "function createHousehold(",
       "function joinHousehold(",

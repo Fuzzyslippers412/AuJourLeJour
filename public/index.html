@@ -33,14 +33,14 @@
       </div>
 
       <div class="top-actions">
-        <button id="share-open" class="ghost-btn">Share</button>
+        <button id="share-open" class="ghost-btn">Read-only link</button>
         <label class="toggle">
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
         </label>
         <nav class="mode-tabs">
-          <button id="nav-today" class="tab-btn active">Today</button>
-          <button id="nav-shared" class="tab-btn">Shared</button>
+          <button id="nav-today" class="tab-btn active">My ledger</button>
+          <button id="nav-shared" class="tab-btn">Shared household</button>
           <button id="nav-review" class="tab-btn">Review</button>
           <button id="nav-setup" class="tab-btn">Setup</button>
           <button id="nav-janitor" class="tab-btn local-only">Janitor</button>
@@ -52,7 +52,7 @@
       <div id="system-banner" class="system-banner hidden"></div>
       <div id="shared-header" class="shared-header hidden">
         <div class="shared-left">
-          <div class="shared-title">Shared list</div>
+          <div class="shared-title">Read-only ledger</div>
           <div id="shared-owner" class="shared-owner"></div>
           <div id="shared-updated" class="shared-updated"></div>
         </div>
@@ -88,12 +88,14 @@
                 <div class="status-count"><span id="count-remaining">0</span> Remaining</div>
                 <div class="status-count overdue"><span id="count-overdue">0</span> Overdue</div>
                 <div class="status-count soon"><span id="count-soon">0</span> Due soon</div>
+                <div class="status-count shared"><span id="count-shared">0</span> Shared</div>
                 <div class="status-amount"><span id="mini-remaining-amount">$0.00</span> Remaining $</div>
                 <div class="status-amount"><span id="mini-done-amount">$0.00</span> Done $</div>
               </div>
               <div id="status-period" class="status-period"></div>
               <button id="status-expand" class="ghost-btn">View summary</button>
             </div>
+            <div id="ledger-scope-note" class="ledger-scope-note hidden">My ledger shows everything this month. Bills marked Shared household also appear in Shared household.</div>
 
             <div id="summary-panel" class="summary-panel collapsed">
               <div class="summary-panel-card">
@@ -127,6 +129,7 @@
                   <div>Remaining: <span id="summary-count-remaining">0</span></div>
                   <div>Overdue: <span id="summary-count-overdue">0</span></div>
                   <div>Due soon: <span id="summary-count-soon">0</span></div>
+                  <div>Shared: <span id="summary-count-shared">0</span></div>
                   <div>Done: <span id="summary-count-done">0</span></div>
                 </div>
                 <div class="summary-progress-head">
@@ -208,7 +211,8 @@
                 <div id="first-visit-web-note" class="first-visit-note hidden">Web version stores data in this browser. Export a backup from the local app, then import it here to carry your household forward cleanly.</div>
                 <div class="first-visit-actions">
                   <button id="first-visit-import" class="primary-btn">Import from local app</button>
-                  <button id="first-visit-template" class="ghost-btn">Create your first template</button>
+                  <button id="first-visit-template" class="ghost-btn">Add my bills</button>
+                  <button id="first-visit-shared" class="ghost-btn">Join a shared household</button>
                 </div>
                 <button id="first-visit-continue" class="link-btn">Continue without setup</button>
                 <div class="first-visit-trust">No financial connections. Your data stays under your control.</div>
@@ -230,7 +234,7 @@
               <div class="assistant-inline-chips">
                 <button class="chip" data-agent-shortcut="show overdue">Overdue</button>
                 <button class="chip" data-agent-shortcut="show due soon">Due soon</button>
-                <button class="chip" data-agent-shortcut="show templates">Templates</button>
+                <button class="chip" data-agent-shortcut="show recurring bills">Recurring bills</button>
                 <button class="chip" data-agent-shortcut="show summary">Summary</button>
                 <button class="chip" data-agent-shortcut="show progress">Progress</button>
                 <button class="chip" data-agent-shortcut="connect mamdou">Connect</button>
@@ -366,6 +370,11 @@
           <button class="chip" data-review-range="week">7d</button>
           <button class="chip active" data-review-range="month">Month</button>
         </div>
+        <div class="review-filters review-scope-filters">
+          <button class="chip active" data-review-scope="all">All</button>
+          <button class="chip" data-review-scope="personal">Personal only</button>
+          <button class="chip" data-review-scope="shared">Shared household</button>
+        </div>
         <div id="review-activity" class="card">
           <div class="card-title">Activity Log</div>
           <div id="review-activity-list" class="list"></div>
@@ -386,7 +395,7 @@
             <div>
               <div class="card-title">Shared household ledger</div>
               <div id="household-status-copy" class="card-sub">
-                Link a spouse or family member without logins. Keep one shared ledger of what each person has covered this month.
+                Only bills marked Shared household sync here. Keep one linked household ledger of what each person has covered this month.
               </div>
             </div>
             <div class="household-hero-actions">
@@ -405,7 +414,7 @@
             <div class="household-setup-panel">
               <div class="section-title">Create linked household</div>
               <div class="meta">
-                Start from the month you already have open. Au Jour Le Jour will sync those bills into a shared ledger you can keep current across devices.
+                Start from the month you already have open. Only bills marked Shared household will sync into the linked household ledger across devices.
               </div>
               <label>
                 Household name
@@ -482,7 +491,10 @@
               <div id="household-entry-title" class="section-title">This phone is linked</div>
               <div id="household-entry-copy" class="meta">You can start logging shared updates here right away.</div>
             </div>
-            <button id="household-entry-dismiss" class="ghost-btn small">Got it</button>
+            <div class="household-entry-actions">
+              <button id="household-entry-action" class="btn-small btn-primary hidden">Open shared items</button>
+              <button id="household-entry-dismiss" class="ghost-btn small">Got it</button>
+            </div>
           </div>
           <div class="household-summary-grid">
             <div class="summary-progress-card">
@@ -505,6 +517,29 @@
               <div id="household-items-handled" class="summary-value">0 / 0</div>
               <div class="summary-caption">Shared progress this period</div>
             </div>
+            <div class="summary-progress-card">
+              <div class="summary-label">From this device</div>
+              <div id="household-you-covered" class="summary-value">$0.00</div>
+              <div class="summary-caption">Logged here so far</div>
+            </div>
+            <div class="summary-progress-card">
+              <div class="summary-label">Other members</div>
+              <div id="household-others-covered" class="summary-value">$0.00</div>
+              <div class="summary-caption">Covered from other linked devices</div>
+            </div>
+            <div class="summary-progress-card">
+              <div class="summary-label">Open shared items</div>
+              <div id="household-open-items" class="summary-value">0</div>
+              <div class="summary-caption">Still need attention this period</div>
+            </div>
+            <div class="summary-progress-card">
+              <div class="summary-label">Your share</div>
+              <div id="household-you-share" class="summary-value">0%</div>
+              <div class="summary-caption">Of household contributions so far</div>
+            </div>
+          </div>
+          <div id="household-summary-note" class="household-summary-note">
+            Shared coverage will appear here once this household starts logging updates.
           </div>
         </section>
 
@@ -562,6 +597,14 @@
               <div id="household-this-device-total" class="household-member-stat-value">$0.00</div>
               <div class="household-member-stat-label">From this device</div>
             </div>
+            <div class="household-member-stat">
+              <div id="household-other-device-total" class="household-member-stat-value">$0.00</div>
+              <div class="household-member-stat-label">From other devices</div>
+            </div>
+            <div class="household-member-stat">
+              <div id="household-open-item-count" class="household-member-stat-value">0</div>
+              <div class="household-member-stat-label">Open shared items</div>
+            </div>
           </div>
           <div id="household-members-list" class="household-members-list"></div>
         </section>
@@ -589,8 +632,120 @@
 
       <section id="setup-view" class="view hidden">
         <div class="page-title">Setup</div>
-        <div class="page-sub">Templates, categories, backups, and reserved buckets.</div>
+        <div class="page-sub">Recurring bills first. Import, sharing, and recovery after that.</div>
         <div class="disclaimer">This app tracks bills. You pay outside the app.</div>
+        <section id="setup-guide" class="setup-block setup-guide">
+          <div class="block-header">
+            <div>
+              <div class="block-title">Get started</div>
+              <div class="block-sub">The fastest path is: add your recurring bills, save them once, and start using this month.</div>
+            </div>
+            <div id="setup-guide-note" class="meta">Choose the cleanest way to get your household into AJL.</div>
+          </div>
+          <div id="setup-progress" class="setup-progress">
+            <div id="setup-step-start" class="setup-progress-step active">1. Start</div>
+            <div id="setup-step-build" class="setup-progress-step">2. Add bills</div>
+            <div id="setup-step-review" class="setup-progress-step">3. Review</div>
+            <div id="setup-step-done" class="setup-progress-step">4. Done</div>
+          </div>
+          <div class="setup-path-grid readonly-hide">
+            <button id="setup-path-builder" class="setup-path-card active" type="button">
+              <span class="setup-path-title">Add my bills</span>
+              <span class="setup-path-copy">Use the bill builder below, save everything together, and generate this month automatically.</span>
+            </button>
+            <button id="setup-path-import" class="setup-path-card" type="button">
+              <span class="setup-path-title">Import from backup</span>
+              <span class="setup-path-copy">Bring over recurring bills, monthly history, categories, and progress from another AJL backup.</span>
+            </button>
+            <button id="setup-path-shared" class="setup-path-card" type="button">
+              <span class="setup-path-title">Join a shared household</span>
+              <span class="setup-path-copy">Use an invite link or QR if someone already created the shared ledger for your home.</span>
+            </button>
+          </div>
+        </section>
+
+        <section id="setup-builder" class="setup-block setup-builder readonly-hide">
+          <div class="block-header">
+            <div>
+              <div class="block-title">Recurring bills builder</div>
+              <div class="block-sub">Add the recurring bills that keep your home running. Bills marked <strong>Shared household</strong> will also sync into the household ledger. Nothing saves until you choose <strong>Save all bills</strong>.</div>
+            </div>
+            <button id="open-backup" class="ghost-btn">Open backups</button>
+          </div>
+          <form id="template-form" class="template-form template-builder-form">
+            <input id="template-name" type="text" placeholder="Bill name" required />
+            <input id="template-amount" type="number" min="0" step="0.01" placeholder="Amount" required />
+            <input id="template-due-day" type="number" min="1" max="31" placeholder="Due day" required />
+            <input id="template-category" type="text" placeholder="Category" list="template-category-options" />
+            <label class="toggle small">
+              <input id="template-essential" type="checkbox" checked />
+              <span>Essential</span>
+            </label>
+            <label class="toggle small">
+              <input id="template-shared-household" type="checkbox" />
+              <span>Shared household</span>
+            </label>
+            <button class="primary-btn" type="submit">Add to draft</button>
+          </form>
+          <datalist id="template-category-options"></datalist>
+          <div id="template-category-chips" class="starter-category-chips readonly-hide"></div>
+
+          <details class="builder-advanced">
+            <summary>More options</summary>
+            <div class="template-form template-advanced-grid">
+              <label class="toggle small">
+                <input id="template-autopay" type="checkbox" />
+                <span>Autopay</span>
+              </label>
+              <label class="toggle small">
+                <input id="template-active" type="checkbox" checked />
+                <span>Active</span>
+              </label>
+              <input id="template-note" type="text" placeholder="Default note" />
+              <input id="template-match-key" type="text" placeholder="Match key" />
+              <input id="template-match-tolerance" type="number" min="0" step="0.01" placeholder="Match tolerance" />
+            </div>
+          </details>
+
+          <div id="template-error" class="form-error hidden"></div>
+
+          <details class="builder-import-text">
+            <summary>Import from text</summary>
+            <div class="builder-import-copy">Paste one bill per line. Example: <code>Rent 2200 due 1</code> or <code>Internet - 90 due 8</code>.</div>
+            <textarea id="template-text-import" rows="5" placeholder="Rent 2200 due 1&#10;Electric 180 due 12&#10;Internet 90 due 8"></textarea>
+            <div class="backup-actions">
+              <button id="template-text-parse" class="ghost-btn" type="button">Add parsed rows</button>
+            </div>
+          </details>
+
+          <div id="builder-review" class="builder-review">
+            <div class="builder-review-stats">
+              <div class="builder-stat">
+                <div class="builder-stat-label">Draft bills</div>
+                <div id="builder-draft-count" class="builder-stat-value">0</div>
+              </div>
+              <div class="builder-stat">
+                <div class="builder-stat-label">Monthly total</div>
+                <div id="builder-draft-total" class="builder-stat-value">$0.00</div>
+              </div>
+              <div class="builder-stat">
+                <div class="builder-stat-label">Essentials</div>
+                <div id="builder-draft-essentials" class="builder-stat-value">0</div>
+              </div>
+            </div>
+            <div id="builder-draft-preview" class="meta">Add bills above. You’ll review them here before anything is saved.</div>
+          </div>
+
+          <div id="template-drafts-empty" class="meta">No unsaved bills yet. Add one above or paste a list from your notes.</div>
+          <div id="template-drafts-list" class="template-drafts-list"></div>
+
+          <div class="builder-footer readonly-hide">
+            <button id="template-drafts-focus" class="ghost-btn" type="button">Add another bill</button>
+            <button id="template-drafts-discard" class="ghost-btn" type="button">Discard drafts</button>
+            <button id="template-drafts-save" class="primary-btn" type="button">Save all bills</button>
+          </div>
+        </section>
+
         <section id="setup-install" class="setup-block app-install-block hidden">
           <div class="block-title">Use it like an app</div>
           <div id="setup-install-copy" class="block-sub">
@@ -611,15 +766,6 @@
             <pre class="install-code">git clone https://github.com/Fuzzyslippers412/AuJourLeJour.git
 cd AuJourLeJour
 ./start.sh</pre>
-          </div>
-        </section>
-
-        <section id="setup-cta" class="setup-block setup-cta hidden">
-          <div class="block-title">You’re almost ready</div>
-          <div class="block-sub">Import a backup or add your first template to get started.</div>
-          <div class="backup-actions">
-            <button id="cta-import" class="primary-btn">Import from local app</button>
-            <button id="cta-template" class="ghost-btn">Create template</button>
           </div>
         </section>
 
@@ -793,31 +939,10 @@ cd AuJourLeJour
         <section class="setup-block">
           <div class="block-header">
             <div>
-              <div class="block-title">Recurring bills</div>
-              <div class="block-sub">These generate your monthly checklist.</div>
+              <div class="block-title">Saved recurring bills</div>
+              <div class="block-sub">Review and edit the bills you have already saved.</div>
             </div>
-            <button id="open-backup" class="ghost-btn">Backup &amp; Restore</button>
           </div>
-          <form id="template-form" class="template-form readonly-hide">
-            <input id="template-name" type="text" placeholder="Name" required />
-            <input id="template-category" type="text" placeholder="Category" />
-            <input id="template-amount" type="number" min="0" step="0.01" placeholder="Amount" required />
-            <input id="template-due-day" type="number" min="1" max="31" placeholder="Due day" required />
-            <label class="toggle small">
-              <input id="template-essential" type="checkbox" checked />
-              <span>Essential</span>
-            </label>
-            <label class="toggle small">
-              <input id="template-active" type="checkbox" checked />
-              <span>Active</span>
-            </label>
-            <input id="template-note" type="text" placeholder="Default note" />
-            <input id="template-match-key" type="text" placeholder="Match key" />
-            <input id="template-match-tolerance" type="number" min="0" step="0.01" placeholder="Match tolerance" />
-            <button class="primary-btn" type="submit">Add bill</button>
-          </form>
-          <div id="template-error" class="form-error hidden"></div>
-
           <div class="template-actions readonly-hide">
             <label class="toggle small">
               <input id="select-all-templates" type="checkbox" />
@@ -825,7 +950,7 @@ cd AuJourLeJour
             </label>
             <button id="archive-selected" class="ghost-btn" disabled>Archive selected</button>
             <button id="delete-selected" class="ghost-btn" disabled>Delete selected</button>
-            <button id="apply-templates" class="ghost-btn">Apply template updates to this month</button>
+            <button id="apply-templates" class="ghost-btn">Update this month from recurring bills</button>
           </div>
 
           <div id="templates-list" class="templates-list"></div>
@@ -1013,17 +1138,17 @@ cd AuJourLeJour
     </main>
 
     <nav class="mobile-tabbar" aria-label="Primary navigation">
-      <button id="mobile-nav-today" class="mobile-tab-btn active" aria-label="Today">
+      <button id="mobile-nav-today" class="mobile-tab-btn active" aria-label="My ledger">
         <span class="mobile-tab-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a2 2 0 0 1 2 2v11a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a2 2 0 0 1 2-2h1V3a1 1 0 0 1 1-1Zm12 8H5v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7Z" fill="currentColor"/></svg>
         </span>
-        <span class="mobile-tab-label">Today</span>
+        <span class="mobile-tab-label">Mine</span>
       </button>
-      <button id="mobile-nav-shared" class="mobile-tab-btn" aria-label="Shared">
+      <button id="mobile-nav-shared" class="mobile-tab-btn" aria-label="Shared household">
         <span class="mobile-tab-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M7.5 11a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm9 0a3 3 0 1 1 0-6 3 3 0 0 1 0 6ZM3 18a4.5 4.5 0 0 1 9 0v1H3v-1Zm10 1v-.75A3.75 3.75 0 0 1 16.75 14 4.25 4.25 0 0 1 21 18.25V19h-8Z" fill="currentColor"/></svg>
         </span>
-        <span class="mobile-tab-label">Shared</span>
+        <span class="mobile-tab-label">Household</span>
       </button>
       <button id="mobile-nav-review" class="mobile-tab-btn" aria-label="Review">
         <span class="mobile-tab-icon" aria-hidden="true">
@@ -1148,8 +1273,8 @@ cd AuJourLeJour
       <div class="modal-content">
         <div class="modal-header">
           <div>
-            <div class="modal-title">Share read-only link</div>
-            <div class="modal-sub">Anyone with this link can view your list.</div>
+            <div class="modal-title">Read-only link</div>
+            <div class="modal-sub">Anyone with this link can view your ledger. It does not create a shared household.</div>
           </div>
           <button id="share-close" class="icon-btn" aria-label="Close">&times;</button>
         </div>
@@ -1196,14 +1321,28 @@ cd AuJourLeJour
             </label>
           </div>
           <div class="share-actions">
-            <button id="share-create" class="ghost-btn">Create link</button>
-            <button id="share-refresh" class="ghost-btn">Update now</button>
+            <button id="share-create" class="ghost-btn">Create read-only link</button>
+            <button id="share-refresh" class="ghost-btn">Publish current view</button>
             <button id="share-regenerate" class="ghost-btn">Regenerate link</button>
             <button id="share-disable" class="ghost-btn danger">Disable link</button>
           </div>
+          <div class="share-status-grid">
+            <div class="share-status-item">
+              <div class="share-status-label">Link status</div>
+              <div id="share-link-state" class="share-status-value">Not created</div>
+            </div>
+            <div class="share-status-item">
+              <div class="share-status-label">Publish status</div>
+              <div id="share-publish-state" class="share-status-value">Waiting for link</div>
+            </div>
+            <div class="share-status-item">
+              <div class="share-status-label">Last published</div>
+              <div id="share-last-published" class="share-status-value">—</div>
+            </div>
+          </div>
           <div id="share-relay-status" class="modal-sub share-status"></div>
           <div class="modal-footer-hint">
-            This link is read-only.
+            Use Shared household for collaboration. This link is view-only.
           </div>
         </div>
       </div>
@@ -1241,12 +1380,13 @@ cd AuJourLeJour
         <div class="modal-header">
           <div>
             <div class="modal-title">Get started</div>
-            <div class="modal-sub">Import a backup or create your first template.</div>
+            <div class="modal-sub">Import a backup, add your recurring bills, or join a shared household.</div>
           </div>
         </div>
         <div class="modal-actions">
           <button id="wizard-import" class="primary-btn">Import backup JSON</button>
-          <button id="wizard-template" class="ghost-btn">Add first template</button>
+          <button id="wizard-template" class="ghost-btn">Add my bills</button>
+          <button id="wizard-shared" class="ghost-btn">Join shared household</button>
           <button id="wizard-skip" class="ghost-btn">Skip for now</button>
           <input id="wizard-file" type="file" accept="application/json" hidden />
         </div>

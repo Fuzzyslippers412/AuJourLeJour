@@ -50,7 +50,10 @@ const state = {
   safeMode: false,
   safeReason: "",
   queueLaterCollapsed: true,
+  setupPath: "builder",
   templateRows: new Map(),
+  templateDrafts: [],
+  templateDraftSeq: 0,
   filters: {
     search: "",
     status: "all",
@@ -59,6 +62,7 @@ const state = {
     preset: "none",
   },
   reviewRange: "month",
+  reviewScope: "all",
   selectedInstanceId: null,
   splitView: false,
   loading: false,
@@ -120,11 +124,13 @@ const state = {
   agentBusy: false,
   lastAgentInput: "",
   lastAgentSubmittedAt: 0,
+  lastSetupSaveSummary: null,
 };
 
 const weeksPerMonth = 4.33;
 const daysPerMonthAvg = 30.4;
 let flashTimer = null;
+let systemBannerTimer = null;
 let autoMonthTimer = null;
 let refreshTimer = null;
 let splitViewTimer = null;
@@ -192,6 +198,17 @@ const HOUSEHOLD_SYSTEMS = [
   { key: "debt", label: "Debt" },
   { key: "household", label: "Household" },
   { key: "other", label: "Other" },
+];
+const STARTER_CATEGORIES = [
+  "Housing",
+  "Utilities",
+  "Food",
+  "Insurance",
+  "Debt",
+  "Transport",
+  "Family",
+  "Subscriptions",
+  "Other",
 ];
 
 let deferredInstallPrompt = null;
@@ -427,13 +444,31 @@ function handleStorageFailure(err) {
 
 function showSystemBanner(message) {
   if (!els.systemBanner) return;
+  if (systemBannerTimer) {
+    clearTimeout(systemBannerTimer);
+    systemBannerTimer = null;
+  }
   els.systemBanner.textContent = message;
   els.systemBanner.classList.remove("hidden");
 }
 
 function hideSystemBanner() {
   if (!els.systemBanner) return;
+  if (systemBannerTimer) {
+    clearTimeout(systemBannerTimer);
+    systemBannerTimer = null;
+  }
   els.systemBanner.classList.add("hidden");
+}
+
+function showTemporarySystemBanner(message, durationMs = 7000) {
+  showSystemBanner(message);
+  if (durationMs <= 0) return;
+  systemBannerTimer = setTimeout(() => {
+    if (els.systemBanner?.textContent === message) {
+      hideSystemBanner();
+    }
+  }, durationMs);
 }
 
 let toastTimer = null;
@@ -497,6 +532,9 @@ const els = {
   shareRefresh: document.getElementById("share-refresh"),
   shareRegenerate: document.getElementById("share-regenerate"),
   shareDisable: document.getElementById("share-disable"),
+  shareLinkState: document.getElementById("share-link-state"),
+  sharePublishState: document.getElementById("share-publish-state"),
+  shareLastPublished: document.getElementById("share-last-published"),
   shareRelayStatus: document.getElementById("share-relay-status"),
   backupOpen: document.getElementById("open-backup"),
   backupSection: document.getElementById("backup-section"),
@@ -572,9 +610,19 @@ const els = {
   setupCta: document.getElementById("setup-cta"),
   ctaImport: document.getElementById("cta-import"),
   ctaTemplate: document.getElementById("cta-template"),
+  setupGuide: document.getElementById("setup-guide"),
+  setupGuideNote: document.getElementById("setup-guide-note"),
+  setupStepStart: document.getElementById("setup-step-start"),
+  setupStepBuild: document.getElementById("setup-step-build"),
+  setupStepReview: document.getElementById("setup-step-review"),
+  setupStepDone: document.getElementById("setup-step-done"),
+  setupPathBuilder: document.getElementById("setup-path-builder"),
+  setupPathImport: document.getElementById("setup-path-import"),
+  setupPathShared: document.getElementById("setup-path-shared"),
   firstVisitHero: document.getElementById("first-visit-hero"),
   firstVisitImport: document.getElementById("first-visit-import"),
   firstVisitTemplate: document.getElementById("first-visit-template"),
+  firstVisitShared: document.getElementById("first-visit-shared"),
   firstVisitContinue: document.getElementById("first-visit-continue"),
   firstVisitWebNote: document.getElementById("first-visit-web-note"),
   appInstallBanner: document.getElementById("app-install-banner"),
@@ -637,6 +685,7 @@ const els = {
   wizardModal: document.getElementById("first-run-modal"),
   wizardImport: document.getElementById("wizard-import"),
   wizardTemplate: document.getElementById("wizard-template"),
+  wizardShared: document.getElementById("wizard-shared"),
   wizardSkip: document.getElementById("wizard-skip"),
   wizardFile: document.getElementById("wizard-file"),
   todayView: document.getElementById("today-view"),
@@ -652,6 +701,7 @@ const els = {
   needDayPlan: document.getElementById("need-day-plan"),
   needWeekPlan: document.getElementById("need-week-plan"),
   statusExpand: document.getElementById("status-expand"),
+  ledgerScopeNote: document.getElementById("ledger-scope-note"),
   statusBar: document.getElementById("status-bar"),
   statusPeriod: document.getElementById("status-period"),
   miniRemainingAmount: document.getElementById("mini-remaining-amount"),
@@ -659,10 +709,12 @@ const els = {
   countRemaining: document.getElementById("count-remaining"),
   countOverdue: document.getElementById("count-overdue"),
   countSoon: document.getElementById("count-soon"),
+  countShared: document.getElementById("count-shared"),
   summaryPanel: document.getElementById("summary-panel"),
   summaryCountRemaining: document.getElementById("summary-count-remaining"),
   summaryCountOverdue: document.getElementById("summary-count-overdue"),
   summaryCountSoon: document.getElementById("summary-count-soon"),
+  summaryCountShared: document.getElementById("summary-count-shared"),
   summaryCountDone: document.getElementById("summary-count-done"),
   summaryYearScope: document.getElementById("summary-year-scope"),
   summaryProgressBasis: document.getElementById("summary-progress-basis"),
@@ -705,11 +757,17 @@ const els = {
   householdEntryNotice: document.getElementById("household-entry-notice"),
   householdEntryTitle: document.getElementById("household-entry-title"),
   householdEntryCopy: document.getElementById("household-entry-copy"),
+  householdEntryAction: document.getElementById("household-entry-action"),
   householdEntryDismiss: document.getElementById("household-entry-dismiss"),
   householdTotalDue: document.getElementById("household-total-due"),
   householdTotalPaid: document.getElementById("household-total-paid"),
   householdTotalRemaining: document.getElementById("household-total-remaining"),
   householdItemsHandled: document.getElementById("household-items-handled"),
+  householdYouCovered: document.getElementById("household-you-covered"),
+  householdOthersCovered: document.getElementById("household-others-covered"),
+  householdOpenItems: document.getElementById("household-open-items"),
+  householdYouShare: document.getElementById("household-you-share"),
+  householdSummaryNote: document.getElementById("household-summary-note"),
   householdInviteCard: document.getElementById("household-invite-card"),
   householdInviteLink: document.getElementById("household-invite-link"),
   householdCopyInviteInline: document.getElementById("household-copy-invite-inline"),
@@ -727,6 +785,8 @@ const els = {
   householdMembersSummary: document.getElementById("household-members-summary"),
   householdMemberCount: document.getElementById("household-member-count"),
   householdThisDeviceTotal: document.getElementById("household-this-device-total"),
+  householdOtherDeviceTotal: document.getElementById("household-other-device-total"),
+  householdOpenItemCount: document.getElementById("household-open-item-count"),
   householdMembersList: document.getElementById("household-members-list"),
   householdLedgerCard: document.getElementById("household-ledger-card"),
   householdPeriod: document.getElementById("household-period"),
@@ -761,6 +821,7 @@ const els = {
   reviewList: document.getElementById("review-list"),
   reviewExport: document.getElementById("review-export"),
   reviewFilters: Array.from(document.querySelectorAll("[data-review-range]")),
+  reviewScopeFilters: Array.from(document.querySelectorAll("[data-review-scope]")),
   defaultsPeriod: document.getElementById("defaults-period"),
   defaultsSort: document.getElementById("defaults-sort"),
   defaultsDueSoon: document.getElementById("defaults-due-soon"),
@@ -778,13 +839,28 @@ const els = {
   templateError: document.getElementById("template-error"),
   templateName: document.getElementById("template-name"),
   templateCategory: document.getElementById("template-category"),
+  templateCategoryOptions: document.getElementById("template-category-options"),
+  templateCategoryChips: document.getElementById("template-category-chips"),
   templateAmount: document.getElementById("template-amount"),
   templateDueDay: document.getElementById("template-due-day"),
   templateEssential: document.getElementById("template-essential"),
+  templateSharedHousehold: document.getElementById("template-shared-household"),
+  templateAutopay: document.getElementById("template-autopay"),
   templateActive: document.getElementById("template-active"),
   templateNote: document.getElementById("template-note"),
   templateMatchKey: document.getElementById("template-match-key"),
   templateMatchTolerance: document.getElementById("template-match-tolerance"),
+  templateTextImport: document.getElementById("template-text-import"),
+  templateTextParse: document.getElementById("template-text-parse"),
+  templateDraftsEmpty: document.getElementById("template-drafts-empty"),
+  templateDraftsList: document.getElementById("template-drafts-list"),
+  templateDraftsFocus: document.getElementById("template-drafts-focus"),
+  templateDraftsDiscard: document.getElementById("template-drafts-discard"),
+  templateDraftsSave: document.getElementById("template-drafts-save"),
+  builderDraftCount: document.getElementById("builder-draft-count"),
+  builderDraftTotal: document.getElementById("builder-draft-total"),
+  builderDraftEssentials: document.getElementById("builder-draft-essentials"),
+  builderDraftPreview: document.getElementById("builder-draft-preview"),
   templatesList: document.getElementById("templates-list"),
   applyTemplates: document.getElementById("apply-templates"),
   selectAllTemplates: document.getElementById("select-all-templates"),
@@ -895,6 +971,363 @@ function parseMoney(value) {
   const match = cleaned.match(/-?\d+(?:\.\d+)?/);
   if (!match) return NaN;
   return Number(match[0]);
+}
+
+function normalizeCategoryName(value) {
+  return String(value || "").trim();
+}
+
+function getSetupCategoryChoices() {
+  const dynamic = Array.isArray(state.settings?.categories) ? state.settings.categories : [];
+  return Array.from(new Set([...STARTER_CATEGORIES, ...dynamic].map(normalizeCategoryName).filter(Boolean)));
+}
+
+function guessCategoryForTemplateName(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return "";
+  const value = raw.toLowerCase();
+  if (/(rent|mortgage|homeowners|hoa|property|shelter)/.test(value)) return "Housing";
+  if (/(electric|gas|water|sewer|internet|comcast|wifi|trash|republic|utility)/.test(value)) {
+    return "Utilities";
+  }
+  if (/(food|grocery|groceries|market|costco)/.test(value)) return "Food";
+  if (/(insurance|coverage|premium)/.test(value)) return "Insurance";
+  if (/(loan|student|payment|debt|credit)/.test(value)) return "Debt";
+  if (/(car|auto|tesla|fuel|gasoline|transport)/.test(value)) return "Transport";
+  if (/(child|school|family|kids|hair|workout|gym)/.test(value)) return "Family";
+  if (/(netflix|spotify|youtube|subscription|subscriptions|stream)/.test(value)) return "Subscriptions";
+  return "Other";
+}
+
+function clampSetupDueDay(value) {
+  const day = Number(value);
+  if (!Number.isInteger(day)) return 1;
+  return Math.min(31, Math.max(1, day));
+}
+
+function createTemplateDraft(overrides = {}) {
+  state.templateDraftSeq += 1;
+  return {
+    id: `draft_${Date.now()}_${state.templateDraftSeq}`,
+    name: "",
+    category: "",
+    amount_default: 0,
+    due_day: 1,
+    essential: true,
+    shared_household: false,
+    autopay: false,
+    active: true,
+    default_note: "",
+    match_payee_key: "",
+    match_amount_tolerance: 0,
+    expanded: false,
+    ...overrides,
+  };
+}
+
+function sanitizeTemplateDraft(draft) {
+  return {
+    id: draft.id,
+    name: String(draft.name || "").trim(),
+    category: normalizeCategoryName(draft.category),
+    amount_default: Number(draft.amount_default || 0),
+    due_day: clampSetupDueDay(draft.due_day),
+    essential: draft.essential !== false,
+    shared_household: !!draft.shared_household,
+    autopay: !!draft.autopay,
+    active: draft.active !== false,
+    default_note: String(draft.default_note || "").trim(),
+    match_payee_key: String(draft.match_payee_key || "").trim(),
+    match_amount_tolerance: Math.max(0, Number(draft.match_amount_tolerance || 0)),
+    expanded: !!draft.expanded,
+  };
+}
+
+function isSharedHouseholdItem(item) {
+  return !!(item && (item.shared_household_snapshot || item.shared_household));
+}
+
+function getSharedHouseholdSuffix(item, prefix = " · ") {
+  return isSharedHouseholdItem(item) ? `${prefix}Shared household` : "";
+}
+
+function getReviewScopeLabel(scope = state.reviewScope) {
+  if (scope === "personal") return "Personal only";
+  if (scope === "shared") return "Shared household";
+  return "All bills";
+}
+
+function matchesReviewScopeItem(item, scope = state.reviewScope) {
+  if (!item) return false;
+  if (scope === "personal") return !isSharedHouseholdItem(item);
+  if (scope === "shared") return isSharedHouseholdItem(item);
+  return true;
+}
+
+function getReviewScopeItems(baseList, scope = state.reviewScope) {
+  return (Array.isArray(baseList) ? baseList : []).filter((item) => matchesReviewScopeItem(item, scope));
+}
+
+function getReviewScopeItemMap() {
+  return new Map((state.instances || []).map((item) => [item.id, item]));
+}
+
+function matchesReviewScopeEvent(event, itemMap, scope = state.reviewScope) {
+  if (scope === "all") return true;
+  const mapped = itemMap.get(event?.instance_id);
+  if (!mapped) return scope !== "shared";
+  return matchesReviewScopeItem(mapped, scope);
+}
+
+function appendSharedHouseholdPill(target, item, label = "Shared") {
+  if (!target || !isSharedHouseholdItem(item)) return;
+  const pill = document.createElement("span");
+  pill.className = "scope-pill";
+  pill.textContent = label;
+  target.appendChild(pill);
+}
+
+function validateTemplateDraft(draft) {
+  const clean = sanitizeTemplateDraft(draft);
+  if (!clean.name) return "Bill name is required.";
+  if (!Number.isFinite(clean.amount_default) || clean.amount_default < 0) {
+    return "Amount must be zero or greater.";
+  }
+  if (!Number.isInteger(clean.due_day) || clean.due_day < 1 || clean.due_day > 31) {
+    return "Due day must be between 1 and 31.";
+  }
+  return "";
+}
+
+function hasRecurringBillsSetupData() {
+  return (Array.isArray(state.templates) && state.templates.length > 0) ||
+    (Array.isArray(state.instances) && state.instances.length > 0);
+}
+
+function shouldShowSetupGuide() {
+  return !state.readOnly && !state.safeMode && (!isFirstRunCompleted() || !hasRecurringBillsSetupData());
+}
+
+function focusTemplateBuilder(options = {}) {
+  const behavior = options.behavior || "smooth";
+  state.view = "setup";
+  renderView();
+  els.templateForm?.scrollIntoView({ behavior, block: "start" });
+  requestAnimationFrame(() => {
+    try {
+      els.templateName?.focus({ preventScroll: true });
+    } catch (err) {
+      els.templateName?.focus();
+    }
+  });
+}
+
+function openSharedJoinFlow() {
+  state.view = "shared";
+  renderView();
+  requestAnimationFrame(() => {
+    els.householdSetupCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+    try {
+      els.householdJoinName?.focus({ preventScroll: true });
+    } catch (err) {
+      els.householdJoinName?.focus();
+    }
+  });
+}
+
+function parseTemplateDraftText(rawText) {
+  const lines = String(rawText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const drafts = [];
+  const skipped = [];
+  lines.forEach((line) => {
+    const working = line.replace(/^[\-\*\u2022]+\s*/, "").trim();
+    const dueMatch = working.match(/\b(?:due|on)\s+(\d{1,2})\b/i);
+    const dueDay = dueMatch ? clampSetupDueDay(dueMatch[1]) : 1;
+    const withoutDue = dueMatch ? working.replace(dueMatch[0], "").trim() : working;
+    const amountMatches = Array.from(withoutDue.matchAll(/\$?\d[\d,]*(?:\.\d{1,2})?/g));
+    if (amountMatches.length === 0) {
+      skipped.push(line);
+      return;
+    }
+    const amountToken = amountMatches[amountMatches.length - 1];
+    const amount = parseMoney(amountToken[0]);
+    if (!Number.isFinite(amount)) {
+      skipped.push(line);
+      return;
+    }
+    const amountIndex = amountToken.index || 0;
+    let name = `${withoutDue.slice(0, amountIndex)} ${withoutDue.slice(amountIndex + amountToken[0].length)}`
+      .replace(/\s+/g, " ")
+      .replace(/[–—-]+$/g, "")
+      .trim();
+    if (!name) {
+      skipped.push(line);
+      return;
+    }
+    name = name.replace(/\s+[–—-]\s*$/g, "").trim();
+    drafts.push(
+      createTemplateDraft({
+        name,
+        category: guessCategoryForTemplateName(name),
+        amount_default: amount,
+        due_day: dueDay,
+      })
+    );
+  });
+  return { drafts, skipped };
+}
+
+function getTemplateDraftSummary() {
+  const drafts = Array.isArray(state.templateDrafts) ? state.templateDrafts.map(sanitizeTemplateDraft) : [];
+  const count = drafts.length;
+  const total = drafts.reduce((sum, draft) => sum + Number(draft.amount_default || 0), 0);
+  const essentials = drafts.filter((draft) => draft.essential !== false).length;
+  const previewItems = drafts
+    .slice()
+    .sort((a, b) => a.due_day - b.due_day || a.name.localeCompare(b.name))
+    .slice(0, 3)
+    .map((draft) => `${draft.name} (${draft.due_day})`);
+  return {
+    count,
+    total,
+    essentials,
+    preview: previewItems.length
+      ? `First up: ${previewItems.join(" • ")}`
+      : "Add bills above. You’ll review them here before anything is saved.",
+  };
+}
+
+function setSetupPath(path) {
+  state.setupPath = ["builder", "import", "shared"].includes(path) ? path : "builder";
+  renderSetupGuide();
+}
+
+function resetTemplateBuilderForm() {
+  if (!els.templateForm) return;
+  els.templateForm.reset();
+  if (els.templateEssential) els.templateEssential.checked = true;
+  if (els.templateActive) els.templateActive.checked = true;
+  if (els.templateAutopay) els.templateAutopay.checked = false;
+  if (els.templateSharedHousehold) els.templateSharedHousehold.checked = false;
+}
+
+function readTemplateFormDraft() {
+  return createTemplateDraft({
+    name: els.templateName?.value || "",
+    category: els.templateCategory?.value || "",
+    amount_default: Number(els.templateAmount?.value || 0),
+    due_day: clampSetupDueDay(els.templateDueDay?.value || 1),
+    essential: !!els.templateEssential?.checked,
+    shared_household: !!els.templateSharedHousehold?.checked,
+    autopay: !!els.templateAutopay?.checked,
+    active: els.templateActive?.checked !== false,
+    default_note: els.templateNote?.value || "",
+    match_payee_key: els.templateMatchKey?.value || "",
+    match_amount_tolerance: Number(els.templateMatchTolerance?.value || 0),
+  });
+}
+
+function addTemplateDraft(draft, options = {}) {
+  const clean = sanitizeTemplateDraft(draft);
+  state.templateDrafts = [...state.templateDrafts, clean];
+  renderTemplateDrafts();
+  renderSetupGuide();
+  if (!options.silent) {
+    showToast(`Added ${clean.name || "bill"} to draft. Save all bills when you are ready.`);
+  }
+}
+
+async function saveTemplateDraftBatch() {
+  const drafts = Array.isArray(state.templateDrafts) ? state.templateDrafts.map(sanitizeTemplateDraft) : [];
+  if (drafts.length === 0) return;
+  if (els.templateError) {
+    els.templateError.textContent = "";
+    els.templateError.classList.add("hidden");
+  }
+  for (const draft of drafts) {
+    const validationMessage = validateTemplateDraft(draft);
+    if (validationMessage) {
+      if (els.templateError) {
+        els.templateError.textContent = validationMessage;
+        els.templateError.classList.remove("hidden");
+      }
+      return;
+    }
+  }
+  let savedCount = 0;
+  let savedTotal = 0;
+  let savedSharedCount = 0;
+  const unsaved = [];
+  for (const draft of drafts) {
+    const payload = {
+      name: draft.name,
+      category: draft.category,
+      amount_default: draft.amount_default,
+      due_day: draft.due_day,
+      autopay: draft.autopay,
+      essential: draft.essential,
+      shared_household: draft.shared_household,
+      active: draft.active,
+      default_note: draft.default_note,
+      match_payee_key: draft.match_payee_key,
+      match_amount_tolerance: draft.match_amount_tolerance,
+    };
+    const res = await fetch(`/api/templates?year=${state.selectedYear}&month=${state.selectedMonth}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let message = `Unable to save ${draft.name || "bill"}.`;
+      try {
+        const data = await res.json();
+        message = getErrorMessage(data, message);
+      } catch (err) {
+        // ignore
+      }
+      unsaved.push(draft);
+      if (els.templateError) {
+        els.templateError.textContent = message;
+        els.templateError.classList.remove("hidden");
+      }
+      continue;
+    }
+    savedCount += 1;
+    savedTotal += Number(draft.amount_default || 0);
+    if (draft.shared_household) savedSharedCount += 1;
+  }
+  state.templateDrafts = unsaved;
+  renderTemplateDrafts();
+  renderSetupGuide();
+  if (savedCount > 0) {
+    state.lastSetupSaveSummary = {
+      savedCount,
+      savedTotal,
+      savedSharedCount,
+      savedAt: new Date().toISOString(),
+    };
+    await refreshAll();
+    recordMutation();
+    await setOnboardingComplete(true);
+    closeWizard();
+    showToast(
+      unsaved.length === 0
+        ? `Saved ${savedCount} recurring bill${savedCount === 1 ? "" : "s"}.`
+        : `Saved ${savedCount} bill${savedCount === 1 ? "" : "s"}. Fix the remaining drafts and save again.`
+    );
+    if (unsaved.length === 0) {
+      const sharedCopy = savedSharedCount > 0 ? ` · ${savedSharedCount} shared household` : "";
+      showTemporarySystemBanner(
+        `Saved ${savedCount} recurring bill${savedCount === 1 ? "" : "s"} · ${formatMoneyDisplay(savedTotal)} scheduled${sharedCopy}. My ledger is ready.`,
+        9000
+      );
+      state.view = "today";
+      renderView();
+    }
+  }
 }
 
 function loadProfileName() {
@@ -5057,6 +5490,21 @@ function renderSummary(list) {
   const soonCutoffString = `${soonCutoff.getFullYear()}-${pad2(soonCutoff.getMonth() + 1)}-${pad2(soonCutoff.getDate())}`;
   const dueSoon = remainingItems.filter((item) => currentMonth && item.due_date >= today && item.due_date <= soonCutoffString);
   const doneCount = list.filter((item) => item.status_derived === "paid" || item.amount_remaining <= 0).length;
+  const sharedItems = list.filter((item) => isSharedHouseholdItem(item));
+  const sharedCount = sharedItems.length;
+  const sharedOpenItems = sharedItems.filter((item) => item.status_derived !== "skipped" && item.amount_remaining > 0);
+  const sharedRemaining = sharedOpenItems.reduce((sum, item) => sum + Number(item.amount_remaining || 0), 0);
+
+  if (els.ledgerScopeNote) {
+    const showSharedNote = sharedCount > 0;
+    els.ledgerScopeNote.classList.toggle("hidden", !showSharedNote);
+    if (showSharedNote) {
+      const openCopy = sharedOpenItems.length > 0
+        ? ` ${sharedOpenItems.length} still open for the household (${formatMoneyDisplay(sharedRemaining)} remaining).`
+        : " Shared household bills are fully covered right now.";
+      els.ledgerScopeNote.textContent = `${sharedCount} bill${sharedCount === 1 ? " is" : "s are"} in My ledger and also appear in Shared household.${openCopy}`;
+    }
+  }
 
   const hideAmounts = isSharedAmountsHidden();
   els.requiredAmount.textContent = formatMoneyDisplay(totals.required);
@@ -5084,7 +5532,9 @@ function renderSummary(list) {
   if (els.summaryCountRemaining) els.summaryCountRemaining.textContent = remainingItems.length;
   if (els.summaryCountOverdue) els.summaryCountOverdue.textContent = overdue.length;
   if (els.summaryCountSoon) els.summaryCountSoon.textContent = dueSoon.length;
+  if (els.summaryCountShared) els.summaryCountShared.textContent = sharedCount;
   if (els.summaryCountDone) els.summaryCountDone.textContent = doneCount;
+  if (els.countShared) els.countShared.textContent = sharedCount;
 
   const progress = state.progressData && typeof state.progressData === "object" ? state.progressData : null;
   const monthProgress = progress?.month && typeof progress.month === "object" ? progress.month : null;
@@ -5221,9 +5671,10 @@ function renderActionQueue(baseList) {
     const title = document.createElement("div");
     title.className = "item-title";
     title.textContent = item.name_snapshot;
+    appendSharedHouseholdPill(title, item);
     const meta = document.createElement("div");
     meta.className = "item-sub";
-    meta.textContent = `Due ${formatShortDate(item.due_date)}`;
+    meta.textContent = `Due ${formatShortDate(item.due_date)}${getSharedHouseholdSuffix(item)}`;
     main.appendChild(title);
     main.appendChild(meta);
 
@@ -5479,15 +5930,28 @@ function renderActivity() {
   if (!els.reviewActivityList) return;
   els.reviewActivityList.innerHTML = "";
   const events = state.activityEvents || [];
+  const itemMap = getReviewScopeItemMap();
+  if (els.reviewFilters) {
+    els.reviewFilters.forEach((btn) => btn.classList.toggle("active", (btn.dataset.reviewRange || "month") === state.reviewRange));
+  }
+  if (els.reviewScopeFilters) {
+    els.reviewScopeFilters.forEach((btn) => btn.classList.toggle("active", (btn.dataset.reviewScope || "all") === state.reviewScope));
+  }
   if (events.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
-    empty.textContent = "No activity yet.";
+    empty.textContent =
+      state.reviewScope === "shared"
+        ? "No shared household activity yet."
+        : state.reviewScope === "personal"
+          ? "No personal-only activity yet."
+          : "No activity yet.";
     els.reviewActivityList.appendChild(empty);
     return;
   }
 
   const filtered = events.filter((event) => {
+    if (!matchesReviewScopeEvent(event, itemMap)) return false;
     if (state.reviewRange === "today") {
       return String(event.created_at || "").startsWith(getTodayDateString());
     }
@@ -5502,7 +5966,12 @@ function renderActivity() {
   if (filtered.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
-    empty.textContent = "No activity yet.";
+    empty.textContent =
+      state.reviewScope === "shared"
+        ? "No shared household activity yet."
+        : state.reviewScope === "personal"
+          ? "No personal-only activity yet."
+          : "No activity yet.";
     els.reviewActivityList.appendChild(empty);
     return;
   }
@@ -5532,7 +6001,10 @@ function renderActivity() {
     meta.className = "item-sub";
     const desc = describeEvent(event);
     title.textContent = desc.title;
-    meta.textContent = desc.meta;
+    const scopeItem = itemMap.get(event.instance_id);
+    meta.textContent = state.reviewScope === "all" && scopeItem
+      ? `${desc.meta}${getSharedHouseholdSuffix(scopeItem)}`
+      : desc.meta;
     left.appendChild(title);
     left.appendChild(meta);
     row.appendChild(left);
@@ -8034,6 +8506,30 @@ function updateShareStatusLine(message, tone = "") {
   }
 }
 
+function updateShareLifecycleState(share) {
+  if (els.shareLinkState) {
+    els.shareLinkState.textContent = share
+      ? share.is_active === false
+        ? "Disabled"
+        : share.mode === "snapshot"
+          ? "Snapshot link active"
+          : "Live link active"
+      : "Not created";
+  }
+  if (els.sharePublishState) {
+    els.sharePublishState.textContent = share
+      ? share.last_published_at
+        ? "Current view published"
+        : "Needs publish"
+      : "Waiting for link";
+  }
+  if (els.shareLastPublished) {
+    els.shareLastPublished.textContent = share?.last_published_at
+      ? formatDateTime(share.last_published_at)
+      : "Not published yet";
+  }
+}
+
 function setShareBusy(busy) {
   state.shareBusy = !!busy;
   const disabled = state.shareBusy || state.readOnly;
@@ -8082,6 +8578,7 @@ function buildSharePayload() {
       amount_paid: includeAmounts ? Number(item.amount_paid || 0) : null,
       amount_remaining: includeAmounts ? Number(item.amount_remaining || 0) : null,
       essential_snapshot: !!item.essential_snapshot,
+      shared_household_snapshot: isSharedHouseholdItem(item),
       autopay_snapshot: !!item.autopay_snapshot,
       note: includeNotes ? item.note || null : null,
     })),
@@ -8284,6 +8781,7 @@ function updateShareModal() {
   }
   if (els.shareRefresh) {
     els.shareRefresh.classList.toggle("hidden", !share);
+    els.shareRefresh.textContent = share?.last_published_at ? "Republish current view" : "Publish current view";
   }
   if (els.shareRegenerate) {
     els.shareRegenerate.classList.toggle("hidden", !share);
@@ -8294,6 +8792,7 @@ function updateShareModal() {
   if (els.shareCopy) {
     els.shareCopy.disabled = !share;
   }
+  updateShareLifecycleState(share);
   const network = getShareNetworkMode();
   if (els.shareRelayStatus && share?.last_published_at) {
     let message = `${network.message} Last shared update: ${formatDateTime(share.last_published_at)}.`;
@@ -8302,8 +8801,11 @@ function updateShareModal() {
     }
     if (network.warning) message += ` ${network.warning}`;
     updateShareStatusLine(message, network.warning ? "warn" : "ok");
-  } else if (els.shareRelayStatus && share?.expires_at) {
-    let message = `${network.message} Share link expires ${formatDateTime(share.expires_at)}.`;
+  } else if (els.shareRelayStatus && share) {
+    let message = `${network.message} Read-only link created. Publish current view so viewers can load this ledger.`;
+    if (share.expires_at) {
+      message += ` Expires ${formatDateTime(share.expires_at)}.`;
+    }
     if (network.warning) message += ` ${network.warning}`;
     updateShareStatusLine(message, network.warning ? "warn" : "ok");
   } else if (els.shareRelayStatus) {
@@ -8396,13 +8898,17 @@ async function createShareLink() {
     is_active: true,
     owner_label: ownerLabel,
     expires_at: data.expires_at || expiresAt || null,
+    last_published_at: null,
     url: shareUrl,
   };
+  updateShareModal();
+  updateShareStatusLine("Read-only link created. Publishing current view for viewers…", "ok");
   try {
     await publishShare(buildSharePayload());
+    updateShareStatusLine("Read-only link created and current view published.", "ok");
   } catch (err) {
-    const message = String(err.message || "Share created, but initial publish failed.");
-    showSystemBanner(message);
+    const message = "Read-only link created, but the current view has not been published yet. Use Publish current view to finish loading it for viewers.";
+    showSystemBanner(String(err?.message || message));
     updateShareStatusLine(message, "warn");
     scheduleSharePublish({ immediate: true });
   }
@@ -8688,7 +9194,7 @@ function applyHouseholdResponse(data) {
 
 function buildHouseholdPayload() {
   const derived = deriveInstances();
-  const base = getBaseInstances(derived);
+  const base = getBaseInstances(derived).filter((item) => isSharedHouseholdItem(item));
   return {
     schema_version: "1",
     period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
@@ -8766,6 +9272,22 @@ function dismissHouseholdEntryNotice() {
   renderSharedHousehold();
 }
 
+function triggerHouseholdEntryAction() {
+  const action = String(state.householdEntryNotice?.action || "").trim();
+  if (action === "invite-phone") {
+    openPhoneHandoffSheet("household");
+    return;
+  }
+  if (action === "sync-shared") {
+    syncHouseholdNow().catch(() => {});
+    return;
+  }
+  if (action === "open-items" || action === "review-shared") {
+    els.householdLedgerCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+}
+
 function setHouseholdEntryNotice(notice) {
   state.householdEntryNotice = notice || null;
   renderSharedHousehold();
@@ -8777,12 +9299,12 @@ function renderHouseholdStatusCopy() {
   const household = state.householdInfo;
   if (inviteToken && !state.householdSession) {
     els.householdStatusCopy.textContent =
-      "Invite detected. Enter your display name to join this shared ledger on this device.";
+      "Invite detected. Enter your display name to join the shared household on this device.";
     return;
   }
   if (!state.householdSession) {
     els.householdStatusCopy.textContent =
-      "Link a spouse or family member without logins. Keep one shared ledger of what each person has covered this month.";
+      "Only recurring bills marked Shared household sync here. Link a spouse or family member without logins and keep one shared household ledger.";
     return;
   }
   if (!household) {
@@ -8791,18 +9313,50 @@ function renderHouseholdStatusCopy() {
   }
   if (household.role === "owner") {
     els.householdStatusCopy.textContent =
-      "Owner view. Sync the current month after edits, invite household members, and keep the recovery code somewhere safe. Rotate it if a device is lost.";
+      "Owner view. Only bills marked Shared household sync here. Refresh the shared month after personal-ledger edits, invite members, and keep the recovery code somewhere safe.";
     return;
   }
   const memberName = household.member_name || state.householdSession.member_name || "Member";
   els.householdStatusCopy.textContent =
-    `${memberName} is linked to this household. Log what you covered and the shared ledger will track who handled what.`;
+    `${memberName} is linked to this household. Log what you covered here, while your full month stays in My ledger.`;
+}
+
+function getHouseholdContributionSnapshot() {
+  const household = state.householdInfo || {};
+  const members = Array.isArray(household.members) ? household.members : [];
+  const items = Array.isArray(household.items) ? household.items : [];
+  const summary = household.summary || {
+    item_count: 0,
+    done_count: 0,
+    open_count: 0,
+    total_due: 0,
+    total_contributed: 0,
+    total_remaining: 0,
+  };
+  const thisDeviceMember =
+    members.find((member) => member.token && member.token === state.householdSession?.member_token) || null;
+  const thisDeviceContributed = Number(thisDeviceMember?.contributed || 0);
+  const totalContributed = Number(summary.total_contributed || 0);
+  const otherContributed = Math.max(0, totalContributed - thisDeviceContributed);
+  const openItems = Number(summary.open_count || items.filter((item) => Number(item.shared_remaining || 0) > 0).length || 0);
+  const yourSharePercent = totalContributed > 0 ? Math.round((thisDeviceContributed / totalContributed) * 100) : 0;
+  return {
+    members,
+    items,
+    summary,
+    thisDeviceMember,
+    thisDeviceContributed,
+    otherContributed,
+    openItems,
+    yourSharePercent,
+  };
 }
 
 function renderHouseholdMembers() {
   if (!els.householdMembersList) return;
   els.householdMembersList.innerHTML = "";
-  const members = Array.isArray(state.householdInfo?.members) ? state.householdInfo.members : [];
+  const snapshot = getHouseholdContributionSnapshot();
+  const { members, thisDeviceMember, thisDeviceContributed, otherContributed, openItems, summary } = snapshot;
   if (members.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
@@ -8810,7 +9364,6 @@ function renderHouseholdMembers() {
     els.householdMembersList.appendChild(empty);
     return;
   }
-  const thisDeviceMember = members.find((member) => member.token && member.token === state.householdSession?.member_token) || null;
   if (els.householdMembersSummary) {
     els.householdMembersSummary.classList.toggle("hidden", members.length === 0);
   }
@@ -8818,7 +9371,13 @@ function renderHouseholdMembers() {
     els.householdMemberCount.textContent = String(members.length);
   }
   if (els.householdThisDeviceTotal) {
-    els.householdThisDeviceTotal.textContent = formatMoney(thisDeviceMember?.contributed || 0);
+    els.householdThisDeviceTotal.textContent = formatMoney(thisDeviceContributed);
+  }
+  if (els.householdOtherDeviceTotal) {
+    els.householdOtherDeviceTotal.textContent = formatMoney(otherContributed);
+  }
+  if (els.householdOpenItemCount) {
+    els.householdOpenItemCount.textContent = String(openItems);
   }
   members.forEach((member) => {
     const row = document.createElement("div");
@@ -8849,7 +9408,11 @@ function renderHouseholdMembers() {
 
     const total = document.createElement("div");
     total.className = "household-member-total";
-    total.textContent = formatMoney(member.contributed || 0);
+    const contributed = Number(member.contributed || 0);
+    const sharePct = Number(summary.total_contributed || 0) > 0
+      ? Math.round((contributed / Number(summary.total_contributed || 0)) * 100)
+      : 0;
+    total.textContent = `${formatMoney(contributed)}${contributed > 0 ? ` · ${sharePct}%` : ""}`;
 
     side.appendChild(total);
 
@@ -9085,13 +9648,9 @@ function renderSharedHousehold() {
     return;
   }
 
-  const summary = household.summary || {
-    total_due: 0,
-    total_contributed: 0,
-    total_remaining: 0,
-    done_count: 0,
-    item_count: 0,
-  };
+  const contribution = getHouseholdContributionSnapshot();
+  const summary = contribution.summary;
+  const openItems = contribution.openItems;
   if (els.householdTitle) {
     els.householdTitle.textContent = household.name || "Shared household";
   }
@@ -9118,11 +9677,11 @@ function renderSharedHousehold() {
   if (els.householdGuidanceCopy) {
     if (household.role === "owner") {
       els.householdGuidanceCopy.textContent =
-        "This device can invite members, refresh the shared month, and recover owner access later. Save the recovery code off this phone too, and rotate it if the phone is lost.";
+        "This device can invite members, refresh only the Shared household bills from My ledger, and recover owner access later. Save the recovery code off this phone too, and rotate it if the phone is lost.";
     } else {
       const memberName = household.member_name || state.householdSession?.member_name || "This device";
       els.householdGuidanceCopy.textContent =
-        `${memberName} can log shared updates here. Only the owner can rotate recovery codes, refresh invites, or remove linked devices.`;
+        `${memberName} can log shared updates here. Bills not marked Shared household stay only in My ledger.`;
     }
   }
   if (els.householdGuidanceAction) {
@@ -9134,7 +9693,11 @@ function renderSharedHousehold() {
     els.householdEntryNotice.classList.toggle("hidden", !notice);
     if (notice) {
       els.householdEntryTitle.textContent = notice.title || "This phone is linked";
-      els.householdEntryCopy.textContent = notice.body || "You can start logging shared updates here right away.";
+      const fallbackBody =
+        openItems > 0
+          ? `${openItems} shared bill${openItems === 1 ? "" : "s"} are ready here now. Your other bills stay in My ledger.`
+          : "You can start logging shared updates here right away. Your other bills stay in My ledger.";
+      els.householdEntryCopy.textContent = notice.body || fallbackBody;
     }
   }
   if (els.householdTotalDue) els.householdTotalDue.textContent = formatMoney(summary.total_due || 0);
@@ -9146,6 +9709,31 @@ function renderSharedHousehold() {
   }
   if (els.householdItemsHandled) {
     els.householdItemsHandled.textContent = `${summary.done_count || 0} / ${summary.item_count || 0}`;
+  }
+  if (els.householdYouCovered) {
+    els.householdYouCovered.textContent = formatMoney(contribution.thisDeviceContributed || 0);
+  }
+  if (els.householdOthersCovered) {
+    els.householdOthersCovered.textContent = formatMoney(contribution.otherContributed || 0);
+  }
+  if (els.householdOpenItems) {
+    els.householdOpenItems.textContent = String(openItems || 0);
+  }
+  if (els.householdYouShare) {
+    els.householdYouShare.textContent = `${contribution.yourSharePercent || 0}%`;
+  }
+  if (els.householdSummaryNote) {
+    if (!summary.item_count) {
+      els.householdSummaryNote.textContent =
+        "Shared coverage will appear here once this household starts logging updates.";
+    } else {
+      const who = household.role === "owner" ? "This device" : (household.member_name || "This device");
+      const openCopy = openItems > 0
+        ? `${openItems} shared bill${openItems === 1 ? "" : "s"} still need attention.`
+        : "Shared household bills are fully covered right now.";
+      els.householdSummaryNote.textContent =
+        `${who} covered ${formatMoney(contribution.thisDeviceContributed || 0)} so far. Other linked devices covered ${formatMoney(contribution.otherContributed || 0)}. ${openCopy}`;
+    }
   }
   if (els.householdInviteLink) {
     els.householdInviteLink.value = household.invite?.url || "";
@@ -9187,6 +9775,16 @@ function renderSharedHousehold() {
     els.householdPeriod.textContent = household.period
       ? `Shared period · ${household.period}`
       : "No shared period yet.";
+  }
+  if (els.householdEntryAction) {
+    const notice = state.householdEntryNotice;
+    let actionLabel = "";
+    if (notice?.action === "invite-phone") actionLabel = "Invite another phone";
+    else if (notice?.action === "sync-shared") actionLabel = "Sync shared bills";
+    else if (notice?.action === "open-items") actionLabel = "Open shared items";
+    else if (notice?.action === "review-shared") actionLabel = "Review shared bills";
+    els.householdEntryAction.classList.toggle("hidden", !actionLabel);
+    if (actionLabel) els.householdEntryAction.textContent = actionLabel;
   }
   renderHouseholdMembers();
   renderHouseholdItems();
@@ -9320,6 +9918,7 @@ async function createHousehold() {
     setHouseholdEntryNotice({
       title: "Shared household ready",
       body: "This device is now the owner. Invite another phone when you want a spouse or family member to join the shared ledger.",
+      action: "invite-phone",
     });
     await setOnboardingComplete(true);
     state.view = "shared";
@@ -9359,6 +9958,7 @@ async function joinHousehold() {
     setHouseholdEntryNotice({
       title: "This phone joined the household",
       body: `${displayName} can now log shared updates here. The shared ledger will keep track of what this device handled.`,
+      action: "open-items",
     });
     clearHouseholdInviteQuery();
     await setOnboardingComplete(true);
@@ -9400,6 +10000,7 @@ async function recoverHouseholdOwner() {
     setHouseholdEntryNotice({
       title: "Owner access restored",
       body: "This phone can invite members, refresh the shared month, and rotate the owner recovery code. Copy the recovery code again if this is a new device.",
+      action: "review-shared",
     });
     clearHouseholdInviteQuery();
     await setOnboardingComplete(true);
@@ -9760,6 +10361,9 @@ async function applyImport() {
       renderBackupStatus();
     }
     await refreshAll();
+    state.view = "today";
+    renderView();
+    showToast("Import complete. Your month is ready.");
   } catch (err) {
     window.alert("Unable to import backup.");
   }
@@ -9769,6 +10373,7 @@ function renderCategories() {
   if (!els.categoriesList) return;
   els.categoriesList.innerHTML = "";
   const categories = Array.from(new Set((state.settings.categories || []).filter(Boolean)));
+  renderTemplateCategoryChoices();
   if (categories.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
@@ -9948,10 +10553,11 @@ function renderItems(baseList) {
     const title = document.createElement("div");
     title.className = "item-title";
     title.textContent = item.name_snapshot;
+    appendSharedHouseholdPill(title, item);
     const sub = document.createElement("div");
     sub.className = "item-sub";
     const category = item.category_snapshot ? ` · ${item.category_snapshot}` : "";
-    sub.textContent = `Due ${formatShortDate(item.due_date)}${category}`;
+    sub.textContent = `Due ${formatShortDate(item.due_date)}${category}${getSharedHouseholdSuffix(item)}`;
     main.appendChild(title);
     main.appendChild(sub);
 
@@ -10083,12 +10689,87 @@ async function renderDetailHistory(instanceId) {
   });
 }
 
+function renderTemplateCategoryChoices() {
+  const choices = getSetupCategoryChoices();
+  if (els.templateCategoryOptions) {
+    els.templateCategoryOptions.innerHTML = "";
+    choices.forEach((category) => {
+      const option = document.createElement("option");
+      option.value = category;
+      els.templateCategoryOptions.appendChild(option);
+    });
+  }
+  if (els.templateCategoryChips) {
+    els.templateCategoryChips.innerHTML = "";
+    choices.forEach((category) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chip";
+      button.textContent = category;
+      button.addEventListener("click", () => {
+        if (els.templateCategory) els.templateCategory.value = category;
+      });
+      els.templateCategoryChips.appendChild(button);
+    });
+  }
+}
+
+function renderSetupGuide() {
+  const hasData = hasRecurringBillsSetupData();
+  const showGuide = shouldShowSetupGuide();
+  if (els.setupGuide) {
+    els.setupGuide.classList.toggle("hidden", !showGuide);
+  }
+  const setupPath = state.setupPath || "builder";
+  const reviewReady = Array.isArray(state.templateDrafts) && state.templateDrafts.length > 0;
+  const completed = isFirstRunCompleted() && hasData;
+  const startStatus = completed ? "done" : !reviewReady && !hasData ? "active" : "done";
+  const buildStatus = completed ? "done" : setupPath === "builder" || reviewReady || hasData ? "active" : "pending";
+  const reviewStatus = completed ? "done" : reviewReady ? "active" : hasData ? "done" : "pending";
+  const doneStatus = completed ? "done" : "pending";
+  const progressStates = [
+    [els.setupStepStart, startStatus],
+    [els.setupStepBuild, buildStatus],
+    [els.setupStepReview, reviewStatus],
+    [els.setupStepDone, doneStatus],
+  ];
+  progressStates.forEach(([node, status]) => {
+    if (!node) return;
+    node.classList.remove("active", "done", "pending");
+    node.classList.add(status);
+  });
+  [
+    [els.setupPathBuilder, setupPath === "builder"],
+    [els.setupPathImport, setupPath === "import"],
+    [els.setupPathShared, setupPath === "shared"],
+  ].forEach(([button, active]) => {
+    if (!button) return;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  if (els.setupGuideNote) {
+    if (completed) {
+      const recent = state.lastSetupSaveSummary;
+      if (recent && recent.savedCount > 0) {
+        const sharedCopy = recent.savedSharedCount > 0 ? ` · ${recent.savedSharedCount} shared household` : "";
+        els.setupGuideNote.textContent = `Setup complete. You just saved ${recent.savedCount} recurring bill${recent.savedCount === 1 ? "" : "s"} (${formatMoneyDisplay(recent.savedTotal)} scheduled${sharedCopy}).`;
+      } else {
+        els.setupGuideNote.textContent = "Setup complete. You can still add, import, or reorganize recurring bills here.";
+      }
+    } else if (setupPath === "import") {
+      els.setupGuideNote.textContent = "Import gives you the fastest path if you already have an AJL backup from another device.";
+    } else if (setupPath === "shared") {
+      els.setupGuideNote.textContent = "Shared household is best when someone already created the linked ledger for your home.";
+    } else if (reviewReady) {
+      els.setupGuideNote.textContent = "Review your draft bills, then save them together. AJL will generate this month automatically.";
+    } else {
+      els.setupGuideNote.textContent = "Add recurring bills, review them once, then save everything together.";
+    }
+  }
+}
+
 function renderSetupCta() {
-  if (!els.setupCta) return;
-  const hasTemplates = Array.isArray(state.templates) && state.templates.length > 0;
-  const hasItems = Array.isArray(state.instances) && state.instances.length > 0;
-  const show = !hasTemplates || !hasItems;
-  els.setupCta.classList.toggle("hidden", !show);
+  renderSetupGuide();
 }
 
 function renderFirstVisitHero() {
@@ -10101,6 +10782,9 @@ function renderFirstVisitHero() {
   document.body.classList.toggle("landing", !hide);
   if (els.firstVisitWebNote) {
     els.firstVisitWebNote.classList.toggle("hidden", !AJL_WEB_MODE);
+  }
+  if (els.firstVisitTemplate) {
+    els.firstVisitTemplate.textContent = "Add my bills";
   }
 }
 
@@ -11046,12 +11730,12 @@ async function runShannonMode(profile = "full") {
   state.janitorRuntimeRequired = runtimeRequired;
   saveJanitorRuntimeSettings();
   syncJanitorRuntimeControls();
-  const payload = {
+  const runPayload = {
     profile: runProfile,
     runtime_required: runtimeRequired,
   };
   if (runtimeBase) {
-    payload.runtime_base = runtimeBase;
+    runPayload.runtime_base = runtimeBase;
   }
   shannonInFlight = true;
   setShannonBusy(true);
@@ -11069,7 +11753,7 @@ async function runShannonMode(profile = "full") {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(runPayload),
         },
         JANITOR_START_TIMEOUT_MS
       );
@@ -11102,16 +11786,16 @@ async function runShannonMode(profile = "full") {
       return;
     }
     const requestId = getRequestIdFromResponse(res);
-    const payload = await readApiData(res);
+    const responsePayload = await readApiData(res);
     if (!res.ok) {
-      if (res.status === 409 && payload?.state) {
-        renderShannonState(payload.state);
+      if (res.status === 409 && responsePayload?.state) {
+        renderShannonState(responsePayload.state);
         state.janitorReport = null;
-        renderJanitorDashboard(payload.state);
+        renderJanitorDashboard(responsePayload.state);
         showToast("Janitor is already running. Showing live status.");
         return;
       }
-      const baseMessage = getErrorMessage(payload, `Unable to run Janitor (${res.status}).`);
+      const baseMessage = getErrorMessage(responsePayload, `Unable to run Janitor (${res.status}).`);
       const message = requestId ? `${baseMessage} (ref: ${requestId})` : baseMessage;
       els.shannonStatus.textContent = message;
       if (els.shannonSummary) {
@@ -11120,9 +11804,9 @@ async function runShannonMode(profile = "full") {
       showSystemBanner(message);
       return;
     }
-    renderShannonState(payload?.state || {});
+    renderShannonState(responsePayload?.state || {});
     state.janitorReport = null;
-    renderJanitorDashboard(payload?.state || {});
+    renderJanitorDashboard(responsePayload?.state || {});
     showToast(runProfile === "llm-runtime" ? "Janitor LLM runtime probe started." : "Janitor started.");
     await loadShannonStatus({ force: true, silent: true });
   } finally {
@@ -11271,6 +11955,225 @@ function renderDetailsEmpty() {
   if (panel) panel.classList.add("hidden");
 }
 
+function renderTemplateDrafts() {
+  renderTemplateCategoryChoices();
+  const summary = getTemplateDraftSummary();
+  if (els.builderDraftCount) els.builderDraftCount.textContent = String(summary.count);
+  if (els.builderDraftTotal) els.builderDraftTotal.textContent = formatMoney(summary.total);
+  if (els.builderDraftEssentials) els.builderDraftEssentials.textContent = String(summary.essentials);
+  if (els.builderDraftPreview) els.builderDraftPreview.textContent = summary.preview;
+  if (els.templateDraftsEmpty) {
+    els.templateDraftsEmpty.classList.toggle("hidden", summary.count > 0);
+  }
+  if (els.templateDraftsSave) {
+    els.templateDraftsSave.textContent = summary.count > 0 ? `Save ${summary.count} bill${summary.count === 1 ? "" : "s"}` : "Save all bills";
+    els.templateDraftsSave.disabled = summary.count === 0;
+  }
+  if (els.templateDraftsDiscard) {
+    els.templateDraftsDiscard.disabled = summary.count === 0;
+  }
+  if (!els.templateDraftsList) return;
+  els.templateDraftsList.innerHTML = "";
+  state.templateDrafts.forEach((draft, index) => {
+    const clean = sanitizeTemplateDraft(draft);
+    const row = document.createElement("div");
+    row.className = "draft-row";
+
+    const header = document.createElement("div");
+    header.className = "draft-row-header";
+    const title = document.createElement("div");
+    title.className = "draft-row-title";
+    title.textContent = clean.name || `Bill ${index + 1}`;
+    const badge = document.createElement("span");
+    badge.className = "draft-pill";
+    badge.textContent = "Unsaved";
+    header.appendChild(title);
+    header.appendChild(badge);
+
+    const grid = document.createElement("div");
+    grid.className = "draft-row-grid";
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "Bill name";
+    nameInput.value = clean.name;
+    nameInput.addEventListener("input", () => {
+      draft.name = nameInput.value;
+    });
+    nameInput.addEventListener("change", () => renderTemplateDrafts());
+
+    const amountInput = document.createElement("input");
+    amountInput.type = "number";
+    amountInput.min = "0";
+    amountInput.step = "0.01";
+    amountInput.placeholder = "Amount";
+    amountInput.value = Number(clean.amount_default || 0).toFixed(2);
+    amountInput.addEventListener("input", () => {
+      draft.amount_default = Number(amountInput.value || 0);
+    });
+    amountInput.addEventListener("change", () => renderTemplateDrafts());
+
+    const dueInput = document.createElement("input");
+    dueInput.type = "number";
+    dueInput.min = "1";
+    dueInput.max = "31";
+    dueInput.placeholder = "Due day";
+    dueInput.value = clean.due_day;
+    dueInput.addEventListener("input", () => {
+      draft.due_day = clampSetupDueDay(dueInput.value);
+    });
+    dueInput.addEventListener("change", () => renderTemplateDrafts());
+
+    const categoryInput = document.createElement("input");
+    categoryInput.type = "text";
+    categoryInput.placeholder = "Category";
+    categoryInput.setAttribute("list", "template-category-options");
+    categoryInput.value = clean.category;
+    categoryInput.addEventListener("input", () => {
+      draft.category = categoryInput.value;
+    });
+    categoryInput.addEventListener("change", () => renderTemplateDrafts());
+
+    const essentialLabel = document.createElement("label");
+    essentialLabel.className = "toggle small";
+    const essentialInput = document.createElement("input");
+    essentialInput.type = "checkbox";
+    essentialInput.checked = clean.essential;
+    essentialInput.addEventListener("change", () => {
+      draft.essential = essentialInput.checked;
+      renderTemplateDrafts();
+    });
+    const essentialText = document.createElement("span");
+    essentialText.textContent = "Essential";
+    essentialLabel.appendChild(essentialInput);
+    essentialLabel.appendChild(essentialText);
+
+    const sharedLabel = document.createElement("label");
+    sharedLabel.className = "toggle small";
+    const sharedInput = document.createElement("input");
+    sharedInput.type = "checkbox";
+    sharedInput.checked = clean.shared_household;
+    sharedInput.addEventListener("change", () => {
+      draft.shared_household = sharedInput.checked;
+      renderTemplateDrafts();
+    });
+    const sharedText = document.createElement("span");
+    sharedText.textContent = "Shared household";
+    sharedLabel.appendChild(sharedInput);
+    sharedLabel.appendChild(sharedText);
+
+    grid.appendChild(nameInput);
+    grid.appendChild(amountInput);
+    grid.appendChild(dueInput);
+    grid.appendChild(categoryInput);
+    grid.appendChild(essentialLabel);
+    grid.appendChild(sharedLabel);
+
+    const actions = document.createElement("div");
+    actions.className = "draft-row-actions";
+
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "ghost-btn";
+    moreBtn.textContent = clean.expanded ? "Less" : "More";
+    moreBtn.addEventListener("click", () => {
+      draft.expanded = !clean.expanded;
+      renderTemplateDrafts();
+    });
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "ghost-btn danger";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", () => {
+      state.templateDrafts = state.templateDrafts.filter((entry) => entry.id !== draft.id);
+      renderTemplateDrafts();
+      renderSetupGuide();
+    });
+
+    actions.appendChild(moreBtn);
+    actions.appendChild(deleteBtn);
+
+    row.appendChild(header);
+    row.appendChild(grid);
+    row.appendChild(actions);
+
+    if (clean.expanded) {
+      const advanced = document.createElement("div");
+      advanced.className = "draft-row-advanced";
+
+      const autopayLabel = document.createElement("label");
+      autopayLabel.className = "toggle small";
+      const autopayInput = document.createElement("input");
+      autopayInput.type = "checkbox";
+      autopayInput.checked = clean.autopay;
+      autopayInput.addEventListener("change", () => {
+        draft.autopay = autopayInput.checked;
+      });
+      const autopayText = document.createElement("span");
+      autopayText.textContent = "Autopay";
+      autopayLabel.appendChild(autopayInput);
+      autopayLabel.appendChild(autopayText);
+
+      const activeLabel = document.createElement("label");
+      activeLabel.className = "toggle small";
+      const activeInput = document.createElement("input");
+      activeInput.type = "checkbox";
+      activeInput.checked = clean.active;
+      activeInput.addEventListener("change", () => {
+        draft.active = activeInput.checked;
+      });
+      const activeText = document.createElement("span");
+      activeText.textContent = "Active";
+      activeLabel.appendChild(activeInput);
+      activeLabel.appendChild(activeText);
+
+      const noteInput = document.createElement("input");
+      noteInput.type = "text";
+      noteInput.placeholder = "Default note";
+      noteInput.value = clean.default_note;
+      noteInput.addEventListener("input", () => {
+        draft.default_note = noteInput.value;
+      });
+
+      const matchKeyInput = document.createElement("input");
+      matchKeyInput.type = "text";
+      matchKeyInput.placeholder = "Match key";
+      matchKeyInput.value = clean.match_payee_key;
+      matchKeyInput.addEventListener("input", () => {
+        draft.match_payee_key = matchKeyInput.value;
+      });
+
+      const matchToleranceInput = document.createElement("input");
+      matchToleranceInput.type = "number";
+      matchToleranceInput.min = "0";
+      matchToleranceInput.step = "0.01";
+      matchToleranceInput.placeholder = "Match tolerance";
+      matchToleranceInput.value = Number(clean.match_amount_tolerance || 0);
+      matchToleranceInput.addEventListener("input", () => {
+        draft.match_amount_tolerance = Number(matchToleranceInput.value || 0);
+      });
+
+      advanced.appendChild(autopayLabel);
+      advanced.appendChild(activeLabel);
+      advanced.appendChild(noteInput);
+      advanced.appendChild(matchKeyInput);
+      advanced.appendChild(matchToleranceInput);
+      row.appendChild(advanced);
+    }
+
+    const validationMessage = validateTemplateDraft(clean);
+    if (validationMessage) {
+      const error = document.createElement("div");
+      error.className = "form-error";
+      error.textContent = validationMessage;
+      row.appendChild(error);
+    }
+
+    els.templateDraftsList.appendChild(row);
+  });
+}
+
 function mountDetailPanelToPane() {
   if (!els.detailsPane) return;
   const panel = getDetailPanel();
@@ -11309,7 +12212,7 @@ function openInstanceDetail(instanceId) {
   if (els.detailName) els.detailName.textContent = item.name_snapshot;
   if (els.detailMeta) {
     const statusLabel = formatStatusLabel(item.status_derived);
-    els.detailMeta.textContent = `Due ${formatShortDate(item.due_date)} · ${statusLabel}`;
+    els.detailMeta.textContent = `Due ${formatShortDate(item.due_date)} · ${statusLabel}${getSharedHouseholdSuffix(item)}`;
   }
   if (els.detailMarkDone) {
     const isDone = item.status_derived === "paid" || item.amount_remaining <= 0;
@@ -11370,19 +12273,27 @@ function renderMonthReview(baseList) {
   els.reviewList.innerHTML = "";
   els.reviewSummary.innerHTML = "";
 
-  const summary = computeTotals(baseList);
-  const activeItems = baseList.filter((item) => item.status_derived !== "skipped");
+  const scopedList = getReviewScopeItems(baseList);
+  const summary = computeTotals(scopedList);
+  const activeItems = scopedList.filter((item) => item.status_derived !== "skipped");
   const paidItems = activeItems.filter((item) => item.amount_remaining <= 0);
+  const scopeLabel = getReviewScopeLabel();
+  const allowedIds = new Set(scopedList.map((item) => item.id));
 
-  const payments = state.payments || [];
+  const payments = (state.payments || []).filter((payment) => allowedIds.has(payment.instance_id));
   if (activeItems.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
-    empty.textContent = "No items this month.";
+    empty.textContent =
+      state.reviewScope === "shared"
+        ? "No shared household bills this month."
+        : state.reviewScope === "personal"
+          ? "No personal-only bills this month."
+          : "No items this month.";
     els.reviewList.appendChild(empty);
   }
 
-  const nameMap = new Map(state.instances.map((inst) => [inst.id, inst.name_snapshot]));
+  const nameMap = new Map(scopedList.map((inst) => [inst.id, inst.name_snapshot]));
   let firstPayment = null;
   let lastPayment = null;
   const lastPaidMap = new Map();
@@ -11466,9 +12377,25 @@ function renderMonthReview(baseList) {
   timeMetric.appendChild(timeValue);
   timeMetric.appendChild(timeSub);
 
+  const scopeMetric = document.createElement("div");
+  scopeMetric.className = "review-metric";
+  const scopeLabelNode = document.createElement("div");
+  scopeLabelNode.className = "review-label";
+  scopeLabelNode.textContent = "Scope";
+  const scopeValue = document.createElement("div");
+  scopeValue.className = "review-value";
+  scopeValue.textContent = scopeLabel;
+  const scopeSub = document.createElement("div");
+  scopeSub.className = "review-sub";
+  scopeSub.textContent = `${scopedList.length} bill${scopedList.length === 1 ? "" : "s"} in this view`;
+  scopeMetric.appendChild(scopeLabelNode);
+  scopeMetric.appendChild(scopeValue);
+  scopeMetric.appendChild(scopeSub);
+
   els.reviewSummary.appendChild(remainingMetric);
   els.reviewSummary.appendChild(doneMetric);
   els.reviewSummary.appendChild(timeMetric);
+  els.reviewSummary.appendChild(scopeMetric);
 
   const addRow = (title, body) => {
     const row = document.createElement("div");
@@ -11486,6 +12413,7 @@ function renderMonthReview(baseList) {
     els.reviewList.appendChild(row);
   };
 
+  addRow("Scope", scopeLabel);
   addRow("Updates logged", `${payments.length} update(s)`);
 
   if (firstPayment) {
@@ -11521,8 +12449,9 @@ function renderMonthReview(baseList) {
 
 function exportReviewCsv() {
   const derived = deriveInstances();
-  const baseList = getBaseInstances(derived);
-  const payments = state.payments || [];
+  const baseList = getReviewScopeItems(getBaseInstances(derived));
+  const allowedIds = new Set(baseList.map((item) => item.id));
+  const payments = (state.payments || []).filter((payment) => allowedIds.has(payment.instance_id));
   const lastPaidMap = new Map();
   payments.forEach((payment) => {
     const current = lastPaidMap.get(payment.instance_id);
@@ -11536,6 +12465,7 @@ function exportReviewCsv() {
       "category",
       "due_date",
       "status",
+      "scope",
       "amount",
       "amount_paid",
       "amount_remaining",
@@ -11548,6 +12478,7 @@ function exportReviewCsv() {
       item.category_snapshot || "",
       item.due_date || "",
       item.status_derived || item.status || "",
+      isSharedHouseholdItem(item) ? "shared_household" : "personal",
       Number(item.amount || 0),
       Number(item.amount_paid || 0),
       Number(item.amount_remaining || 0),
@@ -11593,7 +12524,7 @@ function renderTemplates() {
   if (state.templates.length === 0) {
     const empty = document.createElement("div");
     empty.className = "meta";
-    empty.textContent = "Add your first bill to get started.";
+    empty.textContent = "Save your first recurring bill to see it here.";
     els.templatesList.appendChild(empty);
     if (els.selectAllTemplates) els.selectAllTemplates.checked = false;
     if (els.archiveSelected) els.archiveSelected.disabled = true;
@@ -11662,6 +12593,26 @@ function renderTemplates() {
     essentialToggle.appendChild(essentialInput);
     essentialToggle.appendChild(essentialLabel);
 
+    const sharedToggle = document.createElement("label");
+    sharedToggle.className = "toggle small";
+    const sharedInput = document.createElement("input");
+    sharedInput.type = "checkbox";
+    sharedInput.checked = !!template.shared_household;
+    const sharedLabel = document.createElement("span");
+    sharedLabel.textContent = "Shared household";
+    sharedToggle.appendChild(sharedInput);
+    sharedToggle.appendChild(sharedLabel);
+
+    const autopayToggle = document.createElement("label");
+    autopayToggle.className = "toggle small";
+    const autopayInput = document.createElement("input");
+    autopayInput.type = "checkbox";
+    autopayInput.checked = !!template.autopay;
+    const autopayLabel = document.createElement("span");
+    autopayLabel.textContent = "Autopay";
+    autopayToggle.appendChild(autopayInput);
+    autopayToggle.appendChild(autopayLabel);
+
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.value = template.name;
@@ -11721,6 +12672,8 @@ function renderTemplates() {
     const initial = {
       active: template.active,
       essential: template.essential,
+      shared_household: !!template.shared_household,
+      autopay: !!template.autopay,
       name: template.name,
       category: template.category || "",
       amount_default: Number(template.amount_default || 0).toFixed(2),
@@ -11734,6 +12687,8 @@ function renderTemplates() {
       const dirty =
         activeInput.checked !== initial.active ||
         essentialInput.checked !== initial.essential ||
+        sharedInput.checked !== initial.shared_household ||
+        autopayInput.checked !== initial.autopay ||
         nameInput.value !== initial.name ||
         categoryInput.value !== initial.category ||
         amountInput.value !== initial.amount_default ||
@@ -11748,6 +12703,8 @@ function renderTemplates() {
     [
       activeInput,
       essentialInput,
+      sharedInput,
+      autopayInput,
       nameInput,
       categoryInput,
       amountInput,
@@ -11769,6 +12726,8 @@ function renderTemplates() {
         amount_default: Number(amountInput.value),
         due_day: Number(dueInput.value),
         essential: essentialInput.checked,
+        shared_household: sharedInput.checked,
+        autopay: autopayInput.checked,
         active: activeInput.checked,
         default_note: noteInput.value.trim(),
         match_payee_key: matchKeyInput.value.trim(),
@@ -11785,7 +12744,7 @@ function renderTemplates() {
       );
 
       if (!res.ok) {
-        let message = "Unable to save template.";
+        let message = "Unable to save recurring bill.";
         try {
           const data = await res.json();
           message = getErrorMessage(data, message);
@@ -11809,7 +12768,7 @@ function renderTemplates() {
 
     deleteBtn.addEventListener("click", async (event) => {
       event.preventDefault();
-      const confirmed = window.confirm("Delete this template? This cannot be undone.");
+      const confirmed = window.confirm("Delete this recurring bill? This cannot be undone.");
       if (!confirmed) return;
       await fetch(
         `/api/templates/${template.id}?year=${state.selectedYear}&month=${state.selectedMonth}`,
@@ -11822,6 +12781,8 @@ function renderTemplates() {
     row.appendChild(selectWrap);
     row.appendChild(activeToggle);
     row.appendChild(essentialToggle);
+    row.appendChild(sharedToggle);
+    row.appendChild(autopayToggle);
     row.appendChild(nameInput);
     row.appendChild(categoryInput);
     row.appendChild(amountInput);
@@ -11838,6 +12799,8 @@ function renderTemplates() {
       inputs: {
         activeInput,
         essentialInput,
+        sharedInput,
+        autopayInput,
         nameInput,
         categoryInput,
         amountInput,
@@ -11862,6 +12825,8 @@ function buildTemplatePayload(entry) {
     amount_default: Number(inputs.amountInput.value),
     due_day: Number(inputs.dueInput.value),
     essential: inputs.essentialInput.checked,
+    shared_household: inputs.sharedInput.checked,
+    autopay: inputs.autopayInput.checked,
     active: inputs.activeInput.checked,
     default_note: inputs.noteInput.value.trim(),
     match_payee_key: inputs.matchKeyInput.value.trim(),
@@ -11892,7 +12857,7 @@ async function saveDirtyTemplates() {
       }
     );
     if (!res.ok) {
-      let message = "Unable to save template.";
+      let message = "Unable to save recurring bill.";
       try {
         const data = await res.json();
         message = getErrorMessage(data, message);
@@ -12138,6 +13103,7 @@ function renderView() {
     renderBackupStatus();
     renderImportPreview();
     renderSetupCta();
+    renderTemplateDrafts();
     renderInstallExperience();
     renderDeviceAccess();
     updateStorageHealth();
@@ -12193,6 +13159,7 @@ async function refreshAll() {
     renderCategories();
     renderDashboard();
     scheduleNudgeRefresh();
+    renderTemplateDrafts();
     renderTemplates();
     renderSetupCta();
     updateStorageHealth();
@@ -12454,6 +13421,11 @@ function bindEvents() {
   if (els.householdEntryDismiss) {
     els.householdEntryDismiss.addEventListener("click", () => {
       dismissHouseholdEntryNotice();
+    });
+  }
+  if (els.householdEntryAction) {
+    els.householdEntryAction.addEventListener("click", () => {
+      triggerHouseholdEntryAction();
     });
   }
   if (els.householdLogClose) {
@@ -12735,10 +13707,16 @@ function bindEvents() {
   if (els.wizardTemplate) {
     els.wizardTemplate.addEventListener("click", () => {
       closeWizard();
-      state.view = "setup";
-      renderView();
-      els.templateForm?.scrollIntoView({ behavior: "smooth", block: "start" });
-      els.templateName?.focus();
+      setSetupPath("builder");
+      focusTemplateBuilder();
+    });
+  }
+
+  if (els.wizardShared) {
+    els.wizardShared.addEventListener("click", () => {
+      closeWizard();
+      setSetupPath("shared");
+      openSharedJoinFlow();
     });
   }
 
@@ -12752,31 +13730,36 @@ function bindEvents() {
 
   if (els.ctaImport && els.importBackup) {
     els.ctaImport.addEventListener("click", () => {
+      setSetupPath("import");
       els.importBackup.click();
     });
   }
 
   if (els.ctaTemplate) {
     els.ctaTemplate.addEventListener("click", () => {
-      state.view = "setup";
-      renderView();
-      els.templateForm?.scrollIntoView({ behavior: "smooth", block: "start" });
-      els.templateName?.focus();
+      setSetupPath("builder");
+      focusTemplateBuilder();
     });
   }
 
   if (els.firstVisitImport && els.importBackup) {
     els.firstVisitImport.addEventListener("click", () => {
+      setSetupPath("import");
       els.importBackup.click();
     });
   }
 
   if (els.firstVisitTemplate) {
     els.firstVisitTemplate.addEventListener("click", () => {
-      state.view = "setup";
-      renderView();
-      els.templateForm?.scrollIntoView({ behavior: "smooth", block: "start" });
-      els.templateName?.focus();
+      setSetupPath("builder");
+      focusTemplateBuilder();
+    });
+  }
+
+  if (els.firstVisitShared) {
+    els.firstVisitShared.addEventListener("click", () => {
+      setSetupPath("shared");
+      openSharedJoinFlow();
     });
   }
 
@@ -12784,6 +13767,30 @@ function bindEvents() {
     els.firstVisitContinue.addEventListener("click", async () => {
       await setOnboardingComplete(true);
       renderDashboard();
+    });
+  }
+
+  if (els.setupPathBuilder) {
+    els.setupPathBuilder.addEventListener("click", () => {
+      setSetupPath("builder");
+      focusTemplateBuilder();
+    });
+  }
+
+  if (els.setupPathImport) {
+    els.setupPathImport.addEventListener("click", () => {
+      setSetupPath("import");
+      state.view = "setup";
+      renderView();
+      els.backupSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+      els.importBackup?.click();
+    });
+  }
+
+  if (els.setupPathShared) {
+    els.setupPathShared.addEventListener("click", () => {
+      setSetupPath("shared");
+      openSharedJoinFlow();
     });
   }
 
@@ -13013,6 +14020,21 @@ function bindEvents() {
         els.reviewFilters.forEach((btn) => btn.classList.remove("active"));
         chip.classList.add("active");
         renderActivity();
+      });
+    });
+  }
+
+  if (els.reviewScopeFilters) {
+    els.reviewScopeFilters.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const scope = chip.dataset.reviewScope || "all";
+        state.reviewScope = scope;
+        els.reviewScopeFilters.forEach((btn) => btn.classList.remove("active"));
+        chip.classList.add("active");
+        const derived = deriveInstances();
+        const base = getBaseInstances(derived);
+        renderActivity();
+        renderMonthReview(base);
       });
     });
   }
@@ -13540,59 +14562,87 @@ function bindEvents() {
       els.templateError.textContent = "";
       els.templateError.classList.add("hidden");
     }
-    const payload = {
-      name: els.templateName.value.trim(),
-      category: els.templateCategory.value.trim(),
-      amount_default: Number(els.templateAmount.value),
-      due_day: Number(els.templateDueDay.value),
-      essential: els.templateEssential.checked,
-      active: els.templateActive.checked,
-      default_note: els.templateNote.value.trim(),
-      match_payee_key: els.templateMatchKey.value.trim(),
-      match_amount_tolerance: Number(els.templateMatchTolerance.value || 0),
-    };
-
-    const res = await fetch(
-      `/api/templates?year=${state.selectedYear}&month=${state.selectedMonth}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+    const draft = readTemplateFormDraft();
+    const validationMessage = validateTemplateDraft(draft);
+    if (validationMessage) {
+      if (els.templateError) {
+        els.templateError.textContent = validationMessage;
+        els.templateError.classList.remove("hidden");
       }
-    );
-
-    if (res.ok) {
-      els.templateForm.reset();
-      els.templateEssential.checked = true;
-      els.templateActive.checked = true;
-      await refreshAll();
-      recordMutation();
-      await setOnboardingComplete(true);
-      closeWizard();
-    } else if (els.templateError) {
-      let message = "Unable to add bill.";
-      try {
-        const data = await res.json();
-        message = getErrorMessage(data, message);
-      } catch (err) {
-        // ignore
-      }
-      els.templateError.textContent = message;
-      els.templateError.classList.remove("hidden");
+      return;
     }
+    addTemplateDraft(draft);
+    resetTemplateBuilderForm();
+    setSetupPath("builder");
   });
+
+  if (els.templateTextParse) {
+    els.templateTextParse.addEventListener("click", () => {
+      const parsed = parseTemplateDraftText(els.templateTextImport?.value || "");
+      if (parsed.drafts.length === 0) {
+        if (els.templateError) {
+          els.templateError.textContent = "No bill rows were recognized. Try one bill per line like: Internet 90 due 8";
+          els.templateError.classList.remove("hidden");
+        }
+        return;
+      }
+      parsed.drafts.forEach((draft) => addTemplateDraft(draft, { silent: true }));
+      if (els.templateTextImport) {
+        els.templateTextImport.value = "";
+      }
+      if (els.templateError) {
+        if (parsed.skipped.length > 0) {
+          els.templateError.textContent = `Added ${parsed.drafts.length} bill${parsed.drafts.length === 1 ? "" : "s"}. ${parsed.skipped.length} line${parsed.skipped.length === 1 ? "" : "s"} still need manual review.`;
+          els.templateError.classList.remove("hidden");
+        } else {
+          els.templateError.textContent = "";
+          els.templateError.classList.add("hidden");
+        }
+      }
+      renderTemplateDrafts();
+      renderSetupGuide();
+      showToast(`Added ${parsed.drafts.length} bill${parsed.drafts.length === 1 ? "" : "s"} to draft.`);
+    });
+  }
+
+  if (els.templateDraftsFocus) {
+    els.templateDraftsFocus.addEventListener("click", () => {
+      focusTemplateBuilder();
+    });
+  }
+
+  if (els.templateDraftsDiscard) {
+    els.templateDraftsDiscard.addEventListener("click", () => {
+      if (state.templateDrafts.length === 0) return;
+      const confirmed = window.confirm("Discard all unsaved bill drafts?");
+      if (!confirmed) return;
+      state.templateDrafts = [];
+      renderTemplateDrafts();
+      renderSetupGuide();
+      if (els.templateError) {
+        els.templateError.textContent = "";
+        els.templateError.classList.add("hidden");
+      }
+    });
+  }
+
+  if (els.templateDraftsSave) {
+    els.templateDraftsSave.addEventListener("click", async () => {
+      await saveTemplateDraftBatch();
+    });
+  }
 
   if (els.applyTemplates) {
     els.applyTemplates.addEventListener("click", async () => {
     const confirmed = window.confirm(
-      "Apply template values to this month? This will overwrite names, amounts, due dates, and essential flags for the selected month."
+      "Update this month from your saved recurring bills? This will overwrite names, amounts, due dates, and essential flags for the selected month."
     );
     if (!confirmed) return;
     try {
       const dirtyCount = await saveDirtyTemplates();
       if (dirtyCount > 0) {
         const proceed = window.confirm(
-          `Saved ${dirtyCount} template change(s). Apply to this month now?`
+          `Saved ${dirtyCount} recurring bill change(s). Update this month now?`
         );
         if (!proceed) return;
       }
@@ -13623,7 +14673,7 @@ function bindEvents() {
     els.archiveSelected.addEventListener("click", async () => {
       if (state.selectedTemplates.size === 0) return;
       const confirmed = window.confirm(
-        `Archive ${state.selectedTemplates.size} template(s)?`
+        `Archive ${state.selectedTemplates.size} recurring bill(s)?`
       );
       if (!confirmed) return;
       for (const id of state.selectedTemplates) {
@@ -13638,7 +14688,7 @@ function bindEvents() {
     els.deleteSelected.addEventListener("click", async () => {
       if (state.selectedTemplates.size === 0) return;
       const confirmed = window.confirm(
-        `Delete ${state.selectedTemplates.size} template(s)? This cannot be undone.`
+        `Delete ${state.selectedTemplates.size} recurring bill(s)? This cannot be undone.`
       );
       if (!confirmed) return;
       for (const id of state.selectedTemplates) {
@@ -13822,8 +14872,8 @@ function bindEvents() {
 
   if (els.zeroTemplatesBtn) {
     els.zeroTemplatesBtn.addEventListener("click", () => {
-      state.view = "setup";
-      renderView();
+      setSetupPath("builder");
+      focusTemplateBuilder();
     });
   }
 }
