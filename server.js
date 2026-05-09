@@ -419,6 +419,7 @@ function createSchemaV2() {
       autopay INTEGER NOT NULL DEFAULT 0,
       essential INTEGER NOT NULL DEFAULT 1,
       active INTEGER NOT NULL DEFAULT 1,
+      shared_household INTEGER NOT NULL DEFAULT 0,
       default_note TEXT,
       match_payee_key TEXT,
       match_amount_tolerance REAL NOT NULL DEFAULT 0,
@@ -437,6 +438,7 @@ function createSchemaV2() {
       due_date TEXT NOT NULL,
       autopay_snapshot INTEGER NOT NULL,
       essential_snapshot INTEGER NOT NULL,
+      shared_household_snapshot INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL CHECK (status IN ('pending','paid','skipped')),
       paid_date TEXT,
       note TEXT,
@@ -1147,6 +1149,7 @@ function buildSharePayloadFromMonth(year, month, options = {}) {
       amount_paid: includeAmounts ? Number(item.amount_paid || 0) : null,
       amount_remaining: includeAmounts ? Number(item.amount_remaining || 0) : null,
       essential_snapshot: !!item.essential_snapshot,
+      shared_household_snapshot: !!item.shared_household_snapshot,
       autopay_snapshot: !!item.autopay_snapshot,
       note: includeNotes ? item.note || null : null,
     })),
@@ -1418,6 +1421,14 @@ function initSchema() {
       "ALTER TABLE templates ADD COLUMN match_amount_tolerance REAL NOT NULL DEFAULT 0"
     );
   }
+  if (!hasColumn(refreshedTemplateInfo, "shared_household")) {
+    db.exec("ALTER TABLE templates ADD COLUMN shared_household INTEGER NOT NULL DEFAULT 0");
+  }
+
+  const refreshedInstanceInfo = getTableInfo("instances");
+  if (!hasColumn(refreshedInstanceInfo, "shared_household_snapshot")) {
+    db.exec("ALTER TABLE instances ADD COLUMN shared_household_snapshot INTEGER NOT NULL DEFAULT 0");
+  }
 
   ensureActionsTable();
   ensurePaymentsTable();
@@ -1463,15 +1474,15 @@ function migrateLegacySchema() {
   const templateIdMap = new Map();
   const insertTemplate = db.prepare(
     `INSERT INTO templates (
-      id, name, category, amount_default, due_day, autopay, essential, active, default_note,
+      id, name, category, amount_default, due_day, autopay, essential, active, shared_household, default_note,
       match_payee_key, match_amount_tolerance, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertInstance = db.prepare(
     `INSERT INTO instances (
       id, template_id, year, month, name_snapshot, category_snapshot, amount, due_date,
-      autopay_snapshot, essential_snapshot, status, paid_date, note, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      autopay_snapshot, essential_snapshot, shared_household_snapshot, status, paid_date, note, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const run = db.transaction(() => {
@@ -1487,6 +1498,7 @@ function migrateLegacySchema() {
         tmpl.autopay ? 1 : 0,
         tmpl.essential ? 1 : 0,
         tmpl.active ? 1 : 0,
+        0,
         tmpl.default_note || null,
         null,
         0,
@@ -1509,6 +1521,7 @@ function migrateLegacySchema() {
         inst.due_date,
         inst.autopay_snapshot ? 1 : 0,
         inst.essential_snapshot ? 1 : 0,
+        0,
         inst.status,
         inst.paid_date || null,
         inst.note || null,
@@ -1954,6 +1967,7 @@ function normalizeTemplate(row) {
     autopay: Boolean(row.autopay),
     essential: Boolean(row.essential),
     active: Boolean(row.active),
+    shared_household: Boolean(row.shared_household),
     match_amount_tolerance: Number(row.match_amount_tolerance || 0),
   };
 }
@@ -1963,6 +1977,7 @@ function normalizeInstance(row) {
     ...row,
     autopay_snapshot: Boolean(row.autopay_snapshot),
     essential_snapshot: Boolean(row.essential_snapshot),
+    shared_household_snapshot: Boolean(row.shared_household_snapshot),
   };
 }
 
@@ -2002,6 +2017,20 @@ function normalizeProgressBasis(value) {
 function normalizeYearScope(value) {
   const raw = String(value || "").trim().toLowerCase();
   return raw === "full" || raw === "full year" ? "full" : "ytd";
+}
+
+function normalizeLedgerScope(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "personal") return "personal";
+  if (raw === "shared") return "shared";
+  return "all";
+}
+
+function getLedgerScopeLabel(scope) {
+  const normalized = normalizeLedgerScope(scope);
+  if (normalized === "personal") return "Personal only";
+  if (normalized === "shared") return "Shared household";
+  return "All bills";
 }
 
 function normalizeSettingsDefaults(defaultsRaw) {
@@ -2080,6 +2109,7 @@ function validateTemplateInput(body) {
     default_note: String(body?.default_note || "").trim() || null,
     match_payee_key: String(body?.match_payee_key || "").trim() || null,
     match_amount_tolerance: matchTolerance,
+    shared_household: toBoolean(body?.shared_household, false) ? 1 : 0,
   };
 }
 
@@ -2988,8 +3018,8 @@ function ensureMonth(year, month) {
   const insert = db.prepare(
     `INSERT INTO instances (
       id, template_id, year, month, name_snapshot, category_snapshot, amount, due_date,
-      autopay_snapshot, essential_snapshot, status, paid_date, note, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      autopay_snapshot, essential_snapshot, shared_household_snapshot, status, paid_date, note, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const stamp = nowIso();
 
@@ -3011,6 +3041,7 @@ function ensureMonth(year, month) {
         dueDate,
         template.autopay ? 1 : 0,
         template.essential ? 1 : 0,
+        template.shared_household ? 1 : 0,
         "pending",
         null,
         template.default_note || null,
@@ -3039,7 +3070,7 @@ function applyTemplateToMonth(template, year, month) {
   const dueDate = ledger.toDateString(year, month, dueDay);
   db.prepare(
     `UPDATE instances
-     SET name_snapshot = ?, category_snapshot = ?, amount = ?, due_date = ?, autopay_snapshot = ?, essential_snapshot = ?, updated_at = ?
+     SET name_snapshot = ?, category_snapshot = ?, amount = ?, due_date = ?, autopay_snapshot = ?, essential_snapshot = ?, shared_household_snapshot = ?, updated_at = ?
      WHERE template_id = ? AND year = ? AND month = ?`
   ).run(
     template.name,
@@ -3048,6 +3079,7 @@ function applyTemplateToMonth(template, year, month) {
     dueDate,
     template.autopay ? 1 : 0,
     template.essential ? 1 : 0,
+    template.shared_household ? 1 : 0,
     nowIso(),
     template.id,
     year,
@@ -3128,6 +3160,15 @@ function getProgressInstancesForMonth(year, month, activeTemplates) {
     .all(year, month);
   if (rows.length > 0) return attachPayments(rows);
   return buildProjectedInstancesFromTemplates(activeTemplates, year, month);
+}
+
+function filterLedgerScopeRows(rows, scope) {
+  const normalized = normalizeLedgerScope(scope);
+  if (normalized === "all") return Array.isArray(rows) ? rows : [];
+  return (Array.isArray(rows) ? rows : []).filter((item) => {
+    const shared = Boolean(item && (item.shared_household_snapshot || item.shared_household));
+    return normalized === "shared" ? shared : !shared;
+  });
 }
 
 function computeProgressTotals(instances, essentialsOnly) {
@@ -3303,6 +3344,106 @@ function buildReceiptPdf(pages) {
   return Buffer.from(body, "utf8");
 }
 
+
+function parseYearOnly(value, fallbackYear) {
+  const year = Number(value ?? fallbackYear);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;
+  return year;
+}
+
+function buildTemplateProjection(template, year, month) {
+  const dueDay = ledger.clampDueDay(year, month, Number(template.due_day || 1));
+  const amount = Number(template.amount_default || 0);
+  return {
+    id: "projected:" + template.id + ":" + year + "-" + ledger.pad2(month),
+    template_id: template.id,
+    year,
+    month,
+    name_snapshot: template.name,
+    category_snapshot: template.category || null,
+    amount,
+    due_date: ledger.toDateString(year, month, dueDay),
+    autopay_snapshot: Number(template.autopay) === 1,
+    essential_snapshot: Number(template.essential) === 1,
+    shared_household_snapshot: Number(template.shared_household) === 1,
+    status: "pending",
+    status_derived: "pending",
+    amount_paid: 0,
+    amount_remaining: amount,
+    projected: true,
+  };
+}
+
+function buildInstanceYearBreakdown(instanceId, year) {
+  const source = db.prepare("SELECT * FROM instances WHERE id = ?").get(instanceId);
+  if (!source) return null;
+  const template = source.template_id
+    ? db.prepare("SELECT * FROM templates WHERE id = ?").get(source.template_id)
+    : null;
+  const rows = source.template_id
+    ? db.prepare("SELECT * FROM instances WHERE template_id = ? AND year = ? ORDER BY month ASC").all(source.template_id, year)
+    : db.prepare("SELECT * FROM instances WHERE id = ? AND year = ? ORDER BY month ASC").all(instanceId, year);
+  const attached = attachPayments(rows);
+  const byMonth = new Map(attached.map((row) => [Number(row.month), row]));
+  const months = [];
+  let amountDueYear = 0;
+  let amountPaidYear = 0;
+  let amountRemainingYear = 0;
+  let monthsScheduled = 0;
+  let monthsPaidOff = 0;
+  let nextOpenMonth = null;
+
+  for (let month = 1; month <= 12; month += 1) {
+    let row = byMonth.get(month) || null;
+    const projected = !row && template && Number(template.active) === 1;
+    if (projected) row = buildTemplateProjection(template, year, month);
+    const scheduled = Boolean(row);
+    const amount = scheduled ? Number(row.amount || 0) : 0;
+    const amountPaid = scheduled ? Number(row.amount_paid || 0) : 0;
+    const amountRemaining = scheduled ? Number(row.amount_remaining || Math.max(0, amount - amountPaid)) : 0;
+    const status = scheduled ? String(row.status_derived || row.status || "pending") : "unscheduled";
+    const billCounts = scheduled && status !== "skipped";
+    const paidOff = billCounts && amountRemaining <= 0;
+    if (billCounts) {
+      monthsScheduled += 1;
+      amountDueYear += amount;
+      amountPaidYear += amountPaid;
+      amountRemainingYear += amountRemaining;
+      if (paidOff) monthsPaidOff += 1;
+      if (!paidOff && nextOpenMonth === null) nextOpenMonth = month;
+    }
+    months.push({
+      month,
+      period: year + "-" + ledger.pad2(month),
+      instance_id: scheduled && !row.projected ? row.id : null,
+      template_id: source.template_id || null,
+      scheduled,
+      projected: Boolean(projected),
+      amount: roundMoney(amount),
+      amount_paid: roundMoney(amountPaid),
+      amount_remaining: roundMoney(amountRemaining),
+      due_date: scheduled ? row.due_date || null : null,
+      status,
+      paid_off: paidOff,
+    });
+  }
+
+  return {
+    instance_id: source.id,
+    template_id: source.template_id || null,
+    name: source.name_snapshot,
+    category: source.category_snapshot || null,
+    year,
+    amount_due_year: roundMoney(amountDueYear),
+    amount_paid_year: roundMoney(amountPaidYear),
+    amount_remaining_year: roundMoney(amountRemainingYear),
+    months_scheduled: monthsScheduled,
+    months_paid_off: monthsPaidOff,
+    next_open_month: nextOpenMonth,
+    months,
+  };
+}
+
 app.get("/api/ensure-month", (req, res) => {
   const parsed = parseYearMonth(req);
   if (!parsed) return res.status(400).json({ error: "Invalid year/month" });
@@ -3325,9 +3466,9 @@ app.post("/api/templates", (req, res) => {
   const id = randomUUID();
   db.prepare(
     `INSERT INTO templates (
-      id, name, category, amount_default, due_day, autopay, essential, active, default_note,
+      id, name, category, amount_default, due_day, autopay, essential, active, shared_household, default_note,
       match_payee_key, match_amount_tolerance, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     payload.name,
@@ -3337,6 +3478,7 @@ app.post("/api/templates", (req, res) => {
     payload.autopay,
     payload.essential,
     payload.active,
+    payload.shared_household,
     payload.default_note,
     payload.match_payee_key,
     payload.match_amount_tolerance,
@@ -3364,7 +3506,7 @@ app.put("/api/templates/:id", (req, res) => {
   const result = db.prepare(
     `UPDATE templates
      SET name = ?, category = ?, amount_default = ?, due_day = ?, autopay = ?, essential = ?, active = ?,
-         default_note = ?, match_payee_key = ?, match_amount_tolerance = ?, updated_at = ?
+         shared_household = ?, default_note = ?, match_payee_key = ?, match_amount_tolerance = ?, updated_at = ?
      WHERE id = ?`
   ).run(
     payload.name,
@@ -3374,6 +3516,7 @@ app.put("/api/templates/:id", (req, res) => {
     payload.autopay,
     payload.essential,
     payload.active,
+    payload.shared_household,
     payload.default_note,
     payload.match_payee_key,
     payload.match_amount_tolerance,
@@ -3423,6 +3566,18 @@ app.get("/api/instances", (req, res) => {
   if (!parsed) return res.status(400).json({ error: "Invalid year/month" });
   const rows = getInstances(parsed.year, parsed.month);
   res.json(rows);
+});
+
+app.get("/api/instances/:id/year-breakdown", (req, res) => {
+  const id = String(req.params.id || "");
+  if (!id) return res.status(400).json({ error: "Invalid id" });
+  const source = db.prepare("SELECT year FROM instances WHERE id = ?").get(id);
+  if (!source) return res.status(404).json({ error: "Instance not found" });
+  const year = parseYearOnly(req.query.year, source.year);
+  if (!year) return res.status(400).json({ error: "Invalid year" });
+  const summary = buildInstanceYearBreakdown(id, year);
+  if (!summary) return res.status(404).json({ error: "Instance not found" });
+  res.json(summary);
 });
 
 app.get("/api/instances/:id/events", (req, res) => {
@@ -4983,6 +5138,7 @@ app.get("/api/export/receipt.pdf", (req, res) => {
     return res.status(400).json({ error: "Invalid year." });
   }
   const scope = normalizeYearScope(req.query.scope || "ytd");
+  const ledgerScope = normalizeLedgerScope(req.query.ledger_scope || "all");
   const monthRaw = Number(req.query.month ?? now.getMonth() + 1);
   const month = Number.isInteger(monthRaw) && monthRaw >= 1 && monthRaw <= 12
     ? monthRaw
@@ -5002,10 +5158,33 @@ app.get("/api/export/receipt.pdf", (req, res) => {
     activeTemplates
   );
 
-  const monthTotals = snapshot.monthTotals;
-  const yearTotals = snapshot.yearTotalsScope;
   const monthEnd = snapshot.monthEnd;
-  const yearDoneIncludingPrepaid = roundMoney(yearTotals.done + snapshot.yearDoneOutsideScope);
+  const monthTotals = computeProgressTotals(
+    filterLedgerScopeRows(snapshot.getMonthRows(month), ledgerScope),
+    essentialsOnly
+  );
+  let yearRequiredScope = 0;
+  let yearDoneScope = 0;
+  let yearRemainingScope = 0;
+  let yearDoneOutsideScope = 0;
+  for (let m = 1; m <= 12; m += 1) {
+    const scopedMonthRows = filterLedgerScopeRows(snapshot.getMonthRows(m), ledgerScope);
+    const totals = computeProgressTotals(scopedMonthRows, essentialsOnly);
+    if (m <= monthEnd) {
+      yearRequiredScope += totals.required;
+      yearDoneScope += totals.done;
+      yearRemainingScope += totals.remaining;
+    } else {
+      yearDoneOutsideScope += totals.done;
+    }
+  }
+  const yearTotals = {
+    required: roundMoney(yearRequiredScope),
+    done: roundMoney(yearDoneScope),
+    remaining: roundMoney(yearRemainingScope),
+  };
+  const prepaidFutureDone = roundMoney(yearDoneOutsideScope);
+  const yearDoneIncludingPrepaid = roundMoney(yearTotals.done + prepaidFutureDone);
   let monthTarget = monthTotals.required;
   let yearTarget = yearTotals.required;
   if (basis === "manual") {
@@ -5027,6 +5206,7 @@ app.get("/api/export/receipt.pdf", (req, res) => {
   lines.push(`Generated: ${nowIsoLocal()}`);
   lines.push(`Year: ${yearRaw}`);
   lines.push(`Scope: ${scopeLabel}`);
+  lines.push(`Ledger scope: ${getLedgerScopeLabel(ledgerScope)}`);
   lines.push(`Essentials only: ${essentialsOnly ? "Yes" : "No"}`);
   lines.push(" ");
   lines.push("Confirmed Totals");
@@ -5037,11 +5217,14 @@ app.get("/api/export/receipt.pdf", (req, res) => {
     `- Year progress: ${Math.round(yearPercent)}% (${formatMoney(yearDoneIncludingPrepaid)} of ${formatMoney(yearTarget)})`
   );
   lines.push(`- Remaining in scope: ${formatMoney(yearTotals.remaining)}`);
-  lines.push(`- Prepaid future months: ${formatMoney(snapshot.yearDoneOutsideScope)}`);
+  lines.push(`- Prepaid future months: ${formatMoney(prepaidFutureDone)}`);
   lines.push(" ");
 
-  const attachedYearRows = attachPayments(
-    db.prepare("SELECT * FROM instances WHERE year = ? ORDER BY month ASC, due_date ASC").all(yearRaw)
+  const attachedYearRows = filterLedgerScopeRows(
+    attachPayments(
+      db.prepare("SELECT * FROM instances WHERE year = ? ORDER BY month ASC, due_date ASC").all(yearRaw)
+    ),
+    ledgerScope
   );
   const filteredYearRows = essentialsOnly
     ? attachedYearRows.filter((row) => row.essential_snapshot)
@@ -5065,7 +5248,7 @@ app.get("/api/export/receipt.pdf", (req, res) => {
 
   const remainingRows = [];
   for (let m = 1; m <= monthEnd; m += 1) {
-    const monthRows = snapshot.getMonthRows(m);
+    const monthRows = filterLedgerScopeRows(snapshot.getMonthRows(m), ledgerScope);
     const filtered = essentialsOnly
       ? monthRows.filter((row) => row.essential_snapshot)
       : monthRows;
@@ -5176,16 +5359,16 @@ app.post("/api/import/backup", (req, res) => {
 
   const insertTemplateWithId = db.prepare(
     `INSERT INTO templates (
-      id, name, category, amount_default, due_day, autopay, essential, active, default_note,
+      id, name, category, amount_default, due_day, autopay, essential, active, shared_household, default_note,
       match_payee_key, match_amount_tolerance, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const insertTemplate = db.prepare(
     `INSERT INTO templates (
-      id, name, category, amount_default, due_day, autopay, essential, active, default_note,
+      id, name, category, amount_default, due_day, autopay, essential, active, shared_household, default_note,
       match_payee_key, match_amount_tolerance, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const insertSinkingFund = db.prepare(
@@ -5204,8 +5387,8 @@ app.post("/api/import/backup", (req, res) => {
   const insertInstance = db.prepare(
     `INSERT OR IGNORE INTO instances (
       id, template_id, year, month, name_snapshot, category_snapshot, amount, due_date,
-      autopay_snapshot, essential_snapshot, status, paid_date, note, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      autopay_snapshot, essential_snapshot, shared_household_snapshot, status, paid_date, note, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const insertPayment = db.prepare(
@@ -5246,6 +5429,7 @@ app.post("/api/import/backup", (req, res) => {
           Number(existing.autopay) === Number(normalized.autopay) &&
           Number(existing.essential) === Number(normalized.essential) &&
           Number(existing.active) === Number(normalized.active) &&
+          Number(existing.shared_household || 0) === Number(normalized.shared_household || 0) &&
           (existing.default_note || null) === (normalized.default_note || null) &&
           (existing.match_payee_key || null) === (normalized.match_payee_key || null) &&
           Number(existing.match_amount_tolerance || 0) ===
@@ -5266,6 +5450,7 @@ app.post("/api/import/backup", (req, res) => {
         normalized.autopay,
         normalized.essential,
         normalized.active,
+        normalized.shared_household,
         normalized.default_note,
         normalized.match_payee_key,
         normalized.match_amount_tolerance,
@@ -5298,6 +5483,7 @@ app.post("/api/import/backup", (req, res) => {
         inst.due_date,
         inst.autopay_snapshot ? 1 : 0,
         inst.essential_snapshot ? 1 : 0,
+        inst.shared_household_snapshot ? 1 : 0,
         ["pending", "paid", "skipped"].includes(inst.status) ? inst.status : "pending",
         inst.paid_date || null,
         inst.note || null,
@@ -5473,6 +5659,7 @@ app.get("/api/v1/month", (req, res) => {
       paid_date: item.paid_date,
       autopay: item.autopay_snapshot,
       essential: item.essential_snapshot,
+      shared_household: item.shared_household_snapshot,
       note: item.note,
     })),
   });
@@ -5836,9 +6023,9 @@ app.post("/api/v1/actions", (req, res) => {
         const id = randomUUID();
         db.prepare(
           `INSERT INTO templates (
-            id, name, category, amount_default, due_day, autopay, essential, active, default_note,
+            id, name, category, amount_default, due_day, autopay, essential, active, shared_household, default_note,
             match_payee_key, match_amount_tolerance, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
           id,
           payload.name,
@@ -5848,6 +6035,7 @@ app.post("/api/v1/actions", (req, res) => {
           payload.autopay,
           payload.essential,
           payload.active,
+          payload.shared_household,
           payload.default_note,
           payload.match_payee_key,
           payload.match_amount_tolerance,
@@ -5873,7 +6061,7 @@ app.post("/api/v1/actions", (req, res) => {
         const changes = db.prepare(
           `UPDATE templates
            SET name = ?, category = ?, amount_default = ?, due_day = ?, autopay = ?, essential = ?, active = ?,
-               default_note = ?, match_payee_key = ?, match_amount_tolerance = ?, updated_at = ?
+               shared_household = ?, default_note = ?, match_payee_key = ?, match_amount_tolerance = ?, updated_at = ?
            WHERE id = ?`
         ).run(
           payload.name,
@@ -5883,6 +6071,7 @@ app.post("/api/v1/actions", (req, res) => {
           payload.autopay,
           payload.essential,
           payload.active,
+          payload.shared_household,
           payload.default_note,
           payload.match_payee_key,
           payload.match_amount_tolerance,

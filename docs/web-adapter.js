@@ -164,6 +164,20 @@
     return raw === "full" || raw === "full year" ? "full" : "ytd";
   }
 
+  function normalizeLedgerScope(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "personal") return "personal";
+    if (raw === "shared") return "shared";
+    return "all";
+  }
+
+  function getLedgerScopeLabel(scope) {
+    const normalized = normalizeLedgerScope(scope);
+    if (normalized === "personal") return "Personal only";
+    if (normalized === "shared") return "Shared household";
+    return "All bills";
+  }
+
   function sanitizeGoalAmount(value) {
     const amount = Number(value);
     if (!Number.isFinite(amount) || amount < 0) return 0;
@@ -354,6 +368,7 @@
           due_date: toDateString(year, month, dueDay),
           autopay_snapshot: !!template.autopay,
           essential_snapshot: template.essential !== false,
+          shared_household_snapshot: !!template.shared_household,
           status: "pending",
           status_derived: "pending",
           amount_paid: 0,
@@ -366,6 +381,15 @@
     const rows = getInstances(db).filter((inst) => inst.year === year && inst.month === month);
     if (rows.length > 0) return attachPayments(db, rows);
     return buildProjectedInstancesFromTemplates(templates, year, month);
+  }
+
+  function filterLedgerScopeRows(rows, scope) {
+    const normalized = normalizeLedgerScope(scope);
+    if (normalized === "all") return Array.isArray(rows) ? rows : [];
+    return (Array.isArray(rows) ? rows : []).filter((item) => {
+      const shared = !!(item && (item.shared_household_snapshot || item.shared_household));
+      return normalized === "shared" ? shared : !shared;
+    });
   }
 
   function computeProgressTotals(instances, essentialsOnly) {
@@ -639,6 +663,7 @@
         due_date: dueDate,
         autopay_snapshot: !!template.autopay,
         essential_snapshot: template.essential !== false,
+        shared_household_snapshot: !!template.shared_household,
         status: "pending",
         paid_date: null,
         note: template.default_note || null,
@@ -678,6 +703,105 @@
       String(a.name_snapshot).localeCompare(String(b.name_snapshot), undefined, { sensitivity: "base" })
     );
     return attachPayments(db, rows);
+  }
+
+
+  function parseYearOnly(value, fallbackYear) {
+    const year = Number(value ?? fallbackYear);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;
+    return year;
+  }
+
+  function buildTemplateProjection(template, year, month) {
+    const dueDay = clampDueDay(year, month, Number(template.due_day || 1));
+    const amount = Number(template.amount_default || 0);
+    return {
+      id: "projected:" + template.id + ":" + year + "-" + pad2(month),
+      template_id: template.id,
+      year,
+      month,
+      name_snapshot: template.name,
+      category_snapshot: template.category || null,
+      amount,
+      due_date: toDateString(year, month, dueDay),
+      autopay_snapshot: !!template.autopay,
+      essential_snapshot: template.essential !== false,
+      shared_household_snapshot: !!template.shared_household,
+      status: "pending",
+      status_derived: "pending",
+      amount_paid: 0,
+      amount_remaining: amount,
+      projected: true,
+    };
+  }
+
+  function buildInstanceYearBreakdown(db, instanceId, year) {
+    const source = getInstances(db).find((inst) => inst.id === instanceId);
+    if (!source) return null;
+    const template = source.template_id ? getTemplates(db).find((tmpl) => tmpl.id === source.template_id) : null;
+    const rows = getInstances(db).filter((inst) => {
+      if (source.template_id) return inst.template_id === source.template_id && inst.year === year;
+      return inst.id === instanceId && inst.year === year;
+    });
+    const attached = attachPayments(db, rows);
+    const byMonth = new Map(attached.map((row) => [Number(row.month), row]));
+    const months = [];
+    let amountDueYear = 0;
+    let amountPaidYear = 0;
+    let amountRemainingYear = 0;
+    let monthsScheduled = 0;
+    let monthsPaidOff = 0;
+    let nextOpenMonth = null;
+
+    for (let month = 1; month <= 12; month += 1) {
+      let row = byMonth.get(month) || null;
+      const projected = !row && template && template.active !== false;
+      if (projected) row = buildTemplateProjection(template, year, month);
+      const scheduled = Boolean(row);
+      const amount = scheduled ? Number(row.amount || 0) : 0;
+      const amountPaid = scheduled ? Number(row.amount_paid || 0) : 0;
+      const amountRemaining = scheduled ? Number(row.amount_remaining || Math.max(0, amount - amountPaid)) : 0;
+      const status = scheduled ? String(row.status_derived || row.status || "pending") : "unscheduled";
+      const billCounts = scheduled && status !== "skipped";
+      const paidOff = billCounts && amountRemaining <= 0;
+      if (billCounts) {
+        monthsScheduled += 1;
+        amountDueYear += amount;
+        amountPaidYear += amountPaid;
+        amountRemainingYear += amountRemaining;
+        if (paidOff) monthsPaidOff += 1;
+        if (!paidOff && nextOpenMonth === null) nextOpenMonth = month;
+      }
+      months.push({
+        month,
+        period: year + "-" + pad2(month),
+        instance_id: scheduled && !row.projected ? row.id : null,
+        template_id: source.template_id || null,
+        scheduled,
+        projected: Boolean(projected),
+        amount: roundMoney(amount),
+        amount_paid: roundMoney(amountPaid),
+        amount_remaining: roundMoney(amountRemaining),
+        due_date: scheduled ? row.due_date || null : null,
+        status,
+        paid_off: paidOff,
+      });
+    }
+
+    return {
+      instance_id: source.id,
+      template_id: source.template_id || null,
+      name: source.name_snapshot,
+      category: source.category_snapshot || null,
+      year,
+      amount_due_year: roundMoney(amountDueYear),
+      amount_paid_year: roundMoney(amountPaidYear),
+      amount_remaining_year: roundMoney(amountRemainingYear),
+      months_scheduled: monthsScheduled,
+      months_paid_off: monthsPaidOff,
+      next_open_month: nextOpenMonth,
+      months,
+    };
   }
 
   function getPaymentsForMonth(db, year, month) {
@@ -750,6 +874,7 @@
     instance.due_date = dueDate;
     instance.autopay_snapshot = !!template.autopay;
     instance.essential_snapshot = template.essential !== false;
+    instance.shared_household_snapshot = !!template.shared_household;
     instance.updated_at = new Date().toISOString();
   }
 
@@ -810,6 +935,98 @@
       );
     });
     return lines.join("\n");
+  }
+
+
+  function escapePdfText(value) {
+    return String(value || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/\(/g, "\\(")
+      .replace(/\)/g, "\\)");
+  }
+
+  function wrapPdfLine(text, maxLength = 92) {
+    const raw = String(text || "").trim();
+    if (!raw) return [""];
+    if (raw.length <= maxLength) return [raw];
+    const words = raw.split(/\s+/);
+    const lines = [];
+    let current = "";
+    for (const word of words) {
+      const next = current ? `${current} ${word}` : word;
+      if (next.length <= maxLength) {
+        current = next;
+        continue;
+      }
+      if (current) lines.push(current);
+      if (word.length > maxLength) {
+        lines.push(word.slice(0, maxLength));
+        current = word.slice(maxLength);
+      } else {
+        current = word;
+      }
+    }
+    if (current) lines.push(current);
+    return lines.length > 0 ? lines : [raw.slice(0, maxLength)];
+  }
+
+  function buildReceiptPdf(pages) {
+    const encoder = new TextEncoder();
+    const pageLines = Array.isArray(pages) && pages.length > 0 ? pages : [[]];
+    const pageCount = pageLines.length;
+    const fontObjectNum = pageCount * 2 + 3;
+    const objectCount = fontObjectNum;
+    const objects = new Array(objectCount + 1).fill(null);
+    const pageRefs = [];
+
+    for (let i = 0; i < pageCount; i += 1) {
+      const pageObjectNum = 3 + i * 2;
+      const contentObjectNum = 4 + i * 2;
+      pageRefs.push(`${pageObjectNum} 0 R`);
+      const contentRows = [];
+      contentRows.push("BT");
+      contentRows.push("/F1 11 Tf");
+      contentRows.push("14 TL");
+      contentRows.push("50 770 Td");
+      const lines = Array.isArray(pageLines[i]) ? pageLines[i] : [];
+      if (lines.length === 0) {
+        contentRows.push(`(${escapePdfText("Receipt has no line items.")}) Tj`);
+      } else {
+        for (let idx = 0; idx < lines.length; idx += 1) {
+          const text = escapePdfText(lines[idx]);
+          if (idx === 0) contentRows.push(`(${text}) Tj`);
+          else contentRows.push(`T* (${text}) Tj`);
+        }
+      }
+      contentRows.push("ET");
+      const stream = `${contentRows.join("\n")}\n`;
+      const length = encoder.encode(stream).length;
+      objects[contentObjectNum] = `<< /Length ${length} >>\nstream\n${stream}endstream`;
+      objects[pageObjectNum] =
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ` +
+        `/Resources << /Font << /F1 ${fontObjectNum} 0 R >> >> ` +
+        `/Contents ${contentObjectNum} 0 R >>`;
+    }
+
+    objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+    objects[2] = `<< /Type /Pages /Count ${pageCount} /Kids [${pageRefs.join(" ")}] >>`;
+    objects[fontObjectNum] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+    let body = "%PDF-1.4\n";
+    const offsets = new Array(objectCount + 1).fill(0);
+    for (let i = 1; i <= objectCount; i += 1) {
+      const objectBody = objects[i] || "";
+      offsets[i] = encoder.encode(body).length;
+      body += `${i} 0 obj\n${objectBody}\nendobj\n`;
+    }
+    const xrefPos = encoder.encode(body).length;
+    body += `xref\n0 ${objectCount + 1}\n`;
+    body += "0000000000 65535 f \n";
+    for (let i = 1; i <= objectCount; i += 1) {
+      body += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+    }
+    body += `trailer\n<< /Size ${objectCount + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`;
+    return encoder.encode(body);
   }
 
   async function handleApi(req) {
@@ -1140,6 +1357,7 @@
         due_day: dueDay,
         autopay: !!body.autopay,
         essential: body.essential !== false,
+        shared_household: !!body.shared_household,
         active: body.active !== false,
         default_note: body.default_note || null,
         match_payee_key: body.match_payee_key || null,
@@ -1170,6 +1388,7 @@
       template.due_day = Number(body.due_day ?? template.due_day);
       template.autopay = !!body.autopay;
       template.essential = body.essential !== false;
+      template.shared_household = body.shared_household === undefined ? !!template.shared_household : !!body.shared_household;
       template.active = body.active !== false;
       template.default_note = body.default_note ?? template.default_note;
       template.match_payee_key = body.match_payee_key ?? template.match_payee_key;
@@ -1209,6 +1428,18 @@
       if (!parsed) return bad("INVALID_INPUT", "Invalid year/month");
       const rows = getInstancesForMonth(db, parsed.year, parsed.month);
       return ok(rows);
+    }
+
+    if (path.startsWith("/api/instances/") && path.endsWith("/year-breakdown") && req.method === "GET") {
+      const id = path.split("/")[3];
+      if (!id) return bad("INVALID_INPUT", "Invalid id");
+      const source = getInstances(db).find((inst) => inst.id === id);
+      if (!source) return bad("NOT_FOUND", "Instance not found", {}, 404);
+      const year = parseYearOnly(params.get("year"), source.year);
+      if (!year) return bad("INVALID_INPUT", "Invalid year");
+      const summary = buildInstanceYearBreakdown(db, id, year);
+      if (!summary) return bad("NOT_FOUND", "Instance not found", {}, 404);
+      return ok(summary);
     }
 
     if (path.startsWith("/api/instances/") && path.endsWith("/events") && req.method === "GET") {
@@ -1538,6 +1769,128 @@
       return ok({ imported: true });
     }
 
+    if (path === "/api/export/receipt.pdf" && req.method === "GET") {
+      const now = new Date();
+      const yearRaw = Number(params.get("year") || now.getFullYear());
+      if (!Number.isInteger(yearRaw) || yearRaw < 2000 || yearRaw > 2100) {
+        return bad("INVALID_INPUT", "Invalid year");
+      }
+      const monthRaw = Number(params.get("month") || now.getMonth() + 1);
+      const month = Number.isInteger(monthRaw) && monthRaw >= 1 && monthRaw <= 12
+        ? monthRaw
+        : now.getMonth() + 1;
+      const scope = normalizeYearScope(params.get("scope") || "ytd");
+      const ledgerScope = normalizeLedgerScope(params.get("ledger_scope") || "all");
+      const essentialsOnly = params.get("essentials_only") !== "false";
+      const settings = getSettings(db);
+      const defaults = settings.defaults || normalizeSettingsDefaults({});
+      const basis = normalizeProgressBasis(defaults.progressBasis);
+      const activeTemplates = getTemplates(db).filter((template) => template.active !== false);
+      const monthEnd = scope === "full" ? 12 : month;
+      const monthTotals = computeProgressTotals(
+        filterLedgerScopeRows(getProgressInstancesForMonth(db, yearRaw, month, activeTemplates), ledgerScope),
+        essentialsOnly
+      );
+      let yearRequiredScope = 0;
+      let yearDoneScope = 0;
+      let yearRemainingScope = 0;
+      let yearDoneOutsideScope = 0;
+      const remainingRows = [];
+      for (let m = 1; m <= 12; m += 1) {
+        const scopedRows = filterLedgerScopeRows(
+          getProgressInstancesForMonth(db, yearRaw, m, activeTemplates),
+          ledgerScope
+        );
+        const totals = computeProgressTotals(scopedRows, essentialsOnly);
+        if (m <= monthEnd) {
+          yearRequiredScope += totals.required;
+          yearDoneScope += totals.done;
+          yearRemainingScope += totals.remaining;
+          const filtered = essentialsOnly ? scopedRows.filter((row) => row.essential_snapshot) : scopedRows;
+          filtered.forEach((row) => {
+            if (row.status_derived === "skipped") return;
+            if (Number(row.amount_remaining || 0) <= 0) return;
+            remainingRows.push(row);
+          });
+        } else {
+          yearDoneOutsideScope += totals.done;
+        }
+      }
+      const yearTotals = {
+        required: roundMoney(yearRequiredScope),
+        done: roundMoney(yearDoneScope),
+        remaining: roundMoney(yearRemainingScope),
+      };
+      const prepaidFutureDone = roundMoney(yearDoneOutsideScope);
+      const yearDoneIncludingPrepaid = roundMoney(yearTotals.done + prepaidFutureDone);
+      let monthTarget = monthTotals.required;
+      let yearTarget = yearTotals.required;
+      if (basis === "manual") {
+        if (defaults.monthlyGoalAmount > 0) monthTarget = roundMoney(defaults.monthlyGoalAmount);
+        if (defaults.yearlyGoalAmount > 0) yearTarget = roundMoney(defaults.yearlyGoalAmount);
+        else if (defaults.monthlyGoalAmount > 0) yearTarget = roundMoney(defaults.monthlyGoalAmount * monthEnd);
+      }
+      const monthPercent = monthTarget > 0 ? (monthTotals.done / monthTarget) * 100 : 0;
+      const yearPercent = yearTarget > 0 ? (yearDoneIncludingPrepaid / yearTarget) * 100 : 0;
+      const scopeLabel = scope === "full" ? "Full Year" : `YTD (through month ${monthEnd})`;
+      const attachedYearRows = filterLedgerScopeRows(
+        attachPayments(db, getInstances(db).filter((inst) => inst.year === yearRaw)),
+        ledgerScope
+      );
+      const filteredYearRows = essentialsOnly
+        ? attachedYearRows.filter((row) => row.essential_snapshot)
+        : attachedYearRows;
+      const paidRows = filteredYearRows
+        .filter((row) => row.status_derived !== "skipped" && Number(row.amount_paid || 0) > 0)
+        .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+      remainingRows.sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+      const lines = [];
+      lines.push("Au Jour Le Jour - Yearly Receipt");
+      lines.push(`Generated: ${nowIsoLocal()}`);
+      lines.push(`Year: ${yearRaw}`);
+      lines.push(`Scope: ${scopeLabel}`);
+      lines.push(`Ledger scope: ${getLedgerScopeLabel(ledgerScope)}`);
+      lines.push(`Essentials only: ${essentialsOnly ? "Yes" : "No"}`);
+      lines.push(" ");
+      lines.push("Confirmed Totals");
+      lines.push(`- Month progress: ${Math.round(monthPercent)}% (${formatMoney(monthTotals.done)} of ${formatMoney(monthTarget)})`);
+      lines.push(`- Year progress: ${Math.round(yearPercent)}% (${formatMoney(yearDoneIncludingPrepaid)} of ${formatMoney(yearTarget)})`);
+      lines.push(`- Remaining in scope: ${formatMoney(yearTotals.remaining)}`);
+      lines.push(`- Prepaid future months: ${formatMoney(prepaidFutureDone)}`);
+      lines.push(" ");
+      lines.push(`Confirmed paid items (${paidRows.length})`);
+      if (paidRows.length === 0) {
+        lines.push("- None");
+      } else {
+        paidRows.forEach((row) => {
+          const line = `- ${row.due_date} | ${row.name_snapshot} | paid ${formatMoney(Number(row.amount_paid || 0))} of ${formatMoney(Number(row.amount || 0))}`;
+          wrapPdfLine(line).forEach((wrapped) => lines.push(wrapped));
+        });
+      }
+      lines.push(" ");
+      lines.push(`Remaining items in scope (${remainingRows.length})`);
+      if (remainingRows.length === 0) {
+        lines.push("- None");
+      } else {
+        remainingRows.forEach((row) => {
+          const line = `- ${row.due_date} | ${row.name_snapshot} | remaining ${formatMoney(Number(row.amount_remaining || 0))}`;
+          wrapPdfLine(line).forEach((wrapped) => lines.push(wrapped));
+        });
+      }
+      const pages = [];
+      for (let i = 0; i < lines.length; i += 48) {
+        pages.push(lines.slice(i, i + 48));
+      }
+      const pdfBuffer = buildReceiptPdf(pages);
+      return new Response(pdfBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/pdf",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+
     if (path === "/api/export/month.csv" && req.method === "GET") {
       const parsed = parseYearMonth(params);
       if (!parsed) return bad("INVALID_INPUT", "Invalid year/month");
@@ -1594,6 +1947,7 @@
         paid_date: item.paid_date || null,
         autopay: !!item.autopay_snapshot,
         essential: !!item.essential_snapshot,
+        shared_household: !!item.shared_household_snapshot,
         note: item.note || null,
       }));
       const saved = safeSaveDb(db);
@@ -1745,6 +2099,7 @@
           due_day: dueDay,
           autopay: !!action.autopay,
           essential: action.essential !== false,
+          shared_household: !!action.shared_household,
           active: action.active !== false,
           default_note: action.default_note || null,
           match_payee_key: action.match_payee_key || null,
@@ -1768,6 +2123,7 @@
         template.due_day = Number(action.due_day ?? template.due_day);
         template.autopay = action.autopay ?? template.autopay;
         template.essential = action.essential ?? template.essential;
+        template.shared_household = action.shared_household ?? template.shared_household;
         template.active = action.active ?? template.active;
         template.default_note = action.default_note ?? template.default_note;
         template.match_payee_key = action.match_payee_key ?? template.match_payee_key;

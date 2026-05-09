@@ -383,6 +383,10 @@ body.read-only .shared-header {
   color: var(--text);
 }
 
+.share-viewer-hint {
+  margin-top: 8px;
+}
+
 .share-status {
   margin-top: 8px;
   border-top: 1px solid var(--border);
@@ -1690,6 +1694,36 @@ body.scrolled .status-bar {
   margin-top: 16px;
 }
 
+.setup-path-detail {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border: 1px solid rgba(49, 109, 246, 0.16);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #eff6ff 0%, #f8fbff 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.setup-path-detail-main {
+  display: grid;
+  gap: 6px;
+}
+
+.setup-path-helper {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted-2);
+}
+
+.setup-path-detail-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .setup-path-card {
   width: 100%;
   border: 1px solid var(--border);
@@ -2153,6 +2187,18 @@ body.scrolled .status-bar {
   margin-top: -4px;
 }
 
+.review-note {
+  margin: -2px 0 12px;
+}
+
+.review-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .review-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -2489,6 +2535,96 @@ body.landing #allocation-planner {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
+}
+
+.detail-year-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.detail-year-stat {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface-soft);
+}
+
+.detail-year-label {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.detail-year-value {
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-year-months {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.detail-year-month {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral-300);
+  border-radius: 8px;
+  padding: 9px;
+  min-height: 74px;
+  background: var(--surface);
+}
+
+.detail-year-month.done {
+  border-left-color: var(--success);
+}
+
+.detail-year-month.partial {
+  border-left-color: var(--info);
+}
+
+.detail-year-month.open {
+  border-left-color: var(--warning);
+}
+
+.detail-year-month.skipped,
+.detail-year-month.unscheduled {
+  border-left-color: var(--muted);
+  background: var(--surface-soft);
+}
+
+.detail-year-month-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.detail-year-month-name {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.detail-year-month-status {
+  color: var(--secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.detail-year-month-money,
+.detail-year-month-due {
+  margin-top: 5px;
+  color: var(--secondary);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .drawer-grid label,
@@ -2987,6 +3123,72 @@ body.landing #allocation-planner {
   color: var(--text);
 }
 
+.builder-review-next {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--accent);
+}
+
+.builder-review-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.setup-handoff-card {
+  margin: 14px 0 16px;
+  border: 1px solid rgba(29, 78, 216, 0.12);
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+}
+
+.setup-handoff-header {
+  align-items: flex-start;
+}
+
+.setup-handoff-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.setup-handoff-stat {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.setup-handoff-label {
+  font-size: 12px;
+  color: var(--muted-2);
+}
+
+.setup-handoff-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.setup-handoff-sub {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.setup-handoff-actions {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .template-drafts-list {
   display: grid;
   gap: 12px;
@@ -3059,10 +3261,24 @@ body.landing #allocation-planner {
 .builder-footer {
   display: flex;
   flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+}
+
+.builder-footer-meta {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted-2);
+}
+
+.builder-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   justify-content: flex-end;
-  margin-top: 14px;
 }
 
 .templates-list {
@@ -3106,8 +3322,38 @@ body.landing #allocation-planner {
   margin-bottom: 12px;
 }
 
+.setup-review-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(49, 109, 246, 0.14);
+  background: linear-gradient(180deg, #f8fbff 0%, #eef6ff 100%);
+}
+
+.setup-review-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.setup-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .setup-block {
   margin-bottom: 24px;
+}
+
+.setup-complete-card {
+  border: 1px solid rgba(22, 101, 52, 0.18);
+  background: linear-gradient(180deg, #f0fdf4 0%, #f8fff9 100%);
 }
 
 .install-code {
@@ -3185,8 +3431,37 @@ body.landing #allocation-planner {
   .setup-path-grid,
   .builder-review-stats,
   .draft-row-grid,
-  .draft-row-advanced {
+  .draft-row-advanced,
+  .setup-handoff-stats,
+  .detail-year-summary {
     grid-template-columns: 1fr;
+  }
+
+  .detail-year-months {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .setup-path-detail {
+    align-items: stretch;
+  }
+
+  .setup-path-detail-actions {
+    justify-content: stretch;
+  }
+
+  .setup-path-detail-actions > * {
+    flex: 1 1 100%;
+  }
+
+  .builder-review-actions,
+  .setup-handoff-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .builder-review-actions > *,
+  .setup-handoff-actions > * {
+    flex: 1 1 100%;
   }
 
   .builder-footer {
@@ -3201,6 +3476,19 @@ body.landing #allocation-planner {
   }
 
   .builder-footer > * {
+    flex: 1 1 100%;
+  }
+
+  .setup-review-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .setup-review-actions {
+    justify-content: stretch;
+  }
+
+  .setup-review-actions > * {
     flex: 1 1 100%;
   }
 }

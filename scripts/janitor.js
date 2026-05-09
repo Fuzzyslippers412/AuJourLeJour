@@ -283,6 +283,7 @@ async function run() {
   }
 
   let instanceId = null;
+  let templateId = null;
   let shareToken = null;
   let backup = null;
   const newActionId = () => `janitor_${Math.random().toString(36).slice(2)}`;
@@ -504,6 +505,22 @@ async function run() {
     assert.ok(res.data.startsWith("%PDF-1.4"));
   });
 
+  test("receipt pdf export respects ledger scope filters", async () => {
+    const sharedRes = await request(
+      "GET",
+      "/api/export/receipt.pdf?year=2026&month=2&scope=ytd&ledger_scope=shared&essentials_only=true"
+    );
+    assert.strictEqual(sharedRes.status, 200);
+    assert.ok(String(sharedRes.data || "").includes("Ledger scope: Shared household"));
+
+    const personalRes = await request(
+      "GET",
+      "/api/export/receipt.pdf?year=2026&month=2&scope=ytd&ledger_scope=personal&essentials_only=true"
+    );
+    assert.strictEqual(personalRes.status, 200);
+    assert.ok(String(personalRes.data || "").includes("Ledger scope: Personal only"));
+  });
+
   test("qwen oauth status endpoint is reachable", async () => {
     const res = await request("GET", "/api/llm/qwen/oauth/status");
     assert.strictEqual(res.status, 200);
@@ -576,6 +593,7 @@ async function run() {
       }
     );
     assert.strictEqual(res.status, 200, `template status ${res.status}`);
+    templateId = res.data.id;
     const instanceRes = await request(
       "GET",
       "/api/instances?year=2026&month=2"
@@ -623,6 +641,29 @@ async function run() {
       "/api/v1/summary?year=2026&month=2"
     );
     assertApprox(summaryRes.data.remaining_month, 0);
+  });
+
+  test("instance year breakdown shows monthly completion state", async () => {
+    await request("GET", "/api/ensure-month?year=2026&month=3");
+    const marchRes = await request("GET", "/api/instances?year=2026&month=3");
+    assert.strictEqual(marchRes.status, 200);
+    const march = marchRes.data.find((row) => row.template_id === templateId) || marchRes.data[0];
+    assert.ok(march?.id, "Expected March instance");
+    const markMarch = await request("POST", `/api/instances/${march.id}/mark-paid`);
+    assert.strictEqual(markMarch.status, 200);
+
+    const res = await request("GET", `/api/instances/${instanceId}/year-breakdown?year=2026`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.year, 2026);
+    assert.strictEqual(res.data.months.length, 12);
+    assert.ok(res.data.months_scheduled >= 12);
+    assert.ok(res.data.months_paid_off >= 2);
+    assertApprox(res.data.amount_paid_year, 200);
+    const feb = res.data.months.find((month) => month.month === 2);
+    const mar = res.data.months.find((month) => month.month === 3);
+    assert.strictEqual(feb.paid_off, true);
+    assert.strictEqual(mar.paid_off, true);
+    assert.strictEqual(typeof res.data.amount_remaining_year, "number");
   });
 
   test("v1 summary contract shape", async () => {
@@ -1910,6 +1951,10 @@ async function run() {
       assert.ok(content.includes('id="household-you-covered"'));
       assert.ok(content.includes('id="household-others-covered"'));
       assert.ok(content.includes('id="household-open-items"'));
+      assert.ok(content.includes('id="household-attention-card"'));
+      assert.ok(content.includes('id="household-attention-list"'));
+      assert.ok(content.includes('id="household-latest-card"'));
+      assert.ok(content.includes('id="household-latest-list"'));
       assert.ok(content.includes('id="household-you-share"'));
       assert.ok(content.includes('id="household-summary-note"'));
       assert.ok(content.includes('id="household-other-device-total"'));
@@ -1918,6 +1963,33 @@ async function run() {
       assert.ok(content.includes('id="setup-path-builder"'));
       assert.ok(content.includes('id="setup-path-import"'));
       assert.ok(content.includes('id="setup-path-shared"'));
+      assert.ok(content.includes('id="setup-path-detail"'));
+      assert.ok(content.includes('id="setup-path-primary"'));
+      assert.ok(content.includes('id="setup-path-secondary"'));
+      assert.ok(content.includes('id="setup-path-helper"'));
+      assert.ok(content.includes('id="setup-handoff-card"'));
+      assert.ok(content.includes('id="setup-handoff-title"'));
+      assert.ok(content.includes('id="setup-handoff-copy"'));
+      assert.ok(content.includes('id="setup-handoff-meta"'));
+      assert.ok(content.includes('id="setup-handoff-dismiss"'));
+      assert.ok(content.includes('id="setup-handoff-stats"'));
+      assert.ok(content.includes('id="setup-handoff-open-recurring"'));
+      assert.ok(content.includes('id="setup-handoff-open-summary"'));
+      assert.ok(content.includes('id="builder-draft-shared"'));
+      assert.ok(content.includes('id="builder-review-edit"'));
+      assert.ok(content.includes('id="builder-review-save"'));
+      assert.ok(content.includes('id="review-note"'));
+      assert.ok(content.includes('id="review-export-receipt"'));
+      assert.ok(content.includes('id="detail-year-summary"'));
+      assert.ok(content.includes('id="detail-year-months"'));
+      assert.ok(content.includes('id="builder-review-next"'));
+      assert.ok(content.includes('id="builder-footer-meta"'));
+      assert.ok(content.includes('id="templates-dirty-banner"'));
+      assert.ok(content.includes('id="templates-save-all"'));
+      assert.ok(content.includes('id="templates-discard-all"'));
+      assert.ok(content.includes('id="setup-complete-card"'));
+      assert.ok(content.includes('id="setup-complete-open-ledger"'));
+      assert.ok(content.includes('id="setup-complete-open-recurring"'));
       assert.ok(content.includes('id="first-visit-shared"'));
       assert.ok(content.includes('id="template-autopay"'));
       assert.ok(content.includes('id="template-shared-household"'));
@@ -1927,7 +1999,11 @@ async function run() {
       assert.ok(content.includes('data-review-scope="shared"'));
       assert.ok(content.includes('id="share-link-state"'));
       assert.ok(content.includes('id="share-publish-state"'));
+      assert.ok(content.includes('id="share-reachability"'));
       assert.ok(content.includes('id="share-last-published"'));
+      assert.ok(content.includes('id="share-open-viewer"'));
+      assert.ok(content.includes('id="share-test-link"'));
+      assert.ok(content.includes('id="share-viewer-hint"'));
       assert.ok(content.includes('Read-only link'));
       assert.ok(content.includes('Shared household'));
       assert.ok(content.includes('id="template-text-parse"'));
@@ -2060,6 +2136,27 @@ async function run() {
       "function saveJanitorRuntimeSettings",
       "function syncJanitorRuntimeControls",
       "function applyJanitorRuntimeControlUpdate",
+      "function getSetupPathConfig()",
+      "function openImportFlow(",
+      "function runSetupPathAction(",
+      "function renderSetupExperience()",
+      "function renderTemplateDirtyState()",
+      "function getSetupHandoffSummary()",
+      "function renderSetupHandoff(baseList)",
+      "confirm-import",
+      "builderFooterMeta",
+      "setupHandoffDismissedAt",
+      "savedEssentialCount",
+      "builderReviewSave",
+      "builderReviewEdit",
+      "setupHandoffOpenRecurring",
+      "setupHandoffOpenSummary",
+      "detailYearSummary",
+      "detailYearMonths",
+      "function loadInstanceYearBreakdown",
+      "function renderDetailYearBreakdown",
+      "/year-breakdown?year=",
+      "templatesSaveAll",
       "runtime_required:",
       "runPayload.runtime_base = runtimeBase",
       "els.janitorRuntimeBase.addEventListener(\"change\"",
@@ -2266,6 +2363,10 @@ async function run() {
       "web-adapter missing /api/households branch"
     );
     assert.ok(adapter.includes("if (path === \"/api/qr\")"), "web-adapter missing /api/qr branch");
+    assert.ok(adapter.includes('if (path === "/api/export/receipt.pdf"'), "web-adapter missing receipt export route");
+    assert.ok(adapter.includes("ledger_scope"), "web-adapter receipt export missing ledger_scope support");
+    assert.ok(adapter.includes("year-breakdown"), "web-adapter missing instance year breakdown route");
+    assert.ok(adapter.includes("function buildInstanceYearBreakdown"), "web-adapter missing year breakdown helper");
   });
 
   test("today list virtualization primitives exist in both builds", () => {

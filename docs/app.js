@@ -70,6 +70,7 @@ const state = {
   activityEvents: [],
   pendingImport: null,
   lastBackupAt: null,
+  setupHandoffDismissedAt: "",
   readOnly: false,
   summaryExpanded: false,
   shareToken: null,
@@ -520,6 +521,9 @@ const els = {
   shareClose: document.getElementById("share-close"),
   shareLink: document.getElementById("share-link"),
   shareCopy: document.getElementById("share-copy"),
+  shareOpenViewer: document.getElementById("share-open-viewer"),
+  shareTest: document.getElementById("share-test-link"),
+  shareViewerHint: document.getElementById("share-viewer-hint"),
   shareLive: document.getElementById("share-live"),
   shareExpiry: document.getElementById("share-expiry"),
   shareExpiryCustomWrap: document.getElementById("share-expiry-custom-wrap"),
@@ -534,6 +538,7 @@ const els = {
   shareDisable: document.getElementById("share-disable"),
   shareLinkState: document.getElementById("share-link-state"),
   sharePublishState: document.getElementById("share-publish-state"),
+  shareReachability: document.getElementById("share-reachability"),
   shareLastPublished: document.getElementById("share-last-published"),
   shareRelayStatus: document.getElementById("share-relay-status"),
   backupOpen: document.getElementById("open-backup"),
@@ -619,6 +624,35 @@ const els = {
   setupPathBuilder: document.getElementById("setup-path-builder"),
   setupPathImport: document.getElementById("setup-path-import"),
   setupPathShared: document.getElementById("setup-path-shared"),
+  setupPathDetail: document.getElementById("setup-path-detail"),
+  setupPathDetailTitle: document.getElementById("setup-path-detail-title"),
+  setupPathDetailCopy: document.getElementById("setup-path-detail-copy"),
+  setupPathHelper: document.getElementById("setup-path-helper"),
+  setupPathPrimary: document.getElementById("setup-path-primary"),
+  setupPathSecondary: document.getElementById("setup-path-secondary"),
+  setupBuilder: document.getElementById("setup-builder"),
+  setupLocalInstall: document.getElementById("setup-local-install"),
+  localTools: document.getElementById("local-tools"),
+  setupAgent: document.getElementById("setup-agent"),
+  setupDefaultsSection: document.getElementById("setup-defaults-section"),
+  setupCategoriesSection: document.getElementById("setup-categories-section"),
+  setupRecurringSection: document.getElementById("setup-recurring-section"),
+  fundsSection: document.getElementById("funds-section"),
+  setupPreviewSection: document.getElementById("setup-preview-section"),
+  setupSafetySection: document.getElementById("setup-safety-section"),
+  setupCompleteCard: document.getElementById("setup-complete-card"),
+  setupCompleteCopy: document.getElementById("setup-complete-copy"),
+  setupCompleteMeta: document.getElementById("setup-complete-meta"),
+  setupCompleteOpenLedger: document.getElementById("setup-complete-open-ledger"),
+  setupCompleteOpenRecurring: document.getElementById("setup-complete-open-recurring"),
+  setupHandoffCard: document.getElementById("setup-handoff-card"),
+  setupHandoffTitle: document.getElementById("setup-handoff-title"),
+  setupHandoffCopy: document.getElementById("setup-handoff-copy"),
+  setupHandoffMeta: document.getElementById("setup-handoff-meta"),
+  setupHandoffStats: document.getElementById("setup-handoff-stats"),
+  setupHandoffDismiss: document.getElementById("setup-handoff-dismiss"),
+  setupHandoffOpenRecurring: document.getElementById("setup-handoff-open-recurring"),
+  setupHandoffOpenSummary: document.getElementById("setup-handoff-open-summary"),
   firstVisitHero: document.getElementById("first-visit-hero"),
   firstVisitImport: document.getElementById("first-visit-import"),
   firstVisitTemplate: document.getElementById("first-visit-template"),
@@ -817,9 +851,11 @@ const els = {
   zeroState: document.getElementById("zero-state"),
   zeroTemplatesBtn: document.getElementById("zero-templates-btn"),
   reviewActivityList: document.getElementById("review-activity-list"),
+  reviewNote: document.getElementById("review-note"),
   reviewSummary: document.getElementById("review-summary"),
   reviewList: document.getElementById("review-list"),
   reviewExport: document.getElementById("review-export"),
+  reviewExportReceipt: document.getElementById("review-export-receipt"),
   reviewFilters: Array.from(document.querySelectorAll("[data-review-range]")),
   reviewScopeFilters: Array.from(document.querySelectorAll("[data-review-scope]")),
   defaultsPeriod: document.getElementById("defaults-period"),
@@ -860,8 +896,17 @@ const els = {
   builderDraftCount: document.getElementById("builder-draft-count"),
   builderDraftTotal: document.getElementById("builder-draft-total"),
   builderDraftEssentials: document.getElementById("builder-draft-essentials"),
+  builderDraftShared: document.getElementById("builder-draft-shared"),
   builderDraftPreview: document.getElementById("builder-draft-preview"),
+  builderReviewNext: document.getElementById("builder-review-next"),
+  builderReviewEdit: document.getElementById("builder-review-edit"),
+  builderReviewSave: document.getElementById("builder-review-save"),
+  builderFooterMeta: document.getElementById("builder-footer-meta"),
   templatesList: document.getElementById("templates-list"),
+  templateDirtyBanner: document.getElementById("templates-dirty-banner"),
+  templateDirtyCopy: document.getElementById("templates-dirty-copy"),
+  templatesSaveAll: document.getElementById("templates-save-all"),
+  templatesDiscardAll: document.getElementById("templates-discard-all"),
   applyTemplates: document.getElementById("apply-templates"),
   selectAllTemplates: document.getElementById("select-all-templates"),
   archiveSelected: document.getElementById("archive-selected"),
@@ -896,6 +941,8 @@ const els = {
   detailSave: document.getElementById("detail-save"),
   detailSaveStatus: document.getElementById("detail-save-status"),
   detailHistory: document.getElementById("detail-history"),
+  detailYearSummary: document.getElementById("detail-year-summary"),
+  detailYearMonths: document.getElementById("detail-year-months"),
   toast: document.getElementById("toast"),
   toastMessage: document.getElementById("toast-message"),
   toastAction: document.getElementById("toast-action"),
@@ -1051,9 +1098,17 @@ function getSharedHouseholdSuffix(item, prefix = " · ") {
   return isSharedHouseholdItem(item) ? `${prefix}Shared household` : "";
 }
 
+function normalizeLedgerScope(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "personal") return "personal";
+  if (raw === "shared") return "shared";
+  return "all";
+}
+
 function getReviewScopeLabel(scope = state.reviewScope) {
-  if (scope === "personal") return "Personal only";
-  if (scope === "shared") return "Shared household";
+  const normalized = normalizeLedgerScope(scope);
+  if (normalized === "personal") return "Personal only";
+  if (normalized === "shared") return "Shared household";
   return "All bills";
 }
 
@@ -1110,6 +1165,7 @@ function shouldShowSetupGuide() {
 
 function focusTemplateBuilder(options = {}) {
   const behavior = options.behavior || "smooth";
+  state.setupPath = "builder";
   state.view = "setup";
   renderView();
   els.templateForm?.scrollIntoView({ behavior, block: "start" });
@@ -1123,6 +1179,7 @@ function focusTemplateBuilder(options = {}) {
 }
 
 function openSharedJoinFlow() {
+  state.setupPath = "shared";
   state.view = "shared";
   renderView();
   requestAnimationFrame(() => {
@@ -1185,6 +1242,7 @@ function getTemplateDraftSummary() {
   const count = drafts.length;
   const total = drafts.reduce((sum, draft) => sum + Number(draft.amount_default || 0), 0);
   const essentials = drafts.filter((draft) => draft.essential !== false).length;
+  const shared = drafts.filter((draft) => !!draft.shared_household).length;
   const previewItems = drafts
     .slice()
     .sort((a, b) => a.due_day - b.due_day || a.name.localeCompare(b.name))
@@ -1194,6 +1252,7 @@ function getTemplateDraftSummary() {
     count,
     total,
     essentials,
+    shared,
     preview: previewItems.length
       ? `First up: ${previewItems.join(" • ")}`
       : "Add bills above. You’ll review them here before anything is saved.",
@@ -1203,6 +1262,313 @@ function getTemplateDraftSummary() {
 function setSetupPath(path) {
   state.setupPath = ["builder", "import", "shared"].includes(path) ? path : "builder";
   renderSetupGuide();
+  renderSetupExperience();
+}
+
+function isSetupOnboardingMode() {
+  return shouldShowSetupGuide();
+}
+
+function getSetupPathConfig() {
+  const setupPath = state.setupPath || "builder";
+  const pendingImport = state.pendingImport?.summary || null;
+  const draftSummary = getTemplateDraftSummary();
+  if (setupPath === "import") {
+    if (pendingImport) {
+      const range = pendingImport.range ? `${pendingImport.range.start} → ${pendingImport.range.end}` : "Current month and history";
+      const exportedAt = pendingImport.exported_at ? formatDateTime(pendingImport.exported_at) : "Unknown export time";
+      return {
+        title: "Review import before saving",
+        copy: `This file has ${pendingImport.templates} recurring bill${pendingImport.templates === 1 ? "" : "s"}, ${pendingImport.instances} monthly item${pendingImport.instances === 1 ? "" : "s"}, and ${pendingImport.payments} logged update${pendingImport.payments === 1 ? "" : "s"}.`,
+        helper: `Period: ${range} · Exported ${exportedAt}`,
+        primaryLabel: "Import and continue",
+        primaryAction: "confirm-import",
+        secondaryLabel: "Choose a different file",
+        secondaryAction: "pick-import",
+      };
+    }
+    return {
+      title: "Import from local app",
+      copy:
+        "Choose an AJL backup JSON from another device. You will preview it before anything changes in this browser.",
+      helper: "Best when you already use the local app or another browser install.",
+      primaryLabel: "Choose backup JSON",
+      primaryAction: "import",
+      secondaryLabel: "Add bills instead",
+      secondaryAction: "builder",
+    };
+  }
+  if (setupPath === "shared") {
+    return {
+      title: "Join the shared household",
+      copy:
+        "Use an invite link or QR from the household owner. This links the shared ledger on this device without making a separate login.",
+      helper: "You can still add your own recurring bills later in Setup.",
+      primaryLabel: "Open shared household",
+      primaryAction: "shared",
+      secondaryLabel: "Add my own bills",
+      secondaryAction: "builder",
+    };
+  }
+  if (draftSummary.count > 0) {
+    return {
+      title: "Review your draft recurring bills",
+      copy: `You have ${draftSummary.count} unsaved bill${draftSummary.count === 1 ? "" : "s"} worth ${formatMoney(draftSummary.total)} this month. Save them together when you are ready.`,
+      helper: draftSummary.preview,
+      primaryLabel: `Save ${draftSummary.count} bill${draftSummary.count === 1 ? "" : "s"}`,
+      primaryAction: "save-drafts",
+      secondaryLabel: "Add another bill",
+      secondaryAction: "builder",
+    };
+  }
+  return {
+    title: "Add your recurring bills",
+    copy:
+      "Start with the bills that keep your home running. Add them in draft, review the list once, then save everything together to generate this month automatically.",
+    helper: "Required only: bill name, amount, and due day. Everything else is optional.",
+    primaryLabel: "Start bill builder",
+    primaryAction: "builder",
+    secondaryLabel: "Import instead",
+    secondaryAction: "import",
+  };
+}
+
+function openImportFlow(options = {}) {
+  state.view = "setup";
+  setSetupPath("import");
+  renderView();
+  els.backupSection?.scrollIntoView({ behavior: options.behavior || "smooth", block: "start" });
+  if (options.pickFile !== false) {
+    els.importBackup?.click();
+  }
+}
+
+function runSetupPathAction(action) {
+  if (action === "import") {
+    openImportFlow();
+    return;
+  }
+  if (action === "pick-import") {
+    openImportFlow();
+    return;
+  }
+  if (action === "confirm-import") {
+    if (state.pendingImport && els.importConfirm && !els.importConfirm.disabled) {
+      els.importConfirm.click();
+      return;
+    }
+    openImportFlow();
+    return;
+  }
+  if (action === "shared") {
+    openSharedJoinFlow();
+    return;
+  }
+  if (action === "save-drafts") {
+    if (Array.isArray(state.templateDrafts) && state.templateDrafts.length > 0) {
+      els.templateDraftsSave?.click();
+    } else {
+      focusTemplateBuilder();
+    }
+    return;
+  }
+  if (action === "review-builder") {
+    document.getElementById("builder-review")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  setSetupPath("builder");
+  focusTemplateBuilder();
+}
+
+function renderSetupPathDetail() {
+  if (!els.setupPathDetail) return;
+  const onboarding = isSetupOnboardingMode();
+  els.setupPathDetail.classList.toggle("hidden", !onboarding);
+  if (!onboarding) return;
+  const config = getSetupPathConfig();
+  if (els.setupPathDetailTitle) els.setupPathDetailTitle.textContent = config.title;
+  if (els.setupPathDetailCopy) els.setupPathDetailCopy.textContent = config.copy;
+  if (els.setupPathHelper) {
+    const helper = String(config.helper || "").trim();
+    els.setupPathHelper.textContent = helper;
+    els.setupPathHelper.classList.toggle("hidden", !helper);
+  }
+  if (els.setupPathPrimary) {
+    els.setupPathPrimary.textContent = config.primaryLabel;
+    els.setupPathPrimary.dataset.action = config.primaryAction;
+  }
+  if (els.setupPathSecondary) {
+    const showSecondary = Boolean(config.secondaryLabel);
+    els.setupPathSecondary.classList.toggle("hidden", !showSecondary);
+    els.setupPathSecondary.textContent = config.secondaryLabel || "";
+    els.setupPathSecondary.dataset.action = config.secondaryAction || "";
+  }
+}
+
+function getSetupCompletionSummary() {
+  const summary = state.lastSetupSaveSummary;
+  if (!summary) return null;
+  if (summary.kind === "import") {
+    const templates = Number(summary.templates || 0);
+    const instances = Number(summary.instances || 0);
+    return {
+      title: "Import complete",
+      copy: `Imported ${templates} recurring bill${templates === 1 ? "" : "s"} and ${instances} monthly item${instances === 1 ? "" : "s"}. Your current month is ready in My ledger.`,
+      meta: summary.range
+        ? `Imported history spans ${summary.range.start} to ${summary.range.end}.`
+        : "Imported data is ready to review and edit.",
+    };
+  }
+  const savedCount = Number(summary.savedCount || 0);
+  const savedSharedCount = Number(summary.savedSharedCount || 0);
+  return {
+    title: "Setup complete",
+    copy: `Saved ${savedCount} recurring bill${savedCount === 1 ? "" : "s"} and generated this month automatically.`,
+    meta:
+      savedSharedCount > 0
+        ? `${savedSharedCount} bill${savedSharedCount === 1 ? "" : "s"} also sync to Shared household.`
+        : "You can review recurring bills or head straight to My ledger.",
+  };
+}
+
+function getSetupHandoffSummary() {
+  const summary = state.lastSetupSaveSummary;
+  if (!summary) return null;
+  const signature = String(summary.savedAt || summary.kind || "");
+  if (signature && state.setupHandoffDismissedAt === signature) return null;
+  if (!["builder", "import"].includes(String(summary.kind || ""))) return null;
+  return summary;
+}
+
+function renderSetupHandoff(baseList) {
+  if (!els.setupHandoffCard) return;
+  const summary = getSetupHandoffSummary();
+  const show = state.view === "today" && !state.readOnly && !!summary;
+  els.setupHandoffCard.classList.toggle("hidden", !show);
+  if (!show) return;
+
+  const completion = getSetupCompletionSummary() || {
+    title: "This month is ready",
+    copy: "Your setup changes are ready.",
+    meta: "",
+  };
+  const activeList = (Array.isArray(baseList) ? baseList : []).filter(
+    (item) => item.status_derived !== "skipped" && Number(item.amount_remaining || 0) > 0
+  );
+  const sortedOpen = activeList
+    .slice()
+    .sort((a, b) => String(a.due_date || "").localeCompare(String(b.due_date || "")));
+  const nextItem = sortedOpen[0] || null;
+  const nextItemCopy = nextItem
+    ? `${nextItem.name_snapshot} due ${formatShortDate(nextItem.due_date)}`
+    : "Everything scheduled this month is currently covered.";
+
+  if (els.setupHandoffTitle) els.setupHandoffTitle.textContent = completion.title;
+  if (els.setupHandoffCopy) els.setupHandoffCopy.textContent = completion.copy;
+  if (els.setupHandoffMeta) {
+    const savedAt = summary.savedAt ? formatDateTime(summary.savedAt) : "just now";
+    els.setupHandoffMeta.textContent = `${completion.meta} Saved ${savedAt}.`;
+  }
+  if (els.setupHandoffStats) {
+    els.setupHandoffStats.innerHTML = "";
+    const stats = [];
+    if (summary.kind === "import") {
+      stats.push({
+        label: "Recurring bills",
+        value: String(Number(summary.templates || 0)),
+        sub: "Imported from backup",
+      });
+      stats.push({
+        label: "Monthly items",
+        value: String(Number(summary.instances || 0)),
+        sub: "Loaded into this browser",
+      });
+      stats.push({
+        label: "Open now",
+        value: String(activeList.length),
+        sub: `${formatMoneyDisplay(activeList.reduce((sum, item) => sum + Number(item.amount_remaining || 0), 0))} remaining this month`,
+      });
+    } else {
+      stats.push({
+        label: "Recurring saved",
+        value: String(Number(summary.savedCount || 0)),
+        sub: `${formatMoneyDisplay(Number(summary.savedTotal || 0))} scheduled each month`,
+      });
+      stats.push({
+        label: "Essentials",
+        value: String(Number(summary.savedEssentialCount || 0)),
+        sub: "Marked essential in setup",
+      });
+      stats.push({
+        label: "Shared",
+        value: String(Number(summary.savedSharedCount || 0)),
+        sub: Number(summary.savedSharedCount || 0) > 0 ? "Syncs to Shared household" : "Still personal only",
+      });
+    }
+    stats.push({
+      label: "Next up",
+      value: nextItem ? formatShortDate(nextItem.due_date) : "All clear",
+      sub: nextItemCopy,
+    });
+    stats.forEach((entry) => {
+      const card = document.createElement("div");
+      card.className = "setup-handoff-stat";
+      const label = document.createElement("div");
+      label.className = "setup-handoff-label";
+      label.textContent = entry.label;
+      const value = document.createElement("div");
+      value.className = "setup-handoff-value";
+      value.textContent = entry.value;
+      const sub = document.createElement("div");
+      sub.className = "setup-handoff-sub";
+      sub.textContent = entry.sub;
+      card.appendChild(label);
+      card.appendChild(value);
+      card.appendChild(sub);
+      els.setupHandoffStats.appendChild(card);
+    });
+  }
+}
+
+function renderSetupExperience() {
+  const onboarding = isSetupOnboardingMode();
+  const path = state.setupPath || "builder";
+  const completed = isFirstRunCompleted() && hasRecurringBillsSetupData();
+  const completionSummary = getSetupCompletionSummary();
+  if (els.setupBuilder) {
+    els.setupBuilder.classList.toggle("hidden", state.readOnly || (onboarding && path !== "builder"));
+  }
+  if (els.backupSection) {
+    els.backupSection.classList.toggle("hidden", onboarding && path !== "import");
+  }
+  if (els.setupInstall) {
+    if (onboarding || state.readOnly) {
+      els.setupInstall.classList.add("hidden");
+    }
+  }
+  [
+    els.setupLocalInstall,
+    els.localTools,
+    els.setupAgent,
+    els.setupDefaultsSection,
+    els.setupCategoriesSection,
+    els.setupRecurringSection,
+    els.fundsSection,
+    els.setupPreviewSection,
+    els.setupSafetySection,
+  ].forEach((section) => {
+    if (!section) return;
+    section.classList.toggle("hidden", onboarding);
+  });
+  if (els.setupCompleteCard) {
+    const showCompletion = completed && !!completionSummary && !onboarding;
+    els.setupCompleteCard.classList.toggle("hidden", !showCompletion);
+    if (showCompletion) {
+      if (els.setupCompleteCopy) els.setupCompleteCopy.textContent = completionSummary.copy;
+      if (els.setupCompleteMeta) els.setupCompleteMeta.textContent = completionSummary.meta;
+    }
+  }
+  renderSetupPathDetail();
 }
 
 function resetTemplateBuilderForm() {
@@ -1243,6 +1609,7 @@ function addTemplateDraft(draft, options = {}) {
 async function saveTemplateDraftBatch() {
   const drafts = Array.isArray(state.templateDrafts) ? state.templateDrafts.map(sanitizeTemplateDraft) : [];
   if (drafts.length === 0) return;
+  const onboardingWasComplete = isFirstRunCompleted();
   if (els.templateError) {
     els.templateError.textContent = "";
     els.templateError.classList.add("hidden");
@@ -1259,6 +1626,7 @@ async function saveTemplateDraftBatch() {
   }
   let savedCount = 0;
   let savedTotal = 0;
+  let savedEssentialCount = 0;
   let savedSharedCount = 0;
   const unsaved = [];
   for (const draft of drafts) {
@@ -1297,22 +1665,28 @@ async function saveTemplateDraftBatch() {
     }
     savedCount += 1;
     savedTotal += Number(draft.amount_default || 0);
+    if (draft.essential !== false) savedEssentialCount += 1;
     if (draft.shared_household) savedSharedCount += 1;
   }
   state.templateDrafts = unsaved;
   renderTemplateDrafts();
   renderSetupGuide();
   if (savedCount > 0) {
+    state.setupHandoffDismissedAt = "";
     state.lastSetupSaveSummary = {
+      kind: "builder",
       savedCount,
       savedTotal,
+      savedEssentialCount,
       savedSharedCount,
       savedAt: new Date().toISOString(),
     };
     await refreshAll();
     recordMutation();
-    await setOnboardingComplete(true);
-    closeWizard();
+    if (unsaved.length === 0 && !onboardingWasComplete) {
+      await setOnboardingComplete(true);
+      closeWizard();
+    }
     showToast(
       unsaved.length === 0
         ? `Saved ${savedCount} recurring bill${savedCount === 1 ? "" : "s"}.`
@@ -1326,6 +1700,14 @@ async function saveTemplateDraftBatch() {
       );
       state.view = "today";
       renderView();
+    } else {
+      state.view = "setup";
+      setSetupPath("builder");
+      renderView();
+      showTemporarySystemBanner(
+        `Saved ${savedCount} recurring bill${savedCount === 1 ? "" : "s"}. ${unsaved.length} draft${unsaved.length === 1 ? "" : "s"} still need review before setup is complete.`,
+        9000
+      );
     }
   }
 }
@@ -8506,6 +8888,50 @@ function updateShareStatusLine(message, tone = "") {
   }
 }
 
+function describeShareReachability(share = state.shareInfo) {
+  const network = getShareNetworkMode();
+  if (!share) {
+    return {
+      label: "Waiting for link",
+      detail: network.warning ? `${network.message} ${network.warning}` : network.message,
+      tone: network.tone,
+    };
+  }
+  if (share.is_active === false) {
+    return {
+      label: "Disabled",
+      detail: "Viewer access is turned off until you create or regenerate a read-only link.",
+      tone: "warn",
+    };
+  }
+  if (network.mode === "relay" && !network.warning) {
+    return {
+      label: "Works anywhere",
+      detail: "Viewers can open this link from any device with internet access.",
+      tone: "ok",
+    };
+  }
+  if (network.mode === "relay" && network.warning) {
+    return {
+      label: "This device only",
+      detail: network.warning,
+      tone: "warn",
+    };
+  }
+  if (!hostLooksLocal(getShareViewerBaseUrl())) {
+    return {
+      label: "Same Wi-Fi / LAN",
+      detail: "Viewers on the same network can open this link directly.",
+      tone: "ok",
+    };
+  }
+  return {
+    label: "This device only",
+    detail: "Viewer base currently resolves to localhost. Use the LAN URL or set SHARE_VIEWER_BASE_URL for multi-device access.",
+    tone: "warn",
+  };
+}
+
 function updateShareLifecycleState(share) {
   if (els.shareLinkState) {
     els.shareLinkState.textContent = share
@@ -8523,6 +8949,9 @@ function updateShareLifecycleState(share) {
         : "Needs publish"
       : "Waiting for link";
   }
+  if (els.shareReachability) {
+    els.shareReachability.textContent = describeShareReachability(share).label;
+  }
   if (els.shareLastPublished) {
     els.shareLastPublished.textContent = share?.last_published_at
       ? formatDateTime(share.last_published_at)
@@ -8538,6 +8967,8 @@ function setShareBusy(busy) {
   if (els.shareRegenerate) els.shareRegenerate.disabled = disabled;
   if (els.shareDisable) els.shareDisable.disabled = disabled;
   if (els.shareCopy) els.shareCopy.disabled = disabled || !state.shareInfo;
+  if (els.shareOpenViewer) els.shareOpenViewer.disabled = disabled || !state.shareInfo;
+  if (els.shareTest) els.shareTest.disabled = disabled || !state.shareInfo;
   if (els.shareLive) els.shareLive.disabled = disabled;
   if (els.shareExpiry) els.shareExpiry.disabled = disabled;
   if (els.shareExpiryCustom) els.shareExpiryCustom.disabled = disabled;
@@ -8792,7 +9223,23 @@ function updateShareModal() {
   if (els.shareCopy) {
     els.shareCopy.disabled = !share;
   }
+  if (els.shareOpenViewer) {
+    els.shareOpenViewer.disabled = !share;
+  }
+  if (els.shareTest) {
+    els.shareTest.disabled = !share;
+  }
   updateShareLifecycleState(share);
+  const reachability = describeShareReachability(share);
+  if (els.shareViewerHint) {
+    if (!share) {
+      els.shareViewerHint.textContent = "Create a read-only link first, then publish your current view so viewers can load it.";
+    } else if (!share.last_published_at) {
+      els.shareViewerHint.textContent = `${reachability.detail} Publish current view after creating the link so viewers see the latest ledger.`;
+    } else {
+      els.shareViewerHint.textContent = `${reachability.detail} Use Test link to verify viewer access before you send it out.`;
+    }
+  }
   const network = getShareNetworkMode();
   if (els.shareRelayStatus && share?.last_published_at) {
     let message = `${network.message} Last shared update: ${formatDateTime(share.last_published_at)}.`;
@@ -9056,6 +9503,66 @@ async function copyShareLink() {
       document.execCommand("copy");
       showToast("Link copied.");
     }
+  }
+}
+
+async function openShareViewer() {
+  await ensureShareViewerBaseReady();
+  if (state.shareInfo?.token) {
+    state.shareInfo.url = buildShareViewerUrl(state.shareInfo.token, state.shareInfo.url || "");
+  }
+  const link = state.shareInfo?.url || "";
+  if (!link) {
+    updateShareStatusLine("Create a read-only link first.", "warn");
+    return;
+  }
+  const opened = window.open(link, "_blank", "noopener");
+  if (!opened) {
+    window.location.href = link;
+    return;
+  }
+  updateShareStatusLine(
+    state.shareInfo?.last_published_at
+      ? "Viewer opened in a new tab."
+      : "Viewer opened. Publish current view if the page says no shared data is available yet.",
+    state.shareInfo?.last_published_at ? "ok" : "warn"
+  );
+}
+
+async function testShareLink() {
+  if (state.shareBusy) return;
+  setShareBusy(true);
+  try {
+    await ensureShareViewerBaseReady();
+    if (!state.shareInfo?.token) {
+      updateShareStatusLine("Create a read-only link first.", "warn");
+      return;
+    }
+    const res = await shareFetch(`/api/shares/${state.shareInfo.token}`);
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data?.lastPublishedAt) {
+        state.shareInfo.last_published_at = data.lastPublishedAt;
+      }
+      updateShareModal();
+      const reachability = describeShareReachability(state.shareInfo);
+      updateShareStatusLine(`Viewer test passed. ${reachability.label}.`, "ok");
+      showToast("Read-only link is reachable.");
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    const rawMessage = String(data?.error || "Unable to verify the read-only link.");
+    const message = rawMessage === "No shared data available yet."
+      ? "Link exists, but the current view has not been published yet. Use Publish current view first."
+      : rawMessage;
+    updateShareStatusLine(`Viewer test failed: ${message}`, "warn");
+    showSystemBanner(message);
+  } catch (err) {
+    const message = String(err?.message || "Unable to verify the read-only link.");
+    updateShareStatusLine(`Viewer test failed: ${message}`, "warn");
+    showSystemBanner(message);
+  } finally {
+    setShareBusy(false);
   }
 }
 
@@ -9539,6 +10046,121 @@ function renderHouseholdItems() {
   });
 }
 
+function renderHouseholdAttention() {
+  if (!els.householdAttentionList) return;
+  els.householdAttentionList.innerHTML = "";
+  const items = Array.isArray(state.householdInfo?.items) ? state.householdInfo.items : [];
+  const openItems = items
+    .filter((item) => Number(item.shared_remaining || 0) > 0)
+    .sort((a, b) =>
+      String(a.due_date || "").localeCompare(String(b.due_date || "")) ||
+      Number(b.shared_remaining || 0) - Number(a.shared_remaining || 0)
+    );
+  if (openItems.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "Shared household bills are fully covered right now.";
+    els.householdAttentionList.appendChild(empty);
+    return;
+  }
+  openItems.slice(0, 4).forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "household-item-row";
+
+    const head = document.createElement("div");
+    head.className = "household-item-head";
+    const left = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "household-item-name";
+    name.textContent = item.name_snapshot || "Bill";
+    const meta = document.createElement("div");
+    meta.className = "household-item-meta";
+    const parts = [`Due ${formatShortDate(item.due_date)}`];
+    if (item.category_snapshot) parts.push(item.category_snapshot);
+    meta.textContent = parts.join(" · ");
+    left.appendChild(name);
+    left.appendChild(meta);
+
+    const status = document.createElement("span");
+    status.className = `household-status-pill ${item.shared_status || "open"}`;
+    status.textContent =
+      item.shared_status === "partial"
+        ? "Partial"
+        : item.shared_status === "done"
+          ? "Done"
+          : "Open";
+
+    head.appendChild(left);
+    head.appendChild(status);
+
+    const remaining = document.createElement("div");
+    remaining.className = "household-item-remaining";
+    remaining.textContent = `${formatMoney(item.shared_remaining || 0)} remaining`;
+
+    const foot = document.createElement("div");
+    foot.className = "household-item-foot";
+    const note = document.createElement("div");
+    note.className = "household-item-meta";
+    const contributions = Array.isArray(item.contributions) ? item.contributions : [];
+    note.textContent = contributions.length > 0
+      ? `${contributions.length} contributor${contributions.length === 1 ? "" : "s"} so far`
+      : "No shared contributions yet";
+    foot.appendChild(note);
+
+    if (!state.readOnly && state.householdSession) {
+      const actions = document.createElement("div");
+      actions.className = "household-item-actions";
+      const logBtn = document.createElement("button");
+      logBtn.className = "ghost-btn small";
+      logBtn.textContent = "Log update";
+      logBtn.addEventListener("click", () => openHouseholdLogSheet(item.id));
+      actions.appendChild(logBtn);
+      const coverBtn = document.createElement("button");
+      coverBtn.className = "btn-small btn-primary";
+      coverBtn.textContent = "Cover remaining";
+      coverBtn.addEventListener("click", () => openHouseholdLogSheet(item.id, true));
+      actions.appendChild(coverBtn);
+      foot.appendChild(actions);
+    }
+
+    row.appendChild(head);
+    row.appendChild(remaining);
+    row.appendChild(foot);
+    els.householdAttentionList.appendChild(row);
+  });
+}
+
+function renderHouseholdLatest() {
+  if (!els.householdLatestList) return;
+  els.householdLatestList.innerHTML = "";
+  const activity = Array.isArray(state.householdInfo?.activity) ? state.householdInfo.activity : [];
+  if (activity.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = "Recent shared updates will appear here once the household starts logging them.";
+    els.householdLatestList.appendChild(empty);
+    return;
+  }
+  activity.slice(0, 5).forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "household-activity-row";
+
+    const title = document.createElement("div");
+    title.className = "household-activity-title";
+    title.textContent = `${entry.member_name || "Member"} logged ${formatMoney(entry.amount || 0)} → ${entry.item_name || "Bill"}`;
+
+    const meta = document.createElement("div");
+    meta.className = "household-activity-meta";
+    const parts = [formatDateTime(entry.created_at)];
+    if (entry.note) parts.push(entry.note);
+    meta.textContent = parts.join(" · ");
+
+    row.appendChild(title);
+    row.appendChild(meta);
+    els.householdLatestList.appendChild(row);
+  });
+}
+
 function renderHouseholdActivity() {
   if (!els.householdActivityList) return;
   els.householdActivityList.innerHTML = "";
@@ -9603,6 +10225,8 @@ function renderSharedHousehold() {
   const showSetup = !session;
   if (els.householdSetupCard) els.householdSetupCard.classList.toggle("hidden", !showSetup);
   if (els.householdSummaryCard) els.householdSummaryCard.classList.toggle("hidden", !hasHousehold);
+  if (els.householdAttentionCard) els.householdAttentionCard.classList.toggle("hidden", !hasHousehold);
+  if (els.householdLatestCard) els.householdLatestCard.classList.toggle("hidden", !hasHousehold);
   if (els.householdInviteCard) {
     els.householdInviteCard.classList.toggle("hidden", !(hasHousehold && household.role === "owner"));
   }
@@ -9640,6 +10264,8 @@ function renderSharedHousehold() {
     if (els.householdRolePill) els.householdRolePill.classList.add("hidden");
     if (els.householdDevicePill) els.householdDevicePill.classList.add("hidden");
     if (els.householdGuidanceAction) els.householdGuidanceAction.classList.add("hidden");
+    if (els.householdAttentionList) els.householdAttentionList.innerHTML = "";
+    if (els.householdLatestList) els.householdLatestList.innerHTML = "";
     if (els.householdMembersList) els.householdMembersList.innerHTML = "";
     if (els.householdItemsList) els.householdItemsList.innerHTML = "";
     if (els.householdActivityList) els.householdActivityList.innerHTML = "";
@@ -9786,6 +10412,8 @@ function renderSharedHousehold() {
     els.householdEntryAction.classList.toggle("hidden", !actionLabel);
     if (actionLabel) els.householdEntryAction.textContent = actionLabel;
   }
+  renderHouseholdAttention();
+  renderHouseholdLatest();
   renderHouseholdMembers();
   renderHouseholdItems();
   renderHouseholdActivity();
@@ -10278,6 +10906,7 @@ function setImportMode(mode) {
   }
   updateImportConflicts();
   renderImportPreview();
+  renderSetupGuide();
 }
 
 async function updateImportConflicts() {
@@ -10321,6 +10950,8 @@ async function handleImportFile(file) {
     }
     await updateImportConflicts();
     renderImportPreview();
+    renderSetupGuide();
+    renderSetupExperience();
   } catch (err) {
     window.alert("Invalid JSON backup file.");
   }
@@ -10351,8 +10982,19 @@ async function applyImport() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    state.setupHandoffDismissedAt = "";
+    state.lastSetupSaveSummary = {
+      kind: "import",
+      templates: Number(state.pendingImport.summary?.templates || 0),
+      instances: Number(state.pendingImport.summary?.instances || 0),
+      payments: Number(state.pendingImport.summary?.payments || 0),
+      range: state.pendingImport.summary?.range || null,
+      savedAt: new Date().toISOString(),
+    };
     state.pendingImport = null;
     renderImportPreview();
+    renderSetupGuide();
+    renderSetupExperience();
     await setOnboardingComplete(true);
     if (AJL_WEB_MODE && state.webMeta) {
       state.webMeta.editCountSinceBackup = 0;
@@ -10689,6 +11331,99 @@ async function renderDetailHistory(instanceId) {
   });
 }
 
+
+function formatMonthShort(month) {
+  const date = new Date(2000, Number(month || 1) - 1, 1);
+  if (Number.isNaN(date.valueOf())) return String(month || "");
+  return date.toLocaleDateString("en-US", { month: "short" });
+}
+
+function getYearMonthStatus(month) {
+  const status = String(month?.status || "").toLowerCase();
+  if (status === "paid" || month?.paid_off) return { label: "Done", className: "done" };
+  if (status === "partial") return { label: "Partial", className: "partial" };
+  if (status === "skipped") return { label: "Skipped", className: "skipped" };
+  if (status === "unscheduled") return { label: "Not scheduled", className: "unscheduled" };
+  return { label: "Open", className: "open" };
+}
+
+async function loadInstanceYearBreakdown(instanceId, year) {
+  const url = "/api/instances/" + encodeURIComponent(instanceId) + "/year-breakdown?year=" + year;
+  const res = await apiFetch(url, {}, { silent: true });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || data?.error?.message || "Unable to load year view.");
+  }
+  return readApiData(res);
+}
+
+async function renderDetailYearBreakdown(instanceId) {
+  if (!els.detailYearSummary || !els.detailYearMonths) return;
+  els.detailYearSummary.innerHTML = "";
+  els.detailYearMonths.innerHTML = '<div class="meta">Loading this year...</div>';
+  try {
+    const summary = await loadInstanceYearBreakdown(instanceId, state.selectedYear);
+    if (state.selectedInstanceId !== instanceId) return;
+    els.detailYearSummary.innerHTML = "";
+    els.detailYearMonths.innerHTML = "";
+
+    const nextOpen = summary.next_open_month ? formatMonthShort(summary.next_open_month) : "All clear";
+    const stats = [
+      { label: "Confirmed", value: formatMoneyDisplay(summary.amount_paid_year || 0) },
+      { label: "Remaining", value: formatMoneyDisplay(summary.amount_remaining_year || 0) },
+      { label: "Months done", value: String(summary.months_paid_off || 0) + "/" + String(summary.months_scheduled || 0) },
+      { label: "Next open", value: nextOpen },
+    ];
+    stats.forEach((stat) => {
+      const card = document.createElement("div");
+      card.className = "detail-year-stat";
+      const label = document.createElement("div");
+      label.className = "detail-year-label";
+      label.textContent = stat.label;
+      const value = document.createElement("div");
+      value.className = "detail-year-value";
+      value.textContent = stat.value;
+      card.appendChild(label);
+      card.appendChild(value);
+      els.detailYearSummary.appendChild(card);
+    });
+
+    const months = Array.isArray(summary.months) ? summary.months : [];
+    months.forEach((month) => {
+      const status = getYearMonthStatus(month);
+      const card = document.createElement("div");
+      card.className = "detail-year-month " + status.className;
+      const head = document.createElement("div");
+      head.className = "detail-year-month-head";
+      const name = document.createElement("div");
+      name.className = "detail-year-month-name";
+      name.textContent = formatMonthShort(month.month);
+      const stateLabel = document.createElement("div");
+      stateLabel.className = "detail-year-month-status";
+      stateLabel.textContent = status.label;
+      head.appendChild(name);
+      head.appendChild(stateLabel);
+      const money = document.createElement("div");
+      money.className = "detail-year-month-money";
+      money.textContent = month.scheduled
+        ? formatMoneyDisplay(month.amount_paid || 0) + " / " + formatMoneyDisplay(month.amount || 0)
+        : "No recurring item";
+      const due = document.createElement("div");
+      due.className = "detail-year-month-due";
+      due.textContent = month.due_date ? "Due " + formatShortDate(month.due_date) : "";
+      card.appendChild(head);
+      card.appendChild(money);
+      if (due.textContent) card.appendChild(due);
+      els.detailYearMonths.appendChild(card);
+    });
+  } catch (err) {
+    if (state.selectedInstanceId !== instanceId) return;
+    els.detailYearSummary.innerHTML = "";
+    const message = String(err?.message || err || "Unable to load year view.");
+    els.detailYearMonths.innerHTML = '<div class="meta">' + message + '</div>';
+  }
+}
+
 function renderTemplateCategoryChoices() {
   const choices = getSetupCategoryChoices();
   if (els.templateCategoryOptions) {
@@ -10721,17 +11456,38 @@ function renderSetupGuide() {
     els.setupGuide.classList.toggle("hidden", !showGuide);
   }
   const setupPath = state.setupPath || "builder";
-  const reviewReady = Array.isArray(state.templateDrafts) && state.templateDrafts.length > 0;
+  const draftCount = Array.isArray(state.templateDrafts) ? state.templateDrafts.length : 0;
+  const hasImportPreview = setupPath === "import" && !!state.pendingImport;
+  const sharedLinked = setupPath === "shared" && !!state.householdSession?.household_id;
+  const reviewReady = draftCount > 0 || hasImportPreview || sharedLinked;
   const completed = isFirstRunCompleted() && hasData;
-  const startStatus = completed ? "done" : !reviewReady && !hasData ? "active" : "done";
-  const buildStatus = completed ? "done" : setupPath === "builder" || reviewReady || hasData ? "active" : "pending";
-  const reviewStatus = completed ? "done" : reviewReady ? "active" : hasData ? "done" : "pending";
-  const doneStatus = completed ? "done" : "pending";
+
+  const stepLabels = {
+    builder: ["1. Start", "2. Add bills", "3. Review", "4. Done"],
+    import: ["1. Start", "2. Choose file", "3. Review", "4. Done"],
+    shared: ["1. Start", "2. Join", "3. Review", "4. Done"],
+  }[setupPath] || ["1. Start", "2. Add bills", "3. Review", "4. Done"];
+  const stepNodes = [els.setupStepStart, els.setupStepBuild, els.setupStepReview, els.setupStepDone];
+  stepNodes.forEach((node, index) => {
+    if (node) node.textContent = stepLabels[index] || node.textContent;
+  });
+
+  let statuses = ["active", "pending", "pending", "pending"];
+  if (completed) {
+    statuses = ["done", "done", "done", "done"];
+  } else if (setupPath === "import") {
+    statuses = ["done", hasImportPreview ? "done" : "active", hasImportPreview ? "active" : "pending", "pending"];
+  } else if (setupPath === "shared") {
+    statuses = ["done", sharedLinked ? "done" : "active", sharedLinked ? "active" : "pending", "pending"];
+  } else {
+    statuses = ["done", draftCount > 0 ? "done" : "active", reviewReady ? "active" : "pending", "pending"];
+  }
+
   const progressStates = [
-    [els.setupStepStart, startStatus],
-    [els.setupStepBuild, buildStatus],
-    [els.setupStepReview, reviewStatus],
-    [els.setupStepDone, doneStatus],
+    [els.setupStepStart, statuses[0]],
+    [els.setupStepBuild, statuses[1]],
+    [els.setupStepReview, statuses[2]],
+    [els.setupStepDone, statuses[3]],
   ];
   progressStates.forEach(([node, status]) => {
     if (!node) return;
@@ -10750,14 +11506,22 @@ function renderSetupGuide() {
   if (els.setupGuideNote) {
     if (completed) {
       const recent = state.lastSetupSaveSummary;
-      if (recent && recent.savedCount > 0) {
+      if (recent?.kind === "import") {
+        const templates = Number(recent.templates || 0);
+        const instances = Number(recent.instances || 0);
+        els.setupGuideNote.textContent = `Import complete. Loaded ${templates} recurring bill${templates === 1 ? "" : "s"} and ${instances} monthly item${instances === 1 ? "" : "s"}.`;
+      } else if (recent && recent.savedCount > 0) {
         const sharedCopy = recent.savedSharedCount > 0 ? ` · ${recent.savedSharedCount} shared household` : "";
         els.setupGuideNote.textContent = `Setup complete. You just saved ${recent.savedCount} recurring bill${recent.savedCount === 1 ? "" : "s"} (${formatMoneyDisplay(recent.savedTotal)} scheduled${sharedCopy}).`;
       } else {
         els.setupGuideNote.textContent = "Setup complete. You can still add, import, or reorganize recurring bills here.";
       }
+    } else if (setupPath === "import" && hasImportPreview) {
+      els.setupGuideNote.textContent = "Review the preview, choose merge or replace, then import once. Nothing changes until you confirm.";
     } else if (setupPath === "import") {
-      els.setupGuideNote.textContent = "Import gives you the fastest path if you already have an AJL backup from another device.";
+      els.setupGuideNote.textContent = "Choose a backup JSON from another AJL install. You will preview it before anything is imported.";
+    } else if (setupPath === "shared" && sharedLinked) {
+      els.setupGuideNote.textContent = "Shared household linked. You can move to My ledger now or keep configuring recurring bills here.";
     } else if (setupPath === "shared") {
       els.setupGuideNote.textContent = "Shared household is best when someone already created the linked ledger for your home.";
     } else if (reviewReady) {
@@ -10766,6 +11530,7 @@ function renderSetupGuide() {
       els.setupGuideNote.textContent = "Add recurring bills, review them once, then save everything together.";
     }
   }
+  renderSetupPathDetail();
 }
 
 function renderSetupCta() {
@@ -11961,7 +12726,28 @@ function renderTemplateDrafts() {
   if (els.builderDraftCount) els.builderDraftCount.textContent = String(summary.count);
   if (els.builderDraftTotal) els.builderDraftTotal.textContent = formatMoney(summary.total);
   if (els.builderDraftEssentials) els.builderDraftEssentials.textContent = String(summary.essentials);
+  if (els.builderDraftShared) els.builderDraftShared.textContent = String(summary.shared);
   if (els.builderDraftPreview) els.builderDraftPreview.textContent = summary.preview;
+  if (els.builderReviewNext) {
+    if (summary.count === 0) {
+      els.builderReviewNext.textContent = "Required only: bill name, amount, and due day. Categories, sharing, and notes can be added later.";
+    } else {
+      const sharedCopy =
+        summary.shared > 0
+          ? `${summary.shared} bill${summary.shared === 1 ? "" : "s"} will also appear in Shared household.`
+          : "Bills stay personal unless you turn on Shared household.";
+      els.builderReviewNext.textContent = `Review this draft once, then save ${summary.count} bill${summary.count === 1 ? "" : "s"} together. ${sharedCopy}`;
+    }
+  }
+  if (els.builderReviewSave) {
+    els.builderReviewSave.textContent = summary.count > 0
+      ? `Looks good — save ${summary.count} bill${summary.count === 1 ? "" : "s"}`
+      : "Looks good — save all bills";
+    els.builderReviewSave.disabled = summary.count === 0;
+  }
+  if (els.builderReviewEdit) {
+    els.builderReviewEdit.textContent = summary.count > 0 ? "Keep editing" : "Start adding bills";
+  }
   if (els.templateDraftsEmpty) {
     els.templateDraftsEmpty.classList.toggle("hidden", summary.count > 0);
   }
@@ -11971,6 +12757,12 @@ function renderTemplateDrafts() {
   }
   if (els.templateDraftsDiscard) {
     els.templateDraftsDiscard.disabled = summary.count === 0;
+  }
+  if (els.builderFooterMeta) {
+    els.builderFooterMeta.textContent =
+      summary.count > 0
+        ? `Draft: ${summary.count} bill${summary.count === 1 ? "" : "s"} · ${formatMoney(summary.total)} scheduled`
+        : "Draft: 0 bills · $0.00 scheduled";
   }
   if (!els.templateDraftsList) return;
   els.templateDraftsList.innerHTML = "";
@@ -12234,6 +13026,7 @@ function openInstanceDetail(instanceId) {
   if (els.detailLogStatus) els.detailLogStatus.textContent = "";
   if (els.detailSaveStatus) els.detailSaveStatus.textContent = "";
   renderDetailHistory(instanceId);
+  renderDetailYearBreakdown(instanceId);
   if (state.splitView) {
     if (els.detailsPaneEmpty) els.detailsPaneEmpty.classList.add("hidden");
     const panel = getDetailPanel();
@@ -12279,6 +13072,13 @@ function renderMonthReview(baseList) {
   const paidItems = activeItems.filter((item) => item.amount_remaining <= 0);
   const scopeLabel = getReviewScopeLabel();
   const allowedIds = new Set(scopedList.map((item) => item.id));
+  const personalItems = activeItems.filter((item) => !isSharedHouseholdItem(item));
+  const sharedItems = activeItems.filter((item) => isSharedHouseholdItem(item));
+  const personalSummary = computeTotals(personalItems);
+  const sharedSummary = computeTotals(sharedItems);
+  const openItems = activeItems.filter((item) => Number(item.amount_remaining || 0) > 0);
+  const openPersonal = personalItems.filter((item) => Number(item.amount_remaining || 0) > 0);
+  const openShared = sharedItems.filter((item) => Number(item.amount_remaining || 0) > 0);
 
   const payments = (state.payments || []).filter((payment) => allowedIds.has(payment.instance_id));
   if (activeItems.length === 0) {
@@ -12297,6 +13097,7 @@ function renderMonthReview(baseList) {
   let firstPayment = null;
   let lastPayment = null;
   const lastPaidMap = new Map();
+  const paymentCountMap = new Map();
   payments.forEach((payment) => {
     if (!firstPayment || payment.paid_date < firstPayment.paid_date) {
       firstPayment = payment;
@@ -12308,6 +13109,7 @@ function renderMonthReview(baseList) {
     if (!current || payment.paid_date > current) {
       lastPaidMap.set(payment.instance_id, payment.paid_date);
     }
+    paymentCountMap.set(payment.instance_id, Number(paymentCountMap.get(payment.instance_id) || 0) + 1);
   });
 
   let onTimeCount = 0;
@@ -12332,70 +13134,79 @@ function renderMonthReview(baseList) {
   const onTimeRate = paidCount > 0 ? Math.round((onTimeCount / paidCount) * 100) : 0;
   const avgDays = paidCount > 0 ? (daySum / paidCount).toFixed(1) : "0.0";
 
-  const remainingMetric = document.createElement("div");
-  remainingMetric.className = "review-metric";
-  const remainingLabel = document.createElement("div");
-  remainingLabel.className = "review-label";
-  remainingLabel.textContent = "Remaining total";
-  const remainingValue = document.createElement("div");
-  remainingValue.className = "review-value";
-  remainingValue.textContent = formatMoneyDisplay(summary.remaining);
-  const remainingSub = document.createElement("div");
-  remainingSub.className = "review-sub";
-  remainingSub.textContent = "Reference amount";
-  remainingMetric.appendChild(remainingLabel);
-  remainingMetric.appendChild(remainingValue);
-  remainingMetric.appendChild(remainingSub);
+  let mostUpdated = null;
+  paymentCountMap.forEach((count, id) => {
+    if (!mostUpdated || count > mostUpdated.count) {
+      mostUpdated = { id, count };
+    }
+  });
+  const biggestRemaining = openItems.slice().sort((a, b) => Number(b.amount_remaining || 0) - Number(a.amount_remaining || 0))[0] || null;
 
-  const doneMetric = document.createElement("div");
-  doneMetric.className = "review-metric";
-  const doneLabel = document.createElement("div");
-  doneLabel.className = "review-label";
-  doneLabel.textContent = "Items done";
-  const doneValue = document.createElement("div");
-  doneValue.className = "review-value";
-  doneValue.textContent = `${paidItems.length}/${activeItems.length}`;
-  const doneSub = document.createElement("div");
-  doneSub.className = "review-sub";
-  doneSub.textContent = `${formatMoneyDisplay(summary.paid)} of ${formatMoneyDisplay(summary.required)}`;
-  doneMetric.appendChild(doneLabel);
-  doneMetric.appendChild(doneValue);
-  doneMetric.appendChild(doneSub);
+  const addMetric = (label, value, sub) => {
+    const card = document.createElement("div");
+    card.className = "review-metric";
+    const labelNode = document.createElement("div");
+    labelNode.className = "review-label";
+    labelNode.textContent = label;
+    const valueNode = document.createElement("div");
+    valueNode.className = "review-value";
+    valueNode.textContent = value;
+    const subNode = document.createElement("div");
+    subNode.className = "review-sub";
+    subNode.textContent = sub;
+    card.appendChild(labelNode);
+    card.appendChild(valueNode);
+    card.appendChild(subNode);
+    els.reviewSummary.appendChild(card);
+  };
 
-  const timeMetric = document.createElement("div");
-  timeMetric.className = "review-metric";
-  const timeLabel = document.createElement("div");
-  timeLabel.className = "review-label";
-  timeLabel.textContent = "On‑time Rate";
-  const timeValue = document.createElement("div");
-  timeValue.className = "review-value";
-  timeValue.textContent = paidCount > 0 ? `${onTimeRate}%` : "—";
-  const timeSub = document.createElement("div");
-  timeSub.className = "review-sub";
-  timeSub.textContent = paidCount > 0 ? `Avg ${avgDays} days vs due` : "No completed bills";
-  timeMetric.appendChild(timeLabel);
-  timeMetric.appendChild(timeValue);
-  timeMetric.appendChild(timeSub);
+  addMetric("Remaining total", formatMoneyDisplay(summary.remaining), "Reference amount");
+  addMetric(
+    "Items done",
+    `${paidItems.length}/${activeItems.length}`,
+    `${formatMoneyDisplay(summary.paid)} of ${formatMoneyDisplay(summary.required)}`
+  );
+  addMetric(
+    "On-time rate",
+    paidCount > 0 ? `${onTimeRate}%` : "—",
+    paidCount > 0 ? `Avg ${avgDays} days vs due` : "No completed bills"
+  );
+  addMetric("Scope", scopeLabel, `${scopedList.length} bill${scopedList.length === 1 ? "" : "s"} in this view`);
+  if (state.reviewScope === "all") {
+    addMetric(
+      "Personal handled",
+      formatMoneyDisplay(personalSummary.paid),
+      `${personalItems.filter((item) => item.amount_remaining <= 0).length}/${personalItems.length} personal bills done`
+    );
+    addMetric(
+      "Shared handled",
+      formatMoneyDisplay(sharedSummary.paid),
+      `${sharedItems.filter((item) => item.amount_remaining <= 0).length}/${sharedItems.length} shared bills done`
+    );
+  } else {
+    addMetric("Open items", String(openItems.length), `${formatMoneyDisplay(summary.remaining)} still open`);
+    addMetric("Updates logged", String(payments.length), `${payments.length === 1 ? "1 update" : `${payments.length} updates`} in this view`);
+  }
 
-  const scopeMetric = document.createElement("div");
-  scopeMetric.className = "review-metric";
-  const scopeLabelNode = document.createElement("div");
-  scopeLabelNode.className = "review-label";
-  scopeLabelNode.textContent = "Scope";
-  const scopeValue = document.createElement("div");
-  scopeValue.className = "review-value";
-  scopeValue.textContent = scopeLabel;
-  const scopeSub = document.createElement("div");
-  scopeSub.className = "review-sub";
-  scopeSub.textContent = `${scopedList.length} bill${scopedList.length === 1 ? "" : "s"} in this view`;
-  scopeMetric.appendChild(scopeLabelNode);
-  scopeMetric.appendChild(scopeValue);
-  scopeMetric.appendChild(scopeSub);
+  if (els.reviewNote) {
+    if (state.reviewScope === "all") {
+      els.reviewNote.textContent = `Month close view: ${formatMoneyDisplay(personalSummary.remaining)} still open in My ledger and ${formatMoneyDisplay(sharedSummary.remaining)} still open in Shared household. Exports follow the current review scope.`;
+    } else if (state.reviewScope === "shared") {
+      els.reviewNote.textContent = `Shared household review: ${openShared.length} shared bill${openShared.length === 1 ? "" : "s"} still need attention. Receipt and CSV exports stay scoped to shared household bills.`;
+    } else {
+      els.reviewNote.textContent = `Personal-only review: ${openPersonal.length} private bill${openPersonal.length === 1 ? "" : "s"} still need attention. Receipt and CSV exports stay scoped to personal bills.`;
+    }
+  }
 
-  els.reviewSummary.appendChild(remainingMetric);
-  els.reviewSummary.appendChild(doneMetric);
-  els.reviewSummary.appendChild(timeMetric);
-  els.reviewSummary.appendChild(scopeMetric);
+  if (els.reviewExportReceipt) {
+    const receiptLabel = state.reviewScope === "shared"
+      ? "Shared receipt PDF"
+      : state.reviewScope === "personal"
+        ? "Personal receipt PDF"
+        : "Year receipt PDF";
+    els.reviewExportReceipt.textContent = receiptLabel;
+    els.reviewExportReceipt.title = `Export a receipt for ${getReviewScopeLabel(state.reviewScope).toLowerCase()}.`;
+  }
 
   const addRow = (title, body) => {
     const row = document.createElement("div");
@@ -12415,6 +13226,12 @@ function renderMonthReview(baseList) {
 
   addRow("Scope", scopeLabel);
   addRow("Updates logged", `${payments.length} update(s)`);
+  if (state.reviewScope === "all") {
+    addRow(
+      "Personal vs shared",
+      `${formatMoneyDisplay(personalSummary.paid)} handled personally · ${formatMoneyDisplay(sharedSummary.paid)} handled in shared household`
+    );
+  }
 
   if (firstPayment) {
     const name = nameMap.get(firstPayment.instance_id) || "Update";
@@ -12428,6 +13245,16 @@ function renderMonthReview(baseList) {
     addRow(
       "Last update",
       `${name} on ${formatShortDate(lastPayment.paid_date)} (${formatMoneyDisplay(lastPayment.amount)})`
+    );
+  }
+  if (mostUpdated) {
+    const name = nameMap.get(mostUpdated.id) || "Bill";
+    addRow("Most updated", `${name} logged ${mostUpdated.count} time${mostUpdated.count === 1 ? "" : "s"}`);
+  }
+  if (biggestRemaining) {
+    addRow(
+      "Largest remaining",
+      `${nameMap.get(biggestRemaining.id) || "Bill"} still has ${formatMoneyDisplay(biggestRemaining.amount_remaining || 0)} open`
     );
   }
 
@@ -12453,14 +13280,18 @@ function exportReviewCsv() {
   const allowedIds = new Set(baseList.map((item) => item.id));
   const payments = (state.payments || []).filter((payment) => allowedIds.has(payment.instance_id));
   const lastPaidMap = new Map();
+  const paymentCountMap = new Map();
   payments.forEach((payment) => {
     const current = lastPaidMap.get(payment.instance_id);
     if (!current || payment.paid_date > current) {
       lastPaidMap.set(payment.instance_id, payment.paid_date);
     }
+    paymentCountMap.set(payment.instance_id, Number(paymentCountMap.get(payment.instance_id) || 0) + 1);
   });
   const lines = [
     [
+      "period",
+      "review_scope",
       "name",
       "category",
       "due_date",
@@ -12469,11 +13300,17 @@ function exportReviewCsv() {
       "amount",
       "amount_paid",
       "amount_remaining",
+      "update_count",
       "last_update",
+      "days_vs_due",
     ].join(","),
   ];
   baseList.forEach((item) => {
+    const lastUpdate = lastPaidMap.get(item.id) || item.paid_date || "";
+    const daysVsDue = lastUpdate ? diffDays(lastUpdate, item.due_date || lastUpdate) : "";
     const row = [
+      `${state.selectedYear}-${pad2(state.selectedMonth)}`,
+      state.reviewScope,
       item.name_snapshot,
       item.category_snapshot || "",
       item.due_date || "",
@@ -12482,7 +13319,9 @@ function exportReviewCsv() {
       Number(item.amount || 0),
       Number(item.amount_paid || 0),
       Number(item.amount_remaining || 0),
-      lastPaidMap.get(item.id) || item.paid_date || "",
+      Number(paymentCountMap.get(item.id) || 0),
+      lastUpdate,
+      daysVsDue,
     ].map(escapeCsv);
     lines.push(row.join(","));
   });
@@ -12492,7 +13331,7 @@ function exportReviewCsv() {
   link.href = url;
   link.download = `au_jour_le_jour_review_${state.selectedYear}-${pad2(
     state.selectedMonth
-  )}.csv`;
+  )}_${state.reviewScope}.csv`;
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -12504,10 +13343,12 @@ function exportReceiptPdf(options = {}) {
     ? yearRaw
     : now.getFullYear();
   const scope = normalizeYearScope(options.scope || state.settings.defaults?.yearScope || "ytd");
+  const ledgerScope = normalizeLedgerScope(options.ledgerScope || "all");
   const params = new URLSearchParams({
     year: String(year),
     month: String(state.selectedMonth || now.getMonth() + 1),
     scope,
+    ledger_scope: ledgerScope,
     essentials_only: state.essentialsOnly ? "true" : "false",
   });
   const url = `/api/export/receipt.pdf?${params.toString()}`;
@@ -12654,7 +13495,7 @@ function renderTemplates() {
 
     const saveBtn = document.createElement("button");
     saveBtn.className = "ghost-btn";
-    saveBtn.textContent = "Save";
+    saveBtn.textContent = "Save row";
     saveBtn.disabled = true;
 
     const archiveBtn = document.createElement("button");
@@ -12700,6 +13541,11 @@ function renderTemplates() {
       return dirty;
     };
 
+    const updateDirtyUi = () => {
+      checkDirty();
+      renderTemplateDirtyState();
+    };
+
     [
       activeInput,
       essentialInput,
@@ -12713,8 +13559,8 @@ function renderTemplates() {
       matchKeyInput,
       matchToleranceInput,
     ].forEach((input) => {
-      input.addEventListener("input", () => checkDirty());
-      input.addEventListener("change", () => checkDirty());
+      input.addEventListener("input", updateDirtyUi);
+      input.addEventListener("change", updateDirtyUi);
     });
 
     saveBtn.addEventListener("click", async (event) => {
@@ -12814,6 +13660,7 @@ function renderTemplates() {
     });
   });
 
+  renderTemplateDirtyState();
   renderFundsList();
 }
 
@@ -12838,13 +13685,41 @@ function isTemplateDirty(entry) {
   return entry.checkDirty();
 }
 
-async function saveDirtyTemplates() {
+function getDirtyTemplateEntries() {
   const dirtyEntries = [];
   for (const [id, entry] of state.templateRows.entries()) {
     if (isTemplateDirty(entry)) {
       dirtyEntries.push({ id, entry });
     }
   }
+  return dirtyEntries;
+}
+
+function renderTemplateDirtyState() {
+  const dirtyEntries = getDirtyTemplateEntries();
+  const dirtyCount = dirtyEntries.length;
+  if (els.templateDirtyBanner) {
+    const show = dirtyCount > 0 && !state.readOnly && Array.isArray(state.templates) && state.templates.length > 0;
+    els.templateDirtyBanner.classList.toggle("hidden", !show);
+  }
+  if (els.templateDirtyCopy) {
+    els.templateDirtyCopy.textContent =
+      dirtyCount > 0
+        ? `${dirtyCount} recurring bill change${dirtyCount === 1 ? "" : "s"} still need to be saved.`
+        : "Make your edits, then save everything together or discard them.";
+  }
+  if (els.templatesSaveAll) {
+    els.templatesSaveAll.disabled = dirtyCount === 0;
+    els.templatesSaveAll.textContent = dirtyCount > 0 ? `Save ${dirtyCount} change${dirtyCount === 1 ? "" : "s"}` : "Save all changes";
+  }
+  if (els.templatesDiscardAll) {
+    els.templatesDiscardAll.disabled = dirtyCount === 0;
+  }
+  return dirtyCount;
+}
+
+async function saveDirtyTemplates() {
+  const dirtyEntries = getDirtyTemplateEntries();
   if (dirtyEntries.length === 0) return 0;
   for (const { id, entry } of dirtyEntries) {
     const payload = buildTemplatePayload(entry);
@@ -13028,6 +13903,7 @@ function renderDashboard() {
   const base = getBaseInstances(derived);
   renderSummary(base);
   renderFirstVisitHero();
+  renderSetupHandoff(base);
   renderInstallExperience();
   renderZeroState();
   renderStatusBar(base);
@@ -13109,6 +13985,7 @@ function renderView() {
     updateStorageHealth();
     renderIntegrityStatus();
     renderSetupAgentConnection();
+    renderSetupExperience();
     if (AJL_WEB_MODE && els.previewReadonly && state.webMeta) {
       els.previewReadonly.checked = !!state.webMeta.readOnlyPreview;
     }
@@ -13162,6 +14039,7 @@ async function refreshAll() {
     renderTemplateDrafts();
     renderTemplates();
     renderSetupCta();
+    renderSetupExperience();
     updateStorageHealth();
     maybeShowFirstRunWizard();
     scheduleSharePublish();
@@ -13293,6 +14171,12 @@ function bindEvents() {
   }
   if (els.shareCopy) {
     els.shareCopy.addEventListener("click", () => copyShareLink());
+  }
+  if (els.shareOpenViewer) {
+    els.shareOpenViewer.addEventListener("click", () => openShareViewer());
+  }
+  if (els.shareTest) {
+    els.shareTest.addEventListener("click", () => testShareLink());
   }
   if (els.shareCreate) {
     els.shareCreate.addEventListener("click", () => createShareLink());
@@ -13489,9 +14373,7 @@ function bindEvents() {
 
   if (els.backupOpen) {
     els.backupOpen.addEventListener("click", () => {
-      state.view = "setup";
-      renderView();
-      els.backupSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+      openImportFlow({ pickFile: false });
     });
   }
 
@@ -13730,8 +14612,7 @@ function bindEvents() {
 
   if (els.ctaImport && els.importBackup) {
     els.ctaImport.addEventListener("click", () => {
-      setSetupPath("import");
-      els.importBackup.click();
+      openImportFlow();
     });
   }
 
@@ -13744,8 +14625,7 @@ function bindEvents() {
 
   if (els.firstVisitImport && els.importBackup) {
     els.firstVisitImport.addEventListener("click", () => {
-      setSetupPath("import");
-      els.importBackup.click();
+      openImportFlow();
     });
   }
 
@@ -13779,11 +14659,7 @@ function bindEvents() {
 
   if (els.setupPathImport) {
     els.setupPathImport.addEventListener("click", () => {
-      setSetupPath("import");
-      state.view = "setup";
-      renderView();
-      els.backupSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-      els.importBackup?.click();
+      openImportFlow();
     });
   }
 
@@ -13791,6 +14667,59 @@ function bindEvents() {
     els.setupPathShared.addEventListener("click", () => {
       setSetupPath("shared");
       openSharedJoinFlow();
+    });
+  }
+
+  if (els.setupPathPrimary) {
+    els.setupPathPrimary.addEventListener("click", () => {
+      runSetupPathAction(String(els.setupPathPrimary.dataset.action || "builder"));
+    });
+  }
+
+  if (els.setupPathSecondary) {
+    els.setupPathSecondary.addEventListener("click", () => {
+      runSetupPathAction(String(els.setupPathSecondary.dataset.action || "import"));
+    });
+  }
+
+  if (els.setupCompleteOpenLedger) {
+    els.setupCompleteOpenLedger.addEventListener("click", () => {
+      state.view = "today";
+      renderView();
+    });
+  }
+
+  if (els.setupHandoffDismiss) {
+    els.setupHandoffDismiss.addEventListener("click", () => {
+      const summary = getSetupHandoffSummary();
+      if (!summary) return;
+      state.setupHandoffDismissedAt = String(summary.savedAt || summary.kind || "dismissed");
+      renderDashboard();
+    });
+  }
+
+  if (els.setupHandoffOpenRecurring) {
+    els.setupHandoffOpenRecurring.addEventListener("click", () => {
+      state.view = "setup";
+      renderView();
+      els.setupBuilder?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  if (els.setupHandoffOpenSummary) {
+    els.setupHandoffOpenSummary.addEventListener("click", () => {
+      state.view = "today";
+      state.summaryExpanded = true;
+      renderView();
+      els.summaryPanel?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  if (els.setupCompleteOpenRecurring) {
+    els.setupCompleteOpenRecurring.addEventListener("click", () => {
+      state.view = "setup";
+      renderView();
+      els.setupRecurringSection?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }
 
@@ -14042,6 +14971,15 @@ function bindEvents() {
   if (els.reviewExport) {
     els.reviewExport.addEventListener("click", () => {
       exportReviewCsv();
+    });
+  }
+  if (els.reviewExportReceipt) {
+    els.reviewExportReceipt.addEventListener("click", () => {
+      exportReceiptPdf({
+        year: state.selectedYear,
+        scope: state.settings.defaults?.yearScope || "ytd",
+        ledgerScope: state.reviewScope,
+      });
     });
   }
 
@@ -14632,6 +15570,18 @@ function bindEvents() {
     });
   }
 
+  if (els.builderReviewSave) {
+    els.builderReviewSave.addEventListener("click", async () => {
+      await saveTemplateDraftBatch();
+    });
+  }
+
+  if (els.builderReviewEdit) {
+    els.builderReviewEdit.addEventListener("click", () => {
+      focusTemplateBuilder();
+    });
+  }
+
   if (els.applyTemplates) {
     els.applyTemplates.addEventListener("click", async () => {
     const confirmed = window.confirm(
@@ -14666,6 +15616,31 @@ function bindEvents() {
         state.selectedTemplates = new Set();
       }
       renderTemplates();
+    });
+  }
+
+  if (els.templatesSaveAll) {
+    els.templatesSaveAll.addEventListener("click", async () => {
+      try {
+        const dirtyCount = await saveDirtyTemplates();
+        if (dirtyCount > 0) {
+          recordMutation();
+          showToast(`Saved ${dirtyCount} recurring bill change${dirtyCount === 1 ? "" : "s"}.`);
+        }
+      } catch (err) {
+        // handled in saveDirtyTemplates
+      }
+    });
+  }
+
+  if (els.templatesDiscardAll) {
+    els.templatesDiscardAll.addEventListener("click", async () => {
+      const dirtyCount = renderTemplateDirtyState();
+      if (dirtyCount === 0) return;
+      const confirmed = window.confirm(`Discard ${dirtyCount} unsaved recurring bill change${dirtyCount === 1 ? "" : "s"}?`);
+      if (!confirmed) return;
+      await refreshAll();
+      showToast("Discarded unsaved recurring bill changes.");
     });
   }
 

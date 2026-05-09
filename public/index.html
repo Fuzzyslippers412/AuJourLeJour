@@ -97,6 +97,22 @@
             </div>
             <div id="ledger-scope-note" class="ledger-scope-note hidden">My ledger shows everything this month. Bills marked Shared household also appear in Shared household.</div>
 
+            <section id="setup-handoff-card" class="card setup-handoff-card hidden">
+              <div class="card-header setup-handoff-header">
+                <div>
+                  <div id="setup-handoff-title" class="card-title">This month is ready</div>
+                  <div id="setup-handoff-copy" class="card-sub">Your saved recurring bills generated this month automatically.</div>
+                </div>
+                <button id="setup-handoff-dismiss" class="ghost-btn small" type="button">Dismiss</button>
+              </div>
+              <div id="setup-handoff-meta" class="meta">Review what was saved, then keep moving.</div>
+              <div id="setup-handoff-stats" class="setup-handoff-stats"></div>
+              <div class="setup-handoff-actions readonly-hide">
+                <button id="setup-handoff-open-recurring" class="ghost-btn" type="button">Review recurring bills</button>
+                <button id="setup-handoff-open-summary" class="primary-btn" type="button">View month summary</button>
+              </div>
+            </section>
+
             <div id="summary-panel" class="summary-panel collapsed">
               <div class="summary-panel-card">
                 <div class="summary-panel-title">Monthly summary</div>
@@ -375,6 +391,7 @@
           <button class="chip" data-review-scope="personal">Personal only</button>
           <button class="chip" data-review-scope="shared">Shared household</button>
         </div>
+        <div id="review-note" class="meta review-note">Review guidance appears here.</div>
         <div id="review-activity" class="card">
           <div class="card-title">Activity Log</div>
           <div id="review-activity-list" class="list"></div>
@@ -382,7 +399,10 @@
         <div id="review-card" class="card">
           <div class="card-header">
             <div class="card-title">Month review</div>
-            <button id="review-export" class="ghost-btn small">Export review CSV</button>
+            <div class="review-card-actions">
+              <button id="review-export-receipt" class="ghost-btn small">Year receipt PDF</button>
+              <button id="review-export" class="ghost-btn small">Export review CSV</button>
+            </div>
           </div>
           <div id="review-summary" class="review-grid"></div>
           <div id="review-list" class="list"></div>
@@ -543,6 +563,26 @@
           </div>
         </section>
 
+        <section id="household-attention-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Needs attention</div>
+              <div class="card-sub">The shared items that still need attention this period.</div>
+            </div>
+          </div>
+          <div id="household-attention-list" class="household-items-list"></div>
+        </section>
+
+        <section id="household-latest-card" class="card hidden">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Latest activity</div>
+              <div class="card-sub">The most recent shared updates across linked devices.</div>
+            </div>
+          </div>
+          <div id="household-latest-list" class="activity-list"></div>
+        </section>
+
         <section id="household-invite-card" class="card hidden">
           <div class="card-header">
             <div>
@@ -654,13 +694,24 @@
               <span class="setup-path-copy">Use the bill builder below, save everything together, and generate this month automatically.</span>
             </button>
             <button id="setup-path-import" class="setup-path-card" type="button">
-              <span class="setup-path-title">Import from backup</span>
-              <span class="setup-path-copy">Bring over recurring bills, monthly history, categories, and progress from another AJL backup.</span>
+              <span class="setup-path-title">Import from local app</span>
+              <span class="setup-path-copy">Bring over recurring bills, monthly history, categories, and progress from another AJL backup JSON.</span>
             </button>
             <button id="setup-path-shared" class="setup-path-card" type="button">
               <span class="setup-path-title">Join a shared household</span>
               <span class="setup-path-copy">Use an invite link or QR if someone already created the shared ledger for your home.</span>
             </button>
+          </div>
+          <div id="setup-path-detail" class="setup-path-detail readonly-hide">
+            <div class="setup-path-detail-main">
+              <div id="setup-path-detail-title" class="section-title">Add your recurring bills</div>
+              <div id="setup-path-detail-copy" class="meta">Start with the bills that keep your home running. Nothing saves until you review and choose Save all bills.</div>
+              <div id="setup-path-helper" class="setup-path-helper">Required fields only: bill name, amount, and due day. Everything else is optional.</div>
+            </div>
+            <div class="setup-path-detail-actions">
+              <button id="setup-path-primary" class="primary-btn" type="button">Start bill builder</button>
+              <button id="setup-path-secondary" class="ghost-btn" type="button">Choose backup JSON</button>
+            </div>
           </div>
         </section>
 
@@ -732,17 +783,42 @@
                 <div class="builder-stat-label">Essentials</div>
                 <div id="builder-draft-essentials" class="builder-stat-value">0</div>
               </div>
+              <div class="builder-stat">
+                <div class="builder-stat-label">Shared</div>
+                <div id="builder-draft-shared" class="builder-stat-value">0</div>
+              </div>
             </div>
             <div id="builder-draft-preview" class="meta">Add bills above. You’ll review them here before anything is saved.</div>
+            <div id="builder-review-next" class="builder-review-next">Next: Save all bills to create this month automatically.</div>
+            <div class="builder-review-actions readonly-hide">
+              <button id="builder-review-edit" class="ghost-btn" type="button">Keep editing</button>
+              <button id="builder-review-save" class="primary-btn" type="button">Looks good — save all bills</button>
+            </div>
           </div>
 
           <div id="template-drafts-empty" class="meta">No unsaved bills yet. Add one above or paste a list from your notes.</div>
           <div id="template-drafts-list" class="template-drafts-list"></div>
 
           <div class="builder-footer readonly-hide">
-            <button id="template-drafts-focus" class="ghost-btn" type="button">Add another bill</button>
-            <button id="template-drafts-discard" class="ghost-btn" type="button">Discard drafts</button>
-            <button id="template-drafts-save" class="primary-btn" type="button">Save all bills</button>
+            <div id="builder-footer-meta" class="builder-footer-meta">Draft: 0 bills · $0.00 scheduled</div>
+            <div class="builder-footer-actions">
+              <button id="template-drafts-focus" class="ghost-btn" type="button">Add another bill</button>
+              <button id="template-drafts-discard" class="ghost-btn" type="button">Discard drafts</button>
+              <button id="template-drafts-save" class="primary-btn" type="button">Save all bills</button>
+            </div>
+          </div>
+        </section>
+        <section id="setup-complete-card" class="setup-block setup-complete-card hidden">
+          <div class="block-header">
+            <div>
+              <div class="block-title">Setup complete</div>
+              <div id="setup-complete-copy" class="block-sub">Your recurring bills are saved. AJL generated this month and you can start using My ledger right away.</div>
+            </div>
+          </div>
+          <div id="setup-complete-meta" class="meta">You can still edit recurring bills, import data, or open sharing tools below.</div>
+          <div class="backup-actions">
+            <button id="setup-complete-open-ledger" class="primary-btn" type="button">Open My ledger</button>
+            <button id="setup-complete-open-recurring" class="ghost-btn" type="button">Review recurring bills</button>
           </div>
         </section>
 
@@ -758,7 +834,7 @@
           </div>
           <div id="setup-install-status" class="meta">Checking app install support…</div>
         </section>
-        <section class="setup-block web-only">
+        <section id="setup-local-install" class="setup-block web-only">
           <div class="block-title">Install locally</div>
           <div class="block-sub">Want the full local version? Install from GitHub and run it on your machine.</div>
           <div class="meta">
@@ -770,8 +846,8 @@ cd AuJourLeJour
         </section>
 
         <section id="backup-section" class="setup-block">
-          <div class="block-title">Backup & Restore</div>
-          <div class="block-sub">Keep your tracker portable. Export saves everything.</div>
+          <div class="block-title">Import / Export</div>
+          <div class="block-sub">Bring existing AJL data in or export a clean backup copy whenever you want.</div>
           <div class="migration-callout">
             <div class="migration-title">Move data from the local app</div>
             <div class="migration-copy">
@@ -877,7 +953,7 @@ cd AuJourLeJour
           </div>
         </section>
 
-        <section class="setup-block">
+        <section id="setup-defaults-section" class="setup-block">
           <div class="block-title">Defaults</div>
           <div class="block-sub">Period view, sort order, and due-soon window.</div>
           <div class="defaults-grid">
@@ -926,7 +1002,7 @@ cd AuJourLeJour
           </div>
         </section>
 
-        <section class="setup-block">
+        <section id="setup-categories-section" class="setup-block">
           <div class="block-title">Categories</div>
           <div class="block-sub">Manage categories used for filtering.</div>
           <div class="categories-row readonly-hide">
@@ -936,11 +1012,21 @@ cd AuJourLeJour
           <div id="categories-list" class="categories-list"></div>
         </section>
 
-        <section class="setup-block">
+        <section id="setup-recurring-section" class="setup-block">
           <div class="block-header">
             <div>
               <div class="block-title">Saved recurring bills</div>
-              <div class="block-sub">Review and edit the bills you have already saved.</div>
+              <div class="block-sub">Edit one row or batch changes together. Save all changes when you are ready.</div>
+            </div>
+          </div>
+          <div id="templates-dirty-banner" class="setup-review-bar hidden readonly-hide">
+            <div class="setup-review-copy">
+              <div class="section-title">Unsaved recurring bill changes</div>
+              <div id="templates-dirty-copy" class="meta">Make your edits, then save everything together or discard them.</div>
+            </div>
+            <div class="setup-review-actions">
+              <button id="templates-discard-all" class="ghost-btn" type="button">Discard changes</button>
+              <button id="templates-save-all" class="primary-btn" type="button">Save all changes</button>
             </div>
           </div>
           <div class="template-actions readonly-hide">
@@ -989,7 +1075,7 @@ cd AuJourLeJour
           <div id="funds-list" class="templates-list"></div>
         </section>
 
-        <section class="setup-block">
+        <section id="setup-preview-section" class="setup-block">
           <div class="block-title">Preview</div>
           <div class="block-sub">Simulate read-only sharing on this device.</div>
           <label class="toggle">
@@ -998,7 +1084,7 @@ cd AuJourLeJour
           </label>
         </section>
 
-        <section class="setup-block">
+        <section id="setup-safety-section" class="setup-block">
           <div class="block-title">Data safety</div>
           <div class="block-sub">Reset local data or start in safe mode if something breaks.</div>
           <div id="integrity-status" class="meta">Integrity: Unknown</div>
@@ -1282,7 +1368,10 @@ cd AuJourLeJour
           <div class="share-row">
             <input id="share-link" class="share-link" type="text" readonly />
             <button id="share-copy" class="btn-small btn-primary">Copy link</button>
+            <button id="share-open-viewer" class="ghost-btn">Open viewer</button>
+            <button id="share-test-link" class="ghost-btn">Test link</button>
           </div>
+          <div id="share-viewer-hint" class="meta share-viewer-hint">Viewer guidance appears here.</div>
           <label class="toggle">
             <input id="share-live" type="checkbox" checked />
             <span>Live updates</span>
@@ -1334,6 +1423,10 @@ cd AuJourLeJour
             <div class="share-status-item">
               <div class="share-status-label">Publish status</div>
               <div id="share-publish-state" class="share-status-value">Waiting for link</div>
+            </div>
+            <div class="share-status-item">
+              <div class="share-status-label">Reachability</div>
+              <div id="share-reachability" class="share-status-value">Waiting for link</div>
             </div>
             <div class="share-status-item">
               <div class="share-status-label">Last published</div>
@@ -1408,6 +1501,13 @@ cd AuJourLeJour
           <div class="drawer-actions readonly-hide">
             <button id="detail-mark-done" class="btn-primary">Mark done</button>
             <button id="detail-skip" class="ghost-btn">Mark skipped</button>
+          </div>
+          <div class="drawer-section">
+            <div class="section-title">Year view</div>
+            <div id="detail-year-summary" class="detail-year-summary">
+              <div class="meta">Open a bill to see this year.</div>
+            </div>
+            <div id="detail-year-months" class="detail-year-months"></div>
           </div>
           <div class="drawer-section readonly-hide">
             <div class="section-title">Log update</div>
