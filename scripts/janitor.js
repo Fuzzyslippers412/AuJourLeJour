@@ -2034,6 +2034,38 @@ async function run() {
     assert.ok(webHtml.includes("Move data from the local app"));
   });
 
+  test("accessibility primitives exist in both builds", () => {
+    const htmlFiles = [
+      path.join(__dirname, "..", "public", "index.html"),
+      path.join(__dirname, "..", "docs", "index.html"),
+    ];
+    const styleFiles = [
+      path.join(__dirname, "..", "public", "styles.css"),
+      path.join(__dirname, "..", "docs", "styles.css"),
+    ];
+    for (const file of htmlFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes('id="app-live-region"'), `${path.basename(file)} missing live region`);
+      assert.ok(raw.includes('aria-live="polite"'), `${path.basename(file)} missing polite live region`);
+      assert.ok(raw.includes('role="tablist"'), `${path.basename(file)} missing tablist semantics`);
+      assert.ok(raw.includes('role="tab"'), `${path.basename(file)} missing tab semantics`);
+      assert.ok(raw.includes('role="tabpanel"'), `${path.basename(file)} missing tabpanel semantics`);
+      assert.ok(raw.includes('aria-selected="true"'), `${path.basename(file)} missing selected tab state`);
+      assert.ok(raw.includes('aria-controls="today-view"'), `${path.basename(file)} missing tab controls`);
+    }
+    for (const file of styleFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes(":focus-visible"), `${path.basename(file)} missing focus-visible styling`);
+      assert.ok(raw.includes("prefers-reduced-motion"), `${path.basename(file)} missing reduced motion support`);
+      assert.ok(raw.includes(".sr-only"), `${path.basename(file)} missing screen-reader utility`);
+    }
+    const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    assert.ok(appFile.includes("function announceAppUpdate"), "app live announcement helper missing");
+    assert.ok(appFile.includes("function updateNavAccessibility"), "nav accessibility sync helper missing");
+    assert.ok(appFile.includes("function focusActiveView"), "view focus helper missing");
+    assert.ok(appFile.includes("function handleTabListKeydown"), "tab keyboard helper missing");
+  });
+
   test("mini summary controls and inline panel exist in both builds", () => {
     const files = [
       path.join(__dirname, "..", "public", "index.html"),
@@ -2165,6 +2197,15 @@ async function run() {
     requiredSnippets.forEach((snippet) => {
       assert.ok(appFile.includes(snippet), `public/app.js missing Janitor runtime wiring: ${snippet}`);
     });
+  });
+
+  test("year breakdown error rendering is textContent-only", () => {
+    const appFile = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    assert.ok(appFile.includes("empty.textContent = message"), "year breakdown errors must render via textContent");
+    assert.ok(
+      !appFile.includes("els.detailYearMonths.innerHTML = '<div class=\"meta\">' + message + '</div>';"),
+      "year breakdown error path must not interpolate err.message into innerHTML"
+    );
   });
 
   test("share publish retry queue primitives exist in app", () => {

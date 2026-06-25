@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <div id="app-live-region" class="sr-only" aria-live="polite" aria-atomic="true"></div>
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark">
@@ -38,12 +39,12 @@
           <input id="essentials-toggle" type="checkbox" checked />
           <span>Essentials only</span>
         </label>
-        <nav class="mode-tabs">
-          <button id="nav-today" class="tab-btn active">My ledger</button>
-          <button id="nav-shared" class="tab-btn">Shared household</button>
-          <button id="nav-review" class="tab-btn">Review</button>
-          <button id="nav-setup" class="tab-btn">Setup</button>
-          <button id="nav-janitor" class="tab-btn local-only">Janitor</button>
+        <nav class="mode-tabs" role="tablist" aria-label="Main sections">
+          <button id="nav-today" class="tab-btn active" role="tab" aria-selected="true" aria-controls="today-view">My ledger</button>
+          <button id="nav-shared" class="tab-btn" role="tab" aria-selected="false" aria-controls="shared-view">Shared household</button>
+          <button id="nav-review" class="tab-btn" role="tab" aria-selected="false" aria-controls="review-view">Review</button>
+          <button id="nav-setup" class="tab-btn" role="tab" aria-selected="false" aria-controls="setup-view">Setup</button>
+          <button id="nav-janitor" class="tab-btn local-only" role="tab" aria-selected="false" aria-controls="janitor-view">Janitor</button>
         </nav>
       </div>
     </header>
@@ -58,7 +59,7 @@
         </div>
         <div class="shared-badge">Read-only</div>
       </div>
-      <section id="today-view" class="view">
+      <section id="today-view" class="view" role="tabpanel" tabindex="-1" aria-labelledby="nav-today">
         <div id="zero-state" class="zero-state hidden">
           <div class="zero-card">
             <div class="zero-title">No bills yet.</div>
@@ -378,7 +379,7 @@
         </div>
       </section>
 
-      <section id="review-view" class="view hidden">
+      <section id="review-view" class="view hidden" role="tabpanel" tabindex="-1" aria-labelledby="nav-review" aria-hidden="true">
         <div class="page-title">Review</div>
         <div class="page-sub">Activity and trends for this month.</div>
         <div class="review-filters">
@@ -409,7 +410,7 @@
         </div>
       </section>
 
-      <section id="shared-view" class="view hidden">
+      <section id="shared-view" class="view hidden" role="tabpanel" tabindex="-1" aria-labelledby="nav-shared" aria-hidden="true">
         <section class="card household-hero">
           <div class="card-header household-hero-head">
             <div>
@@ -670,7 +671,7 @@
         </section>
       </section>
 
-      <section id="setup-view" class="view hidden">
+      <section id="setup-view" class="view hidden" role="tabpanel" tabindex="-1" aria-labelledby="nav-setup" aria-hidden="true">
         <div class="page-title">Setup</div>
         <div class="page-sub">Recurring bills first. Import, sharing, and recovery after that.</div>
         <div class="disclaimer">This app tracks bills. You pay outside the app.</div>
@@ -1096,7 +1097,7 @@ cd AuJourLeJour
         </section>
       </section>
 
-      <section id="janitor-view" class="view hidden local-only">
+      <section id="janitor-view" class="view hidden local-only" role="tabpanel" tabindex="-1" aria-labelledby="nav-janitor" aria-hidden="true">
         <div class="janitor-hero">
           <div>
             <div class="page-title">Janitor</div>
@@ -1223,32 +1224,32 @@ cd AuJourLeJour
       </section>
     </main>
 
-    <nav class="mobile-tabbar" aria-label="Primary navigation">
-      <button id="mobile-nav-today" class="mobile-tab-btn active" aria-label="My ledger">
+    <nav class="mobile-tabbar" role="tablist" aria-label="Primary navigation">
+      <button id="mobile-nav-today" class="mobile-tab-btn active" aria-label="My ledger" role="tab" aria-selected="true" aria-controls="today-view">
         <span class="mobile-tab-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a2 2 0 0 1 2 2v11a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a2 2 0 0 1 2-2h1V3a1 1 0 0 1 1-1Zm12 8H5v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7Z" fill="currentColor"/></svg>
         </span>
         <span class="mobile-tab-label">Mine</span>
       </button>
-      <button id="mobile-nav-shared" class="mobile-tab-btn" aria-label="Shared household">
+      <button id="mobile-nav-shared" class="mobile-tab-btn" aria-label="Shared household" role="tab" aria-selected="false" aria-controls="shared-view">
         <span class="mobile-tab-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M7.5 11a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm9 0a3 3 0 1 1 0-6 3 3 0 0 1 0 6ZM3 18a4.5 4.5 0 0 1 9 0v1H3v-1Zm10 1v-.75A3.75 3.75 0 0 1 16.75 14 4.25 4.25 0 0 1 21 18.25V19h-8Z" fill="currentColor"/></svg>
         </span>
         <span class="mobile-tab-label">Household</span>
       </button>
-      <button id="mobile-nav-review" class="mobile-tab-btn" aria-label="Review">
+      <button id="mobile-nav-review" class="mobile-tab-btn" aria-label="Review" role="tab" aria-selected="false" aria-controls="review-view">
         <span class="mobile-tab-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M4 5a2 2 0 0 1 2-2h1a1 1 0 1 1 0 2H6v14h12V5h-1a1 1 0 1 1 0-2h1a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Zm4 8a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Zm3-3a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H12a1 1 0 0 1-1-1Zm3 5a1 1 0 0 1 1-1h.01a1 1 0 1 1 0 2H15a1 1 0 0 1-1-1Z" fill="currentColor"/></svg>
         </span>
         <span class="mobile-tab-label">Review</span>
       </button>
-      <button id="mobile-nav-setup" class="mobile-tab-btn" aria-label="Setup">
+      <button id="mobile-nav-setup" class="mobile-tab-btn" aria-label="Setup" role="tab" aria-selected="false" aria-controls="setup-view">
         <span class="mobile-tab-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M11 2h2l.5 2.14a7.95 7.95 0 0 1 1.92.8l1.94-1.04 1.41 1.42-1.03 1.93c.32.6.58 1.24.77 1.91L22 11v2l-2.14.5a7.9 7.9 0 0 1-.79 1.91l1.03 1.94-1.41 1.41-1.94-1.03c-.6.32-1.24.58-1.91.79L13 22h-2l-.5-2.14a7.9 7.9 0 0 1-1.91-.79l-1.94 1.03-1.41-1.41 1.03-1.94a7.9 7.9 0 0 1-.79-1.91L2 13v-2l2.14-.5c.18-.67.45-1.31.79-1.91L3.9 6.66 5.31 5.24l1.94 1.03a7.9 7.9 0 0 1 1.91-.79L11 2Zm1 6a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" fill="currentColor"/></svg>
         </span>
         <span class="mobile-tab-label">Setup</span>
       </button>
-      <button id="mobile-nav-janitor" class="mobile-tab-btn local-only" aria-label="Janitor">
+      <button id="mobile-nav-janitor" class="mobile-tab-btn local-only" aria-label="Janitor" role="tab" aria-selected="false" aria-controls="janitor-view">
         <span class="mobile-tab-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" class="mobile-tab-svg"><path d="M12 2 4 5v5c0 5.25 3.4 10.02 8 11.5 4.6-1.48 8-6.25 8-11.5V5l-8-3Zm-1 5h2v5h3a1 1 0 1 1 0 2h-4a1 1 0 0 1-1-1V7Z" fill="currentColor"/></svg>
         </span>

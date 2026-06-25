@@ -153,6 +153,7 @@ let shannonInFlight = false;
 let shannonPollTimer = null;
 let shannonLastRunId = "";
 let shannonLastRunning = false;
+let lastAnnouncedView = "";
 let janitorReportInFlight = false;
 let scrollShadowBound = false;
 let storageFailureHandled = false;
@@ -451,6 +452,7 @@ function showSystemBanner(message) {
   }
   els.systemBanner.textContent = message;
   els.systemBanner.classList.remove("hidden");
+  announceAppUpdate(message);
 }
 
 function hideSystemBanner() {
@@ -489,6 +491,7 @@ function showToast(message, actionLabel, onAction) {
     els.toastAction.onclick = null;
   }
   els.toast.classList.remove("hidden");
+  announceAppUpdate(message);
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => hideToast(), 5000);
 }
@@ -500,7 +503,18 @@ function hideToast() {
   toastTimer = null;
 }
 
+function announceAppUpdate(message) {
+  if (!els.appLiveRegion || !message) return;
+  els.appLiveRegion.textContent = "";
+  window.setTimeout(() => {
+    if (els.appLiveRegion) {
+      els.appLiveRegion.textContent = String(message);
+    }
+  }, 10);
+}
+
 const els = {
+  appLiveRegion: document.getElementById("app-live-region"),
   monthPicker: document.getElementById("month-picker"),
   prevMonth: document.getElementById("prev-month"),
   nextMonth: document.getElementById("next-month"),
@@ -11419,8 +11433,12 @@ async function renderDetailYearBreakdown(instanceId) {
   } catch (err) {
     if (state.selectedInstanceId !== instanceId) return;
     els.detailYearSummary.innerHTML = "";
+    els.detailYearMonths.innerHTML = "";
     const message = String(err?.message || err || "Unable to load year view.");
-    els.detailYearMonths.innerHTML = '<div class="meta">' + message + '</div>';
+    const empty = document.createElement("div");
+    empty.className = "meta";
+    empty.textContent = message;
+    els.detailYearMonths.appendChild(empty);
   }
 }
 
@@ -13917,6 +13935,91 @@ function renderDashboard() {
   renderMonthReview(base);
 }
 
+function getViewAccessibilityConfig() {
+  return [
+    {
+      view: "today",
+      label: "My ledger",
+      panel: els.todayView,
+      tabs: [els.navToday, els.mobileNavToday],
+    },
+    {
+      view: "shared",
+      label: "Shared household",
+      panel: els.sharedView,
+      tabs: [els.navShared, els.mobileNavShared],
+    },
+    {
+      view: "review",
+      label: "Review",
+      panel: els.reviewView,
+      tabs: [els.navReview, els.mobileNavReview],
+    },
+    {
+      view: "setup",
+      label: "Setup",
+      panel: els.setupView,
+      tabs: [els.navSetup, els.mobileNavSetup],
+    },
+    {
+      view: "janitor",
+      label: "Janitor",
+      panel: els.janitorView,
+      tabs: [els.navJanitor, els.mobileNavJanitor],
+    },
+  ];
+}
+
+function updateNavAccessibility() {
+  getViewAccessibilityConfig().forEach((item) => {
+    const active = state.view === item.view;
+    if (item.panel) {
+      item.panel.setAttribute("aria-hidden", active ? "false" : "true");
+    }
+    item.tabs.forEach((tab) => {
+      if (!tab) return;
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+  });
+}
+
+function focusActiveView() {
+  const active = getViewAccessibilityConfig().find((item) => item.view === state.view);
+  if (!active?.panel || active.panel.classList.contains("hidden")) return;
+  window.requestAnimationFrame(() => {
+    if (active.panel && !active.panel.classList.contains("hidden")) {
+      active.panel.focus({ preventScroll: true });
+    }
+  });
+}
+
+function announceViewChange() {
+  if (lastAnnouncedView === state.view) return;
+  lastAnnouncedView = state.view;
+  const active = getViewAccessibilityConfig().find((item) => item.view === state.view);
+  if (active?.label) {
+    announceAppUpdate(`${active.label} view`);
+    focusActiveView();
+  }
+}
+
+function handleTabListKeydown(event) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]')).filter((tab) => {
+    return !tab.classList.contains("hidden") && tab.offsetParent !== null;
+  });
+  if (tabs.length === 0) return;
+  const currentIndex = Math.max(0, tabs.indexOf(document.activeElement));
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+  if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = tabs.length - 1;
+  event.preventDefault();
+  tabs[nextIndex].focus();
+  tabs[nextIndex].click();
+}
+
 function renderView() {
   if (state.view === "janitor" && AJL_WEB_MODE) {
     state.view = "setup";
@@ -13953,6 +14056,8 @@ function renderView() {
   if (els.mobileNavReview) els.mobileNavReview.classList.toggle("active", isReview);
   if (els.mobileNavSetup) els.mobileNavSetup.classList.toggle("active", isSetup);
   if (els.mobileNavJanitor) els.mobileNavJanitor.classList.toggle("active", isJanitor);
+  updateNavAccessibility();
+  announceViewChange();
 
   updateSplitView(true);
   if (!isToday && els.detailsDrawer) {
@@ -14053,6 +14158,10 @@ async function refreshAll() {
 }
 
 function bindEvents() {
+  document.querySelectorAll('[role="tablist"]').forEach((tabList) => {
+    tabList.addEventListener("keydown", handleTabListKeydown);
+  });
+
   els.prevMonth.addEventListener("click", () => {
     let year = state.selectedYear;
     let month = state.selectedMonth - 1;
