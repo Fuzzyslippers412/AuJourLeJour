@@ -42,6 +42,8 @@
             monthlyGoalAmount: 0,
             yearlyGoalAmount: 0,
             yearScope: "ytd",
+            locale: "en-US",
+            currency: "USD",
           },
           categories: [],
         },
@@ -164,6 +166,21 @@
     return raw === "full" || raw === "full year" ? "full" : "ytd";
   }
 
+  function normalizeLocale(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "en-US";
+    try {
+      return Intl.getCanonicalLocales(raw)[0] || "en-US";
+    } catch (err) {
+      return "en-US";
+    }
+  }
+
+  function normalizeCurrency(value) {
+    const raw = String(value || "").trim().toUpperCase();
+    return /^[A-Z]{3}$/.test(raw) ? raw : "USD";
+  }
+
   function normalizeLedgerScope(value) {
     const raw = String(value || "").trim().toLowerCase();
     if (raw === "personal") return "personal";
@@ -200,6 +217,8 @@
       monthlyGoalAmount: sanitizeGoalAmount(defaults.monthlyGoalAmount),
       yearlyGoalAmount: sanitizeGoalAmount(defaults.yearlyGoalAmount),
       yearScope: normalizeYearScope(defaults.yearScope),
+      locale: normalizeLocale(defaults.locale),
+      currency: normalizeCurrency(defaults.currency),
     };
   }
 
@@ -349,6 +368,20 @@
     const num = Number(value);
     if (!Number.isFinite(num)) return 0;
     return Number(num.toFixed(2));
+  }
+
+  function formatMoney(value, settings) {
+    const defaults = (settings && settings.defaults) || normalizeSettingsDefaults({});
+    try {
+      return new Intl.NumberFormat(defaults.locale || "en-US", {
+        style: "currency",
+        currency: defaults.currency || "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(roundMoney(value));
+    } catch (err) {
+      return `$${roundMoney(value).toFixed(2)}`;
+    }
   }
 
   function buildProjectedInstancesFromTemplates(templates, year, month) {
@@ -1703,6 +1736,73 @@
       });
     }
 
+    if (path === "/api/import/backup/preview" && req.method === "POST") {
+      const bodyRes = await parseJsonBody(req);
+      if (!bodyRes.ok) return jsonResponse(400, { ok: false, error: bodyRes.error });
+      const payload = bodyRes.body || {};
+      const existingTemplateIds = new Set(getTemplates(db).map((row) => String(row.id)));
+      const existingInstanceIds = new Set(getInstances(db).map((row) => String(row.id)));
+      const existingPaymentIds = new Set(getPayments(db).map((row) => String(row.id)));
+      const existingEventIds = new Set(getInstanceEvents(db).map((row) => String(row.id)));
+      const existingFundIds = new Set(getSinkingFunds(db).map((row) => String(row.id)));
+      const existingSinkingEventIds = new Set(getSinkingEvents(db).map((row) => String(row.id)));
+      const templates = Array.isArray(payload.templates) ? payload.templates : [];
+      const instances = Array.isArray(payload.instances) ? payload.instances : [];
+      const payments = Array.isArray(payload.payment_events) ? payload.payment_events : [];
+      const instanceEvents = Array.isArray(payload.instance_events) ? payload.instance_events : [];
+      const monthSettings = Array.isArray(payload.month_settings) ? payload.month_settings : [];
+      const sinkingFunds = Array.isArray(payload.sinking_funds) ? payload.sinking_funds : [];
+      const sinkingEvents = Array.isArray(payload.sinking_events) ? payload.sinking_events : [];
+      return ok({
+        ok: true,
+        dry_run: true,
+        templates: {
+          incoming: templates.length,
+          add: templates.filter((row) => row?.name && !existingTemplateIds.has(String(row.id || ""))).length,
+          duplicate: templates.filter((row) => row?.id && existingTemplateIds.has(String(row.id))).length,
+          conflict: 0,
+          skipped: templates.filter((row) => !row?.name).length,
+        },
+        instances: {
+          incoming: instances.length,
+          add: instances.filter((row) => row?.id && !existingInstanceIds.has(String(row.id))).length,
+          duplicate: instances.filter((row) => row?.id && existingInstanceIds.has(String(row.id))).length,
+          skipped: instances.filter((row) => !row?.id || !validYearMonth(Number(row.year), Number(row.month))).length,
+        },
+        payment_events: {
+          incoming: payments.length,
+          add: payments.filter((row) => row?.id && row?.instance_id && !existingPaymentIds.has(String(row.id))).length,
+          duplicate: payments.filter((row) => row?.id && existingPaymentIds.has(String(row.id))).length,
+          skipped: payments.filter((row) => !row?.id || !row?.instance_id || Number(row.amount) <= 0).length,
+        },
+        instance_events: {
+          incoming: instanceEvents.length,
+          add: instanceEvents.filter((row) => row?.id && row?.instance_id && !existingEventIds.has(String(row.id))).length,
+          duplicate: instanceEvents.filter((row) => row?.id && existingEventIds.has(String(row.id))).length,
+          skipped: instanceEvents.filter((row) => !row?.id || !row?.instance_id).length,
+        },
+        month_settings: {
+          incoming: monthSettings.length,
+          upsert: monthSettings.filter((row) => validYearMonth(Number(row.year), Number(row.month))).length,
+          skipped: monthSettings.filter((row) => !validYearMonth(Number(row.year), Number(row.month))).length,
+        },
+        sinking_funds: {
+          incoming: sinkingFunds.length,
+          add: sinkingFunds.filter((row) => row?.id && !existingFundIds.has(String(row.id))).length,
+          duplicate: sinkingFunds.filter((row) => row?.id && existingFundIds.has(String(row.id))).length,
+          skipped: sinkingFunds.filter((row) => !row?.id || Number(row.target_amount) < 0).length,
+        },
+        sinking_events: {
+          incoming: sinkingEvents.length,
+          add: sinkingEvents.filter((row) => row?.id && row?.fund_id && !existingSinkingEventIds.has(String(row.id))).length,
+          duplicate: sinkingEvents.filter((row) => row?.id && existingSinkingEventIds.has(String(row.id))).length,
+          skipped: sinkingEvents.filter((row) => !row?.id || !row?.fund_id || Number(row.amount) < 0).length,
+        },
+        settings: { present: !!(payload.settings && typeof payload.settings === "object") },
+        warnings: [],
+      });
+    }
+
     if (path === "/api/import/backup" && req.method === "POST") {
       const bodyRes = await parseJsonBody(req);
       if (!bodyRes.ok) return jsonResponse(400, { ok: false, error: bodyRes.error });
@@ -1853,17 +1953,17 @@
       lines.push(`Essentials only: ${essentialsOnly ? "Yes" : "No"}`);
       lines.push(" ");
       lines.push("Confirmed Totals");
-      lines.push(`- Month progress: ${Math.round(monthPercent)}% (${formatMoney(monthTotals.done)} of ${formatMoney(monthTarget)})`);
-      lines.push(`- Year progress: ${Math.round(yearPercent)}% (${formatMoney(yearDoneIncludingPrepaid)} of ${formatMoney(yearTarget)})`);
-      lines.push(`- Remaining in scope: ${formatMoney(yearTotals.remaining)}`);
-      lines.push(`- Prepaid future months: ${formatMoney(prepaidFutureDone)}`);
+      lines.push(`- Month progress: ${Math.round(monthPercent)}% (${formatMoney(monthTotals.done, settings)} of ${formatMoney(monthTarget, settings)})`);
+      lines.push(`- Year progress: ${Math.round(yearPercent)}% (${formatMoney(yearDoneIncludingPrepaid, settings)} of ${formatMoney(yearTarget, settings)})`);
+      lines.push(`- Remaining in scope: ${formatMoney(yearTotals.remaining, settings)}`);
+      lines.push(`- Prepaid future months: ${formatMoney(prepaidFutureDone, settings)}`);
       lines.push(" ");
       lines.push(`Confirmed paid items (${paidRows.length})`);
       if (paidRows.length === 0) {
         lines.push("- None");
       } else {
         paidRows.forEach((row) => {
-          const line = `- ${row.due_date} | ${row.name_snapshot} | paid ${formatMoney(Number(row.amount_paid || 0))} of ${formatMoney(Number(row.amount || 0))}`;
+          const line = `- ${row.due_date} | ${row.name_snapshot} | paid ${formatMoney(Number(row.amount_paid || 0), settings)} of ${formatMoney(Number(row.amount || 0), settings)}`;
           wrapPdfLine(line).forEach((wrapped) => lines.push(wrapped));
         });
       }
@@ -1873,7 +1973,7 @@
         lines.push("- None");
       } else {
         remainingRows.forEach((row) => {
-          const line = `- ${row.due_date} | ${row.name_snapshot} | remaining ${formatMoney(Number(row.amount_remaining || 0))}`;
+          const line = `- ${row.due_date} | ${row.name_snapshot} | remaining ${formatMoney(Number(row.amount_remaining || 0), settings)}`;
           wrapPdfLine(line).forEach((wrapped) => lines.push(wrapped));
         });
       }

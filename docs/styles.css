@@ -10,6 +10,15 @@
   --accent-green: #16a34a;
   --accent-amber: #f59e0b;
   --accent-red: #ef4444;
+  --success: #16a34a;
+  --success-bg: #ecfdf5;
+  --success-border: #bbf7d0;
+  --info: #2563eb;
+  --info-bg: #eff6ff;
+  --info-border: #bfdbfe;
+  --warning: #f59e0b;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
   --chip-bg: #eef2ff;
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
   --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.12);
@@ -2481,6 +2490,28 @@ body.landing #allocation-planner {
   overflow: hidden;
 }
 
+.drawer-panel.detail-state-done {
+  background:
+    linear-gradient(180deg, rgba(236, 253, 245, 0.92) 0%, #fff 34%),
+    var(--card);
+  border-left: 4px solid var(--success);
+}
+
+.drawer-panel.detail-state-partial {
+  background:
+    linear-gradient(180deg, rgba(239, 246, 255, 0.95) 0%, #fff 34%),
+    var(--card);
+  border-left: 4px solid var(--info);
+}
+
+.drawer-panel.detail-state-open {
+  border-left: 4px solid var(--warning);
+}
+
+.drawer-panel.detail-state-skipped {
+  border-left: 4px solid var(--muted-2);
+}
+
 .drawer-handle {
   display: none;
   width: 44px;
@@ -2528,6 +2559,30 @@ body.landing #allocation-planner {
   color: var(--muted);
 }
 
+.detail-state-done .drawer-title {
+  color: #14532d;
+}
+
+.detail-state-done .drawer-sub {
+  color: #166534;
+}
+
+.detail-state-done #detail-mark-done,
+#detail-mark-done:disabled {
+  background: var(--success);
+  color: #fff;
+  opacity: 1;
+  cursor: default;
+}
+
+.detail-state-partial .drawer-title {
+  color: #1e3a8a;
+}
+
+.detail-state-partial .drawer-sub {
+  color: #1d4ed8;
+}
+
 .assistant-drawer-status {
   display: inline-flex;
   align-items: center;
@@ -2571,6 +2626,11 @@ body.landing #allocation-planner {
   background: var(--surface-soft);
 }
 
+.detail-state-done .detail-year-stat {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+}
+
 .detail-year-label {
   color: var(--muted);
   font-size: 0.74rem;
@@ -2605,14 +2665,21 @@ body.landing #allocation-planner {
 
 .detail-year-month.done {
   border-left-color: var(--success);
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.04);
 }
 
 .detail-year-month.partial {
   border-left-color: var(--info);
+  border-color: var(--info-border);
+  background: var(--info-bg);
 }
 
 .detail-year-month.open {
   border-left-color: var(--warning);
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
 }
 
 .detail-year-month.skipped,
@@ -2638,6 +2705,18 @@ body.landing #allocation-planner {
   color: var(--secondary);
   font-size: 0.72rem;
   font-weight: 700;
+}
+
+.detail-year-month.done .detail-year-month-status {
+  color: #166534;
+}
+
+.detail-year-month.partial .detail-year-month-status {
+  color: #1d4ed8;
+}
+
+.detail-year-month.open .detail-year-month-status {
+  color: #92400e;
 }
 
 .detail-year-month-money,

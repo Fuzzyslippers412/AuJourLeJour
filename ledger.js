@@ -1,6 +1,51 @@
 const weeksPerMonth = 4.33;
 const daysPerMonthAvg = 30.4;
 
+function toMinorUnits(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 0;
+  return Math.round(amount * 100);
+}
+
+function fromMinorUnits(value) {
+  const cents = Number(value);
+  if (!Number.isFinite(cents)) return 0;
+  return cents / 100;
+}
+
+function roundMoney(value) {
+  return fromMinorUnits(toMinorUnits(value));
+}
+
+function sumMoney(values) {
+  const cents = (Array.isArray(values) ? values : []).reduce(
+    (sum, value) => sum + toMinorUnits(value),
+    0
+  );
+  return fromMinorUnits(cents);
+}
+
+function minMoney(a, b) {
+  return fromMinorUnits(Math.min(toMinorUnits(a), toMinorUnits(b)));
+}
+
+function splitMoneyEvenly(value, count) {
+  const totalCents = toMinorUnits(value);
+  const parts = Math.max(0, Number.isInteger(count) ? count : Math.floor(Number(count) || 0));
+  if (parts <= 0) return [];
+  const base = Math.trunc(totalCents / parts);
+  let remainder = totalCents - base * parts;
+  return Array.from({ length: parts }, (_, index) => {
+    const extra = remainder > 0 ? 1 : 0;
+    remainder -= extra;
+    return {
+      index,
+      amount: fromMinorUnits(base + extra),
+      minor_units: base + extra,
+    };
+  });
+}
+
 function pad2(value) {
   return String(value).padStart(2, "0");
 }
@@ -38,21 +83,15 @@ function computeSummary(instances, options) {
     ? instances.filter((item) => item.essential_snapshot)
     : [...instances];
 
-  const requiredMonth = filtered
-    .filter((item) => item.status_derived !== "skipped")
-    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const activeItems = filtered.filter((item) => item.status_derived !== "skipped");
 
-  const paidMonth = filtered
-    .filter((item) => item.status_derived !== "skipped")
-    .reduce((sum, item) => {
-      const due = Number(item.amount || 0);
-      const paid = Number(item.amount_paid || 0);
-      return sum + Math.min(due, paid);
-    }, 0);
+  const requiredMonth = sumMoney(activeItems.map((item) => item.amount || 0));
 
-  const remainingMonth = filtered
-    .filter((item) => item.status_derived !== "skipped")
-    .reduce((sum, item) => sum + Number(item.amount_remaining || 0), 0);
+  const paidMonth = sumMoney(
+    activeItems.map((item) => minMoney(item.amount || 0, item.amount_paid || 0))
+  );
+
+  const remainingMonth = sumMoney(activeItems.map((item) => item.amount_remaining || 0));
 
   const daysInMonth = getDaysInMonth(year, month);
   const needDailyExact = daysInMonth ? requiredMonth / daysInMonth : 0;
@@ -91,6 +130,12 @@ function computeSummary(instances, options) {
 
 module.exports = {
   pad2,
+  toMinorUnits,
+  fromMinorUnits,
+  roundMoney,
+  sumMoney,
+  minMoney,
+  splitMoneyEvenly,
   lastDayOfMonth,
   clampDueDay,
   toDateString,

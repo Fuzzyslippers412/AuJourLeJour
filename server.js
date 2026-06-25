@@ -33,6 +33,8 @@ const SHARE_LOOKUP_WINDOW_MS = Math.max(1000, Number(process.env.AJL_SHARE_LOOKU
 const LOCAL_API_KEY = String(process.env.AJL_LOCAL_API_KEY || "").trim();
 const LLM_CACHE_TTL_MS = Math.max(0, Number(process.env.AJL_LLM_CACHE_TTL_MS || 15000));
 const LLM_ROUTE_TIMEOUT_MS = Math.max(3000, Number(process.env.AJL_LLM_ROUTE_TIMEOUT_MS || 22000));
+const LLM_DAILY_LIMIT = Math.max(10, Number(process.env.AJL_LLM_DAILY_LIMIT || 500));
+const LLM_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = Math.max(5000, Number(process.env.AJL_REQUEST_TIMEOUT_MS || 15000));
 const TRUST_PROXY_HEADERS = process.env.AJL_TRUST_PROXY === "1";
 const JSON_BODY_LIMIT = String(process.env.AJL_JSON_BODY_LIMIT || "256kb");
@@ -1315,6 +1317,7 @@ function buildHouseholdResponse(req, householdRow, access) {
 
 const shareLookupByActor = new Map();
 const shareLookupByIp = new Map();
+const llmUsageByActor = new Map();
 
 function pruneRateMap(map, nowTs) {
   if (map.size < 1000) return;
@@ -1367,6 +1370,22 @@ function rateLimitShareLookup(req, res) {
     const retryAfterSec = Math.max(actorLimit.retryAfterSec, ipLimit.retryAfterSec, 1);
     res.setHeader("Retry-After", String(retryAfterSec));
     res.status(429).json({ error: "Too many requests" });
+    return false;
+  }
+  return true;
+}
+
+function rateLimitLlmActor(req, res) {
+  const actor = String(req.headers["x-ajl-session"] || "").trim().slice(0, 96) || extractClientIp(req);
+  const now = Date.now();
+  pruneRateMap(llmUsageByActor, now);
+  const limited = consumeWindowedBucket(llmUsageByActor, actor, LLM_DAILY_LIMIT, LLM_DAILY_WINDOW_MS, now);
+  if (limited.limited) {
+    res.setHeader("Retry-After", String(limited.retryAfterSec));
+    res.status(429).json({
+      ok: false,
+      error: "Mamdou daily request limit reached. Try again later or increase AJL_LLM_DAILY_LIMIT locally.",
+    });
     return false;
   }
   return true;
@@ -2019,6 +2038,21 @@ function normalizeYearScope(value) {
   return raw === "full" || raw === "full year" ? "full" : "ytd";
 }
 
+function normalizeLocale(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "en-US";
+  try {
+    return Intl.getCanonicalLocales(raw)[0] || "en-US";
+  } catch (err) {
+    return "en-US";
+  }
+}
+
+function normalizeCurrency(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(raw) ? raw : "USD";
+}
+
 function normalizeLedgerScope(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (raw === "personal") return "personal";
@@ -2049,6 +2083,8 @@ function normalizeSettingsDefaults(defaultsRaw) {
     monthlyGoalAmount: sanitizeGoalAmount(defaults.monthlyGoalAmount),
     yearlyGoalAmount: sanitizeGoalAmount(defaults.yearlyGoalAmount),
     yearScope: normalizeYearScope(defaults.yearScope),
+    locale: normalizeLocale(defaults.locale),
+    currency: normalizeCurrency(defaults.currency),
   };
 }
 
@@ -2643,13 +2679,21 @@ function attachPayments(instances) {
   if (instances.length === 0) return [];
   const ids = instances.map((row) => row.id);
   const placeholders = ids.map(() => "?").join(",");
-  const totals = db
+  const paymentRows = db
     .prepare(
-      `SELECT instance_id, SUM(amount) as total FROM payment_events WHERE instance_id IN (${placeholders}) GROUP BY instance_id`
+      `SELECT instance_id, amount FROM payment_events WHERE instance_id IN (${placeholders})`
     )
     .all(...ids);
+  const paymentAmounts = new Map();
+  paymentRows.forEach((row) => {
+    if (!paymentAmounts.has(row.instance_id)) paymentAmounts.set(row.instance_id, []);
+    paymentAmounts.get(row.instance_id).push(row.amount || 0);
+  });
   const totalsMap = new Map(
-    totals.map((row) => [row.instance_id, Number(row.total || 0)])
+    Array.from(paymentAmounts.entries()).map(([instanceId, amounts]) => [
+      instanceId,
+      ledger.sumMoney(amounts),
+    ])
   );
 
   return instances.map((row) => {
@@ -2680,10 +2724,10 @@ function getPaymentsForMonth(year, month) {
 }
 
 function getAmountPaid(instanceId) {
-  const row = db
-    .prepare("SELECT SUM(amount) as total FROM payment_events WHERE instance_id = ?")
-    .get(instanceId);
-  return Number(row?.total || 0);
+  const rows = db
+    .prepare("SELECT amount FROM payment_events WHERE instance_id = ?")
+    .all(instanceId);
+  return ledger.sumMoney(rows.map((row) => row.amount || 0));
 }
 
 function normalizeSinkingFund(row) {
@@ -2720,13 +2764,22 @@ function computeMonthsRemaining(refDate, dueDate) {
 function getSinkingBalances() {
   const rows = db
     .prepare(
-      `SELECT fund_id,
-              SUM(CASE WHEN type = 'WITHDRAWAL' THEN -amount ELSE amount END) as balance
-       FROM sinking_events
-       GROUP BY fund_id`
+      `SELECT fund_id, amount, type
+       FROM sinking_events`
     )
     .all();
-  return new Map(rows.map((row) => [row.fund_id, Number(row.balance || 0)]));
+  const grouped = new Map();
+  rows.forEach((row) => {
+    if (!grouped.has(row.fund_id)) grouped.set(row.fund_id, []);
+    const signed = row.type === "WITHDRAWAL" ? -Number(row.amount || 0) : Number(row.amount || 0);
+    grouped.get(row.fund_id).push(signed);
+  });
+  return new Map(
+    Array.from(grouped.entries()).map(([fundId, amounts]) => [
+      fundId,
+      ledger.sumMoney(amounts),
+    ])
+  );
 }
 
 function computeSinkingFundView(fund, balance, refDate) {
@@ -2877,13 +2930,21 @@ function computeBehaviorFeatures(year, month, windowSize) {
     const placeholders = instanceIds.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT instance_id, SUM(amount) as total, MAX(paid_date) as last_date
-         FROM payment_events WHERE instance_id IN (${placeholders}) GROUP BY instance_id`
+        `SELECT instance_id, amount, paid_date
+         FROM payment_events WHERE instance_id IN (${placeholders})`
       )
       .all(...instanceIds);
+    const amountGroups = new Map();
     rows.forEach((row) => {
-      paymentTotals.set(row.instance_id, Number(row.total || 0));
-      paymentDates.set(row.instance_id, row.last_date || null);
+      if (!amountGroups.has(row.instance_id)) amountGroups.set(row.instance_id, []);
+      amountGroups.get(row.instance_id).push(row.amount || 0);
+      const currentLast = paymentDates.get(row.instance_id);
+      if (!currentLast || String(row.paid_date || "") > String(currentLast)) {
+        paymentDates.set(row.instance_id, row.paid_date || null);
+      }
+    });
+    amountGroups.forEach((amounts, instanceId) => {
+      paymentTotals.set(instanceId, ledger.sumMoney(amounts));
     });
   }
 
@@ -3127,7 +3188,18 @@ function roundMoney(value) {
 }
 
 function formatMoney(value) {
-  return `$${roundMoney(value).toFixed(2)}`;
+  const settings = normalizeSettingsPayload(getMetaJson("settings") || {});
+  const defaults = settings.defaults || normalizeSettingsDefaults({});
+  try {
+    return new Intl.NumberFormat(defaults.locale || "en-US", {
+      style: "currency",
+      currency: defaults.currency || "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(roundMoney(value));
+  } catch (err) {
+    return `$${roundMoney(value).toFixed(2)}`;
+  }
 }
 
 function buildProjectedInstancesFromTemplates(templates, year, month) {
@@ -5325,6 +5397,122 @@ app.get("/api/export/backup.json", (req, res) => {
   });
 });
 
+function buildImportBackupPreview(payload) {
+  const body = payload && typeof payload === "object" ? payload : {};
+  const incomingTemplates = Array.isArray(body.templates) ? body.templates : [];
+  const incomingInstances = Array.isArray(body.instances) ? body.instances : [];
+  const incomingPayments = Array.isArray(body.payment_events) ? body.payment_events : [];
+  const incomingInstanceEvents = Array.isArray(body.instance_events) ? body.instance_events : [];
+  const incomingMonthSettings = Array.isArray(body.month_settings) ? body.month_settings : [];
+  const incomingSinkingFunds = Array.isArray(body.sinking_funds) ? body.sinking_funds : [];
+  const incomingSinkingEvents = Array.isArray(body.sinking_events) ? body.sinking_events : [];
+  const existingTemplates = db.prepare("SELECT * FROM templates").all();
+  const existingTemplateIds = new Set(existingTemplates.map((row) => String(row.id)));
+  const existingTemplateMap = new Map(existingTemplates.map((row) => [String(row.id), row]));
+  const existingInstanceIds = new Set(db.prepare("SELECT id FROM instances").all().map((row) => String(row.id)));
+  const existingPaymentIds = new Set(db.prepare("SELECT id FROM payment_events").all().map((row) => String(row.id)));
+  const existingInstanceEventIds = new Set(db.prepare("SELECT id FROM instance_events").all().map((row) => String(row.id)));
+  const existingFundIds = new Set(db.prepare("SELECT id FROM sinking_funds").all().map((row) => String(row.id)));
+  const existingSinkingEventIds = new Set(db.prepare("SELECT id FROM sinking_events").all().map((row) => String(row.id)));
+  const preview = {
+    ok: true,
+    dry_run: true,
+    templates: { incoming: incomingTemplates.length, add: 0, duplicate: 0, conflict: 0, skipped: 0 },
+    instances: { incoming: incomingInstances.length, add: 0, duplicate: 0, skipped: 0 },
+    payment_events: { incoming: incomingPayments.length, add: 0, duplicate: 0, skipped: 0 },
+    instance_events: { incoming: incomingInstanceEvents.length, add: 0, duplicate: 0, skipped: 0 },
+    month_settings: { incoming: incomingMonthSettings.length, upsert: 0, skipped: 0 },
+    sinking_funds: { incoming: incomingSinkingFunds.length, add: 0, duplicate: 0, skipped: 0 },
+    sinking_events: { incoming: incomingSinkingEvents.length, add: 0, duplicate: 0, skipped: 0 },
+    settings: { present: !!(body.settings && typeof body.settings === "object") },
+    warnings: [],
+  };
+  for (const tmpl of incomingTemplates) {
+    const incomingId = tmpl?.id ? String(tmpl.id) : "";
+    const normalized = validateTemplateInput(tmpl);
+    if (normalized.error) {
+      preview.templates.skipped += 1;
+      continue;
+    }
+    if (!incomingId || !existingTemplateIds.has(incomingId)) {
+      preview.templates.add += 1;
+      continue;
+    }
+    const existing = existingTemplateMap.get(incomingId);
+    const same =
+      existing.name === normalized.name &&
+      (existing.category || null) === (normalized.category || null) &&
+      Number(existing.amount_default) === Number(normalized.amount_default) &&
+      Number(existing.due_day) === Number(normalized.due_day) &&
+      Number(existing.autopay) === Number(normalized.autopay) &&
+      Number(existing.essential) === Number(normalized.essential) &&
+      Number(existing.active) === Number(normalized.active) &&
+      Number(existing.shared_household || 0) === Number(normalized.shared_household || 0) &&
+      (existing.default_note || null) === (normalized.default_note || null);
+    if (same) preview.templates.duplicate += 1;
+    else preview.templates.conflict += 1;
+  }
+  for (const inst of incomingInstances) {
+    const id = inst?.id ? String(inst.id) : "";
+    const year = Number(inst?.year);
+    const month = Number(inst?.month);
+    const amount = Number(inst?.amount ?? 0);
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isFinite(amount) || amount < 0) {
+      preview.instances.skipped += 1;
+    } else if (id && existingInstanceIds.has(id)) {
+      preview.instances.duplicate += 1;
+    } else {
+      preview.instances.add += 1;
+    }
+  }
+  for (const payment of incomingPayments) {
+    const id = payment?.id ? String(payment.id) : "";
+    const amount = Number(payment?.amount);
+    const dateError = payment?.paid_date ? validateDateString(payment.paid_date, "paid_date") : "paid_date required";
+    if (!payment?.instance_id || !Number.isFinite(amount) || amount <= 0 || dateError) {
+      preview.payment_events.skipped += 1;
+    } else if (id && existingPaymentIds.has(id)) {
+      preview.payment_events.duplicate += 1;
+    } else {
+      preview.payment_events.add += 1;
+    }
+  }
+  for (const event of incomingInstanceEvents) {
+    const id = event?.id ? String(event.id) : "";
+    if (!event?.instance_id) preview.instance_events.skipped += 1;
+    else if (id && existingInstanceEventIds.has(id)) preview.instance_events.duplicate += 1;
+    else preview.instance_events.add += 1;
+  }
+  for (const setting of incomingMonthSettings) {
+    const year = Number(setting?.year);
+    const month = Number(setting?.month);
+    if (!Number.isInteger(year) || !Number.isInteger(month)) preview.month_settings.skipped += 1;
+    else preview.month_settings.upsert += 1;
+  }
+  for (const fund of incomingSinkingFunds) {
+    const id = fund?.id ? String(fund.id) : "";
+    const target = Number(fund?.target_amount);
+    if (!id || !Number.isFinite(target) || target < 0) preview.sinking_funds.skipped += 1;
+    else if (existingFundIds.has(id)) preview.sinking_funds.duplicate += 1;
+    else preview.sinking_funds.add += 1;
+  }
+  for (const event of incomingSinkingEvents) {
+    const id = event?.id ? String(event.id) : "";
+    const amount = Number(event?.amount);
+    if (!id || !event?.fund_id || !Number.isFinite(amount) || amount < 0) preview.sinking_events.skipped += 1;
+    else if (existingSinkingEventIds.has(id)) preview.sinking_events.duplicate += 1;
+    else preview.sinking_events.add += 1;
+  }
+  if (preview.templates.conflict > 0) {
+    preview.warnings.push("Some recurring bill IDs already exist with different fields; import will create new IDs for those bills.");
+  }
+  return preview;
+}
+
+app.post("/api/import/backup/preview", (req, res) => {
+  res.json(buildImportBackupPreview(req.body || {}));
+});
+
 app.post("/api/import/backup", (req, res) => {
   const payload = req.body || {};
   const incomingTemplates = Array.isArray(payload.templates)
@@ -6300,6 +6488,10 @@ app.post("/internal/advisor/query", async (req, res) => {
     recordLlmLatency(Date.now() - startedAt, false);
     return res.status(400).json({ ok: false, error: "task required" });
   }
+  if (!rateLimitLlmActor(req, res)) {
+    recordLlmLatency(Date.now() - startedAt, false);
+    return;
+  }
   try {
     const providerState = await buildProviderStatus();
     let provider = normalizeProviderName(
@@ -6571,6 +6763,10 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+app.get("/healthz", (req, res) => {
+  res.json({ ok: true, status: "healthy", app: "au-jour-le-jour" });
+});
+
 app.get("/api/qr", async (req, res) => {
   const value = String(req.query?.value || "").trim();
   const size = Math.max(96, Math.min(320, Number(req.query?.size) || 176));
@@ -6631,6 +6827,22 @@ app.get("/api/system/routes", (req, res) => {
     ok: true,
     routes: getRouteRegistry(),
   });
+});
+
+app.get("/api/system/integrity", (req, res) => {
+  try {
+    const rows = db.prepare("PRAGMA integrity_check").all();
+    const results = rows.map((row) => String(row.integrity_check || Object.values(row)[0] || ""));
+    const ok = results.length === 1 && results[0].toLowerCase() === "ok";
+    res.json({
+      ok,
+      status: ok ? "ok" : "failed",
+      results,
+      checked_at: nowIso(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, status: "error", error: "Integrity check failed." });
+  }
 });
 
 app.get("/api/system/janitor/status", (req, res) => {

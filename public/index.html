@@ -919,7 +919,7 @@ cd AuJourLeJour
 
         <section id="setup-agent" class="setup-block local-only">
           <div class="block-title">Mamdou connection</div>
-          <div class="block-sub">Connect Mamdou during setup. Qwen OAuth is default; OpenAI/Anthropic keys are optional.</div>
+          <div class="block-sub">Connect Mamdou during setup. Qwen OAuth is default; OpenAI/Anthropic keys are optional. External providers may receive the bill context needed for your request; keep a local provider if you want the strictest privacy posture.</div>
           <div id="setup-agent-status" class="meta">Checking connection...</div>
           <div class="defaults-grid">
             <label>
@@ -998,6 +998,14 @@ cd AuJourLeJour
                 <option value="ytd">YTD</option>
                 <option value="full">Full year</option>
               </select>
+            </label>
+            <label>
+              Display locale
+              <input id="defaults-locale" type="text" placeholder="en-US" autocomplete="language" />
+            </label>
+            <label>
+              Currency
+              <input id="defaults-currency" type="text" placeholder="USD" maxlength="3" autocapitalize="characters" />
             </label>
             <button id="save-defaults" class="ghost-btn">Save defaults</button>
           </div>

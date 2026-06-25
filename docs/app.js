@@ -13,6 +13,8 @@ const state = {
       monthlyGoalAmount: 0,
       yearlyGoalAmount: 0,
       yearScope: "ytd",
+      locale: "en-US",
+      currency: "USD",
     },
     categories: [],
     share_base_url: "",
@@ -879,6 +881,8 @@ const els = {
   defaultsMonthlyGoal: document.getElementById("defaults-monthly-goal"),
   defaultsYearlyGoal: document.getElementById("defaults-yearly-goal"),
   defaultsYearScope: document.getElementById("defaults-year-scope"),
+  defaultsLocale: document.getElementById("defaults-locale"),
+  defaultsCurrency: document.getElementById("defaults-currency"),
   saveDefaults: document.getElementById("save-defaults"),
   categoryInput: document.getElementById("category-input"),
   categoryAdd: document.getElementById("category-add"),
@@ -998,13 +1002,40 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
+function normalizeLocale(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "en-US";
+  try {
+    return Intl.getCanonicalLocales(raw)[0] || "en-US";
+  } catch (err) {
+    return "en-US";
+  }
+}
+
+function normalizeCurrency(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(raw) ? raw : "USD";
+}
+
 function formatMoney(value) {
-  const amount = Number(value) || 0;
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  }).format(amount);
+  const amount = roundMoney(value);
+  const locale = normalizeLocale(state.settings?.defaults?.locale);
+  const currency = normalizeCurrency(state.settings?.defaults?.currency);
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch (err) {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  }
 }
 
 function isSharedAmountsHidden() {
@@ -1902,6 +1933,8 @@ function normalizeDefaults(rawDefaults = {}) {
     monthlyGoalAmount: sanitizeGoalAmount(defaults.monthlyGoalAmount),
     yearlyGoalAmount: sanitizeGoalAmount(defaults.yearlyGoalAmount),
     yearScope: normalizeYearScope(defaults.yearScope),
+    locale: normalizeLocale(defaults.locale),
+    currency: normalizeCurrency(defaults.currency),
   };
 }
 
@@ -2655,7 +2688,7 @@ function renderBackupStatus() {
     return;
   }
   const date = new Date(ts);
-  els.backupLast.textContent = `Last backup: ${date.toLocaleString("en-US")}`;
+  els.backupLast.textContent = `Last backup: ${date.toLocaleString(normalizeLocale(state.settings?.defaults?.locale))}`;
 }
 
 function getTimeGreeting() {
@@ -2724,7 +2757,7 @@ function resolvePaymentAmount(payload, instance) {
 function formatShortDate(dateString) {
   if (!dateString) return "";
   const date = new Date(`${dateString}T00:00:00`);
-  return date.toLocaleDateString("en-US", {
+  return date.toLocaleDateString(normalizeLocale(state.settings?.defaults?.locale), {
     month: "short",
     day: "numeric",
   });
@@ -2734,7 +2767,7 @@ function formatDateTime(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "";
-  return date.toLocaleString("en-US", {
+  return date.toLocaleString(normalizeLocale(state.settings?.defaults?.locale), {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -6161,7 +6194,10 @@ function formatMonthYear(dateString) {
   if (!dateString) return "";
   const date = new Date(`${dateString}T00:00:00`);
   if (Number.isNaN(date.valueOf())) return dateString;
-  return date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  return date.toLocaleDateString(normalizeLocale(state.settings?.defaults?.locale), {
+    month: "short",
+    year: "numeric",
+  });
 }
 
 function progressColor(ratio) {
@@ -8719,6 +8755,12 @@ function renderDefaults() {
   }
   if (els.defaultsYearScope) {
     els.defaultsYearScope.value = defaults.yearScope || "ytd";
+  }
+  if (els.defaultsLocale) {
+    els.defaultsLocale.value = defaults.locale || "en-US";
+  }
+  if (els.defaultsCurrency) {
+    els.defaultsCurrency.value = defaults.currency || "USD";
   }
   if (els.summaryYearScope) {
     els.summaryYearScope.value = defaults.yearScope || "ytd";
@@ -11349,7 +11391,7 @@ async function renderDetailHistory(instanceId) {
 function formatMonthShort(month) {
   const date = new Date(2000, Number(month || 1) - 1, 1);
   if (Number.isNaN(date.valueOf())) return String(month || "");
-  return date.toLocaleDateString("en-US", { month: "short" });
+  return date.toLocaleDateString(normalizeLocale(state.settings?.defaults?.locale), { month: "short" });
 }
 
 function getYearMonthStatus(month) {
@@ -12730,12 +12772,36 @@ function getDetailPanel() {
   return document.querySelector("#details-drawer .drawer-panel, #details-pane .drawer-panel");
 }
 
+function setDetailStateClass(status) {
+  const panel = getDetailPanel();
+  const pane = els.detailsPane || null;
+  const drawer = els.detailsDrawer || null;
+  const classes = [
+    "detail-state-done",
+    "detail-state-partial",
+    "detail-state-open",
+    "detail-state-skipped",
+  ];
+  [panel, pane, drawer].forEach((node) => {
+    if (!node) return;
+    node.classList.remove(...classes);
+  });
+  let className = "detail-state-open";
+  if (status === "paid" || status === "done") className = "detail-state-done";
+  else if (status === "partial") className = "detail-state-partial";
+  else if (status === "skipped") className = "detail-state-skipped";
+  [panel, pane, drawer].forEach((node) => {
+    if (node) node.classList.add(className);
+  });
+}
+
 function renderDetailsEmpty() {
   if (els.detailsPaneEmpty) {
     els.detailsPaneEmpty.classList.remove("hidden");
   }
   const panel = getDetailPanel();
   if (panel) panel.classList.add("hidden");
+  setDetailStateClass("");
 }
 
 function renderTemplateDrafts() {
@@ -13019,6 +13085,7 @@ function openInstanceDetail(instanceId) {
   const item = derived.find((entry) => entry.id === instanceId);
   if (!item || !els.detailsDrawer) return;
   state.selectedInstanceId = instanceId;
+  setDetailStateClass(item.status_derived);
   if (els.detailName) els.detailName.textContent = item.name_snapshot;
   if (els.detailMeta) {
     const statusLabel = formatStatusLabel(item.status_derived);
@@ -14879,6 +14946,8 @@ function bindEvents() {
         monthlyGoalAmount: monthlyGoal,
         yearlyGoalAmount: yearlyGoal,
         yearScope: els.defaultsYearScope?.value || "ytd",
+        locale: els.defaultsLocale?.value || "en-US",
+        currency: els.defaultsCurrency?.value || "USD",
       });
       await saveSettings({ defaults: state.settings.defaults });
       await loadProgressData();

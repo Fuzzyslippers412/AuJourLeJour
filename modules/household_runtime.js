@@ -1,4 +1,5 @@
 const { randomBytes } = require("crypto");
+const ledger = require("../ledger");
 
 const MAX_HOUSEHOLD_ITEMS = 3000;
 const MAX_HOUSEHOLD_PAYLOAD_BYTES = 2_000_000;
@@ -178,9 +179,7 @@ function validateHouseholdPayload(payload) {
 }
 
 function normalizeMoney(value) {
-  const amount = Number(value || 0);
-  if (!Number.isFinite(amount)) return 0;
-  return Number(amount.toFixed(2));
+  return ledger.roundMoney(value || 0);
 }
 
 function buildHouseholdInviteUrl(baseUrl, inviteToken) {
@@ -265,7 +264,7 @@ function aggregateHouseholdLedger(payload, members, events) {
         amount,
       }))
       .sort((a, b) => b.amount - a.amount || a.member_name.localeCompare(b.member_name));
-    const sharedAmountPaid = contributions.reduce((sum, row) => sum + row.amount, 0);
+    const sharedAmountPaid = ledger.sumMoney(contributions.map((row) => row.amount));
     item.contributions = contributions;
     item.shared_amount_paid = normalizeMoney(sharedAmountPaid);
     item.shared_remaining = normalizeMoney(Math.max(0, item.amount - sharedAmountPaid));
@@ -282,10 +281,8 @@ function aggregateHouseholdLedger(payload, members, events) {
     contributed: normalizeMoney(contributionByMember.get(member.token) || 0),
   }));
 
-  const totalDue = normalizeMoney(itemSummaries.reduce((sum, item) => sum + item.amount, 0));
-  const totalContributed = normalizeMoney(
-    itemSummaries.reduce((sum, item) => sum + item.shared_amount_paid, 0)
-  );
+  const totalDue = ledger.sumMoney(itemSummaries.map((item) => item.amount));
+  const totalContributed = ledger.sumMoney(itemSummaries.map((item) => item.shared_amount_paid));
   const totalRemaining = normalizeMoney(Math.max(0, totalDue - totalContributed));
 
   return {
@@ -328,6 +325,7 @@ module.exports = {
   sanitizeNote,
   safeJsonStringify,
   safeJsonParse,
+  splitMoneyEvenly: ledger.splitMoneyEvenly,
   parseInviteToken,
   parseInviteExpiresAt,
   buildHouseholdRecoveryCode,
