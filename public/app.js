@@ -570,6 +570,7 @@ const els = {
   exportMonth: document.getElementById("export-month"),
   exportSqlite: document.getElementById("export-sqlite"),
   exportBackup: document.getElementById("export-backup"),
+  exportReadableBackup: document.getElementById("export-readable-backup"),
   importBackup: document.getElementById("import-backup"),
   resetLocalInline: document.getElementById("reset-local-inline"),
   clearFilters: document.getElementById("clear-filters"),
@@ -1052,6 +1053,15 @@ function escapeCsv(value) {
     return `"${raw.replace(/\"/g, '""')}"`;
   }
   return raw;
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function parseMoney(value) {
@@ -2691,6 +2701,22 @@ function renderBackupStatus() {
   els.backupLast.textContent = `Last backup: ${date.toLocaleString(normalizeLocale(state.settings?.defaults?.locale))}`;
 }
 
+function recordBackupSaved() {
+  const now = Date.now();
+  state.lastBackupAt = now;
+  if (AJL_WEB_MODE && state.webMeta) {
+    state.webMeta.lastBackupAt = now;
+    state.webMeta.editCountSinceBackup = 0;
+    state.webMeta.lastBackupReminderAt = null;
+    saveWebMeta(state.webMeta);
+  } else {
+    saveLastBackupAt(now);
+    saveLocalEditCount(0);
+    saveLocalBackupReminder(0);
+  }
+  renderBackupStatus();
+}
+
 function getTimeGreeting() {
   const hour = new Date().getHours();
   if (hour < 5) return "Good night";
@@ -2831,6 +2857,213 @@ function summarizeBackup(payload) {
     exported_at: normalized.exported_at,
     range,
   };
+}
+
+function getBackupPaymentMap(backup) {
+  const map = new Map();
+  (backup.payment_events || []).forEach((payment) => {
+    const id = String(payment.instance_id || "");
+    if (!id) return;
+    map.set(id, roundMoney((map.get(id) || 0) + Number(payment.amount || 0)));
+  });
+  return map;
+}
+
+function getBackupInstanceView(instance, paymentMap) {
+  const amount = Number(instance.amount || 0);
+  const paid = Number(paymentMap.get(String(instance.id || "")) || instance.amount_paid || 0);
+  const remaining = Math.max(0, roundMoney(amount - paid));
+  let status = "pending";
+  if (instance.status === "skipped") status = "skipped";
+  else if (paid >= amount && amount >= 0) status = "paid";
+  else if (paid > 0) status = "partial";
+  return {
+    ...instance,
+    amount,
+    paid: roundMoney(paid),
+    remaining,
+    status,
+  };
+}
+
+function buildReadableBackupHtml(payload) {
+  const backup = normalizeBackupPayload(payload);
+  if (!backup) throw new Error("Invalid backup.");
+  const summary = summarizeBackup(backup);
+  const paymentMap = getBackupPaymentMap(backup);
+  const instanceViews = (backup.instances || [])
+    .map((item) => getBackupInstanceView(item, paymentMap))
+    .sort((a, b) => {
+      const periodA = `${a.year || ""}-${pad2(a.month || 0)}`;
+      const periodB = `${b.year || ""}-${pad2(b.month || 0)}`;
+      return (
+        periodB.localeCompare(periodA) ||
+        String(a.due_date || "").localeCompare(String(b.due_date || "")) ||
+        String(a.name_snapshot || "").localeCompare(String(b.name_snapshot || ""), undefined, { sensitivity: "base" })
+      );
+    });
+  const activeInstances = instanceViews.filter((item) => item.status !== "skipped");
+  const totals = {
+    scheduled: activeInstances.reduce((sum, item) => roundMoney(sum + item.amount), 0),
+    done: activeInstances.reduce((sum, item) => roundMoney(sum + Math.min(item.amount, item.paid)), 0),
+    remaining: activeInstances.reduce((sum, item) => roundMoney(sum + item.remaining), 0),
+    doneCount: activeInstances.filter((item) => item.status === "paid").length,
+    partialCount: activeInstances.filter((item) => item.status === "partial").length,
+    openCount: activeInstances.filter((item) => item.status === "pending").length,
+  };
+  const periodRange = summary?.range
+    ? summary.range.start === summary.range.end
+      ? summary.range.start
+      : `${summary.range.start} → ${summary.range.end}`
+    : "No monthly items";
+  const exported = backup.exported_at ? formatDateTime(backup.exported_at) : new Date().toLocaleString(normalizeLocale(state.settings?.defaults?.locale));
+  const rawJson = JSON.stringify(payload, null, 2);
+  const scriptJson = rawJson.replace(/</g, "\\u003c");
+  const visibleJson = escapeHtml(rawJson);
+  const templateRows = (backup.templates || [])
+    .slice()
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" }))
+    .map((template) => `
+      <tr>
+        <td>${escapeHtml(template.name || "")}</td>
+        <td>${escapeHtml(template.category || "—")}</td>
+        <td>${formatMoney(Number(template.amount_default || 0))}</td>
+        <td>${escapeHtml(template.due_day || "—")}</td>
+        <td>${template.essential === false ? "No" : "Yes"}</td>
+        <td>${template.active === false ? "Archived" : "Active"}</td>
+      </tr>
+    `)
+    .join("");
+  const instanceRows = instanceViews
+    .map((item) => `
+      <tr>
+        <td>${escapeHtml(`${item.year || ""}-${pad2(item.month || 0)}`)}</td>
+        <td>${escapeHtml(item.name_snapshot || "")}</td>
+        <td>${escapeHtml(item.category_snapshot || "—")}</td>
+        <td>${escapeHtml(item.due_date || "—")}</td>
+        <td><span class="pill ${escapeHtml(item.status)}">${escapeHtml(formatStatusLabel(item.status))}</span></td>
+        <td>${formatMoney(item.amount)}</td>
+        <td>${formatMoney(item.paid)}</td>
+        <td>${formatMoney(item.remaining)}</td>
+      </tr>
+    `)
+    .join("");
+  const fundRows = (backup.sinking_funds || [])
+    .slice()
+    .sort((a, b) => String(a.due_date || "").localeCompare(String(b.due_date || "")))
+    .map((fund) => `
+      <tr>
+        <td>${escapeHtml(fund.name || "")}</td>
+        <td>${escapeHtml(fund.category || "—")}</td>
+        <td>${formatMoney(Number(fund.target_amount || 0))}</td>
+        <td>${escapeHtml(fund.due_date || "—")}</td>
+        <td>${escapeHtml(fund.cadence || "custom")}</td>
+        <td>${fund.active === false ? "Archived" : "Active"}</td>
+      </tr>
+    `)
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Au Jour Le Jour Backup — ${escapeHtml(periodRange)}</title>
+  <style>
+    :root { color-scheme: light; --bg:#f6f7f9; --card:#fff; --text:#0f172a; --muted:#64748b; --border:#e2e8f0; --accent:#2563eb; --green:#16a34a; --amber:#d97706; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; line-height:1.45; }
+    main { max-width:1120px; margin:0 auto; padding:32px 18px 48px; }
+    .hero { background:linear-gradient(135deg,#ffffff 0%,#eff6ff 100%); border:1px solid var(--border); border-radius:24px; padding:28px; box-shadow:0 14px 40px rgba(15,23,42,.08); }
+    .eyebrow { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    h1 { margin:8px 0 8px; font-size:clamp(28px,4vw,44px); line-height:1.05; }
+    .sub { color:var(--muted); max-width:760px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:20px; }
+    .metric, section { background:var(--card); border:1px solid var(--border); border-radius:18px; padding:16px; }
+    .metric-label { color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+    .metric-value { margin-top:5px; font-size:24px; font-weight:800; font-variant-numeric:tabular-nums; }
+    section { margin-top:16px; overflow:auto; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    table { width:100%; border-collapse:collapse; min-width:720px; }
+    th, td { padding:10px 8px; border-bottom:1px solid var(--border); text-align:left; font-size:13px; }
+    th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+    .pill { display:inline-flex; padding:4px 9px; border-radius:999px; background:#f1f5f9; color:#475569; font-size:11px; font-weight:800; }
+    .pill.paid { background:#dcfce7; color:#166534; }
+    .pill.partial { background:#dbeafe; color:#1d4ed8; }
+    .pill.skipped { background:#f1f5f9; color:#64748b; }
+    .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }
+    button { appearance:none; border:0; background:var(--accent); color:#fff; border-radius:12px; padding:10px 14px; font-weight:800; cursor:pointer; }
+    details { margin-top:16px; }
+    summary { cursor:pointer; color:var(--accent); font-weight:800; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#e2e8f0; padding:16px; border-radius:14px; max-height:460px; overflow:auto; }
+    .note { margin-top:14px; color:var(--muted); font-size:13px; }
+    @media (max-width:700px) { main { padding:18px 12px 36px; } .hero { padding:20px; border-radius:18px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="hero">
+      <div class="eyebrow">Au Jour Le Jour portable backup</div>
+      <h1>Readable household ledger backup</h1>
+      <div class="sub">Open this file in any browser to review your recurring bills, monthly items, and backup contents. To restore data into the app, use the JSON backup embedded in this file.</div>
+      <div class="actions">
+        <button id="download-json" type="button">Download importable JSON</button>
+      </div>
+      <div class="note">Exported: ${escapeHtml(exported)} · Period range: ${escapeHtml(periodRange)} · Tracker only, no financial connection.</div>
+      <div class="grid">
+        <div class="metric"><div class="metric-label">Recurring bills</div><div class="metric-value">${backup.templates.length}</div></div>
+        <div class="metric"><div class="metric-label">Monthly items</div><div class="metric-value">${backup.instances.length}</div></div>
+        <div class="metric"><div class="metric-label">Scheduled total</div><div class="metric-value">${formatMoney(totals.scheduled)}</div></div>
+        <div class="metric"><div class="metric-label">Done total</div><div class="metric-value">${formatMoney(totals.done)}</div></div>
+        <div class="metric"><div class="metric-label">Remaining total</div><div class="metric-value">${formatMoney(totals.remaining)}</div></div>
+        <div class="metric"><div class="metric-label">Status counts</div><div class="metric-value">${totals.doneCount}/${totals.partialCount}/${totals.openCount}</div></div>
+      </div>
+    </div>
+    <section>
+      <h2>Recurring bills</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Category</th><th>Amount</th><th>Due day</th><th>Essential</th><th>Status</th></tr></thead>
+        <tbody>${templateRows || '<tr><td colspan="6">No recurring bills in this backup.</td></tr>'}</tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Monthly items</h2>
+      <table>
+        <thead><tr><th>Period</th><th>Name</th><th>Category</th><th>Due</th><th>Status</th><th>Amount</th><th>Done</th><th>Remaining</th></tr></thead>
+        <tbody>${instanceRows || '<tr><td colspan="8">No monthly items in this backup.</td></tr>'}</tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Reserved buckets</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Category</th><th>Target</th><th>Due date</th><th>Cadence</th><th>Status</th></tr></thead>
+        <tbody>${fundRows || '<tr><td colspan="6">No reserved buckets in this backup.</td></tr>'}</tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Raw importable JSON</h2>
+      <div class="note">Keep this section intact if you need to recover the JSON manually.</div>
+      <details>
+        <summary>Show JSON</summary>
+        <pre>${visibleJson}</pre>
+      </details>
+    </section>
+  </main>
+  <script id="ajl-backup-json" type="application/json">${scriptJson}</script>
+  <script>
+    document.getElementById("download-json").addEventListener("click", function () {
+      var raw = document.getElementById("ajl-backup-json").textContent || "{}";
+      var blob = new Blob([raw], { type: "application/json" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "au_jour_le_jour_backup_from_readable_file.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>`;
 }
 
 function templateMatchKey(template) {
@@ -5329,6 +5562,15 @@ function parseFastExportIntent(input) {
       payload: {},
     };
   }
+  if (/^(?:export|download|save)\s+(?:readable|html|portable)\s+(?:backup|file)$/.test(text)) {
+    return {
+      intent: "EXPORT_READABLE_BACKUP",
+      confidence: 0.97,
+      needs_confirmation: false,
+      target: { type: "none", name: null },
+      payload: {},
+    };
+  }
   const receiptMatch = text.match(
     /^(?:export|download)(?:\s+(?:year|yearly))?\s+receipt(?:\s+(this\s+year|\d{4}))?(?:\s+(ytd|full|full\s+year))?$/
   );
@@ -7194,6 +7436,10 @@ async function applyProposal(proposal) {
     els.exportBackup?.click();
     return { ok: true, message: "Exported backup JSON." };
   }
+  if (intent === "EXPORT_READABLE_BACKUP") {
+    els.exportReadableBackup?.click();
+    return { ok: true, message: "Saved readable backup." };
+  }
   if (intent === "EXPORT_RECEIPT") {
     exportReceiptPdf({
       year: proposal.payload?.year,
@@ -8013,6 +8259,7 @@ function summarizeProposal(proposal) {
   if (intent === "SET_CASH_START") return "Tracking removed";
   if (intent === "EXPORT_MONTH") return "Export current month CSV";
   if (intent === "EXPORT_BACKUP") return "Export full backup JSON";
+  if (intent === "EXPORT_READABLE_BACKUP") return "Save readable backup";
   if (intent === "EXPORT_RECEIPT") return "Export yearly receipt PDF";
   if (intent === "GENERATE_MONTH") return "Generate month";
   if (intent === "MARK_ALL_OVERDUE") {
@@ -8072,6 +8319,7 @@ const AUTO_EXECUTE_INTENTS = new Set([
   "START_AGENT_AUTH",
   "EXPORT_MONTH",
   "EXPORT_BACKUP",
+  "EXPORT_READABLE_BACKUP",
   "EXPORT_RECEIPT",
   "LOCAL_SUMMARY_REMAINING",
   "LOCAL_SUMMARY_OVERDUE",
@@ -14692,20 +14940,31 @@ function bindEvents() {
     )}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    const now = Date.now();
-    state.lastBackupAt = now;
-    if (AJL_WEB_MODE && state.webMeta) {
-      state.webMeta.lastBackupAt = now;
-      state.webMeta.editCountSinceBackup = 0;
-      state.webMeta.lastBackupReminderAt = null;
-      saveWebMeta(state.webMeta);
-    } else {
-      saveLastBackupAt(now);
-      saveLocalEditCount(0);
-      saveLocalBackupReminder(0);
-    }
-    renderBackupStatus();
+    recordBackupSaved();
   });
+
+  if (els.exportReadableBackup) {
+    els.exportReadableBackup.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/export/backup.json");
+        const data = await readApiData(res);
+        const html = buildReadableBackupHtml(data);
+        const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `au_jour_le_jour_readable_backup_${state.selectedYear}-${pad2(
+          state.selectedMonth
+        )}.html`;
+        link.click();
+        URL.revokeObjectURL(url);
+        recordBackupSaved();
+        showToast("Readable backup saved.");
+      } catch (err) {
+        window.alert("Unable to save readable backup.");
+      }
+    });
+  }
 
   if (els.exportSqlite) {
     els.exportSqlite.addEventListener("click", async () => {

@@ -2037,6 +2037,7 @@ async function run() {
       assert.ok(content.includes('id="builder-review-save"'));
       assert.ok(content.includes('id="review-note"'));
       assert.ok(content.includes('id="review-export-receipt"'));
+      assert.ok(content.includes('id="export-readable-backup"'));
       assert.ok(content.includes('id="detail-year-summary"'));
       assert.ok(content.includes('id="detail-year-months"'));
       assert.ok(content.includes('id="builder-review-next"'));
@@ -2386,6 +2387,7 @@ async function run() {
       "intent: \"MARK_INSTANCES_BULK_PENDING\"",
       "intent: \"SKIP_INSTANCES_BULK\"",
       "intent: \"EXPORT_BACKUP\"",
+      "intent: \"EXPORT_READABLE_BACKUP\"",
       "intent: \"EXPORT_RECEIPT\"",
       "intent: \"EXPORT_MONTH\"",
       "intent: \"SET_ESSENTIALS_ONLY\"",
@@ -2479,6 +2481,29 @@ async function run() {
     assert.ok(appSource.includes("function normalizeCurrency"), "public app missing currency normalization");
     assert.ok(webAdapter.includes("function normalizeLocale"), "web adapter missing locale normalization");
     assert.ok(webAdapter.includes("function normalizeCurrency"), "web adapter missing currency normalization");
+  });
+
+  test("readable backup export is wired in both builds", () => {
+    const appFiles = [
+      path.join(__dirname, "..", "public", "app.js"),
+      path.join(__dirname, "..", "docs", "app.js"),
+    ];
+    const htmlFiles = [
+      path.join(__dirname, "..", "public", "index.html"),
+      path.join(__dirname, "..", "docs", "index.html"),
+    ];
+    for (const file of htmlFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes('id="export-readable-backup"'), `${path.basename(file)} missing readable backup button`);
+      assert.ok(raw.includes("Save readable backup"), `${path.basename(file)} missing readable backup label`);
+    }
+    for (const file of appFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes("function buildReadableBackupHtml"), `${path.basename(file)} missing readable backup builder`);
+      assert.ok(raw.includes("Download importable JSON"), `${path.basename(file)} missing embedded JSON recovery action`);
+      assert.ok(raw.includes("EXPORT_READABLE_BACKUP"), `${path.basename(file)} missing Mamdou readable backup intent`);
+      assert.ok(raw.includes("recordBackupSaved()"), `${path.basename(file)} must count readable export as a backup`);
+    }
   });
 
   test("advisor prompt and budget guardrails exist", () => {
