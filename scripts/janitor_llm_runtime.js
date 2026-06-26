@@ -52,6 +52,23 @@ function normalizeBaseUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
 
+function providerSoftFailureMessage(providerLabel, res) {
+  const body = String(res?.data?.error || res?.data?.message || res?.text || "").trim();
+  const status = Number(res?.status || 0);
+  if (status === 401) return "";
+  if (
+    /quota|billing|rate.?limit|insufficient|expired|not connected|connect|unavailable|timeout|timed out|network/i.test(
+      body
+    )
+  ) {
+    return `Skipped: ${providerLabel} live provider is not currently usable (${status || "network"}). ${body}`;
+  }
+  if (status === 0 || status >= 500) {
+    return `Skipped: ${providerLabel} live provider/runtime is temporarily unavailable (${status || "network"}). ${body}`;
+  }
+  return "";
+}
+
 async function pingHealth(base) {
   try {
     const res = await fetch(`${base}/api/health`);
@@ -204,10 +221,19 @@ async function run() {
       );
     }
     if (res.status >= 400) {
+      const softMessage = providerSoftFailureMessage(activeProviderLabel, res);
+      if (!runtimeRequired && softMessage) {
+        throw new SkipTestError(softMessage);
+      }
       throw new Error(`Provider test failed for ${activeProviderLabel} (status ${res.status}). ${String(res.data?.error || res.text || "")}`);
     }
     activeProviderConnected = !!res.data?.connected || !!res.data?.ok;
     if (!activeProviderConnected) {
+      if (!runtimeRequired) {
+        throw new SkipTestError(
+          `Skipped: ${activeProviderLabel} is not connected. Use AJL_JANITOR_RUNTIME_REQUIRED=1 when this must fail.`
+        );
+      }
       throw new Error(
         `${activeProviderLabel} is not connected. Open Setup and connect Mamdou, then rerun Janitor.`
       );
@@ -219,6 +245,11 @@ async function run() {
       throw new SkipTestError("Skipped: runtime target not reachable.");
     }
     if (!activeProviderConnected) {
+      if (!runtimeRequired) {
+        throw new SkipTestError(
+          `Skipped: ${activeProviderLabel} is not connected, so live advisor query was not run.`
+        );
+      }
       throw new Error(`${activeProviderLabel} is not connected.`);
     }
     const res = await request("POST", "/internal/advisor/query", {
@@ -228,6 +259,10 @@ async function run() {
       },
     });
     if (res.status !== 200 || res.data?.ok !== true) {
+      const softMessage = providerSoftFailureMessage(activeProviderLabel, res);
+      if (!runtimeRequired && softMessage) {
+        throw new SkipTestError(softMessage);
+      }
       throw new Error(
         `Advisor query failed (status ${res.status}). ${String(res.data?.error || res.text || "")}`
       );
