@@ -619,6 +619,64 @@ async function run() {
     assert.ok(indexHtml.includes('apple-touch-icon'));
   });
 
+  test("runtime capability contract distinguishes browser and local editions", () => {
+    const appPath = path.join(__dirname, "..", "public", "app.js");
+    const adapterPath = path.join(__dirname, "..", "docs", "web-adapter.js");
+    const appRaw = fs.readFileSync(appPath, "utf8");
+    const adapterRaw = fs.readFileSync(adapterPath, "utf8");
+    assert.ok(appRaw.includes("const AJL_CAPABILITIES = Object.freeze"));
+    assert.ok(appRaw.includes('storage: AJL_WEB_MODE ? "browser" : "sqlite"'));
+    assert.ok(appRaw.includes('assistant: !AJL_WEB_MODE'));
+    assert.ok(appRaw.includes("function renderRuntimeTrust()"));
+    assert.ok(adapterRaw.includes("window.AJL_CAPABILITIES = Object.freeze"));
+    assert.ok(adapterRaw.includes('storage: "browser"'));
+    assert.ok(adapterRaw.includes("assistant: false"));
+    assert.ok(adapterRaw.includes('multiDevice: "relay"'));
+  });
+
+  test("setup exposes storage trust, job navigation, and portable transfer guidance", () => {
+    const indexPath = path.join(__dirname, "..", "public", "index.html");
+    const stylesPath = path.join(__dirname, "..", "public", "styles.css");
+    const indexRaw = fs.readFileSync(indexPath, "utf8");
+    const stylesRaw = fs.readFileSync(stylesPath, "utf8");
+    [
+      'id="runtime-trust-pill"',
+      'id="setup-runtime-card"',
+      'id="runtime-storage"',
+      'id="runtime-save-state"',
+      'id="setup-job-nav"',
+      'data-setup-target="backup-section"',
+      'data-setup-target="shared"',
+      'id="portable-backup-status"',
+      'id="mobile-runtime-label"',
+    ].forEach((needle) => assert.ok(indexRaw.includes(needle), `Missing UI contract: ${needle}`));
+    assert.ok(indexRaw.includes("One file. Both editions."));
+    assert.ok(indexRaw.includes("manual transfer, not automatic sync"));
+    assert.ok(stylesRaw.includes(".runtime-trust-pill"));
+    assert.ok(stylesRaw.includes(".setup-job-nav"));
+    assert.ok(stylesRaw.includes(".portable-backup-steps"));
+  });
+
+  test("personal and shared ledgers have explicit visual origin cues", () => {
+    const indexRaw = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+    const appRaw = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    const stylesRaw = fs.readFileSync(path.join(__dirname, "..", "public", "styles.css"), "utf8");
+    assert.ok(indexRaw.includes('id="ledger-origin-legend"'));
+    assert.ok(indexRaw.includes('id="ledger-origin-open-shared"'));
+    assert.ok(appRaw.includes('document.body.classList.toggle("shared-mode", isShared)'));
+    assert.ok(stylesRaw.includes("body.shared-mode"));
+    assert.ok(stylesRaw.includes(".origin-dot.shared"));
+  });
+
+  test("web storage changes propagate safely across browser tabs", () => {
+    const adapterRaw = fs.readFileSync(path.join(__dirname, "..", "docs", "web-adapter.js"), "utf8");
+    const appRaw = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    assert.ok(adapterRaw.includes('window.addEventListener("storage"'));
+    assert.ok(adapterRaw.includes('new CustomEvent("ajl:external-storage-update")'));
+    assert.ok(appRaw.includes('window.addEventListener("ajl:external-storage-update"'));
+    assert.ok(appRaw.includes("externalStorageRefreshTimer"));
+  });
+
   test("invalid template input returns 400", async () => {
     const res = await request("POST", "/api/templates", {
       name: "",
@@ -1972,6 +2030,23 @@ async function run() {
       assert.ok(content.includes('value="llm-runtime"'));
       assert.ok(content.includes('value="skipped"'));
       assert.ok(content.includes('id="home-overview"'));
+      assert.ok(content.includes('id="next-action-card"'));
+      assert.ok(content.includes('id="next-action-done"'));
+      assert.ok(content.includes('id="status-progress-bar"'));
+      assert.ok(content.includes('id="status-progress-label"'));
+      assert.ok(content.includes('id="items-done-toggle"'));
+      assert.ok(content.includes('id="mobile-more-open"'));
+      assert.ok(content.includes('id="mobile-more-sheet"'));
+      assert.ok(content.includes('id="mobile-more-share"'));
+      assert.ok(content.includes('id="mobile-more-essentials"'));
+      assert.ok(content.includes('id="setup-advanced-section"'));
+      assert.ok(content.includes('id="setup-open-janitor"'));
+      assert.ok(content.includes('id="queue-overdue-section"'));
+      assert.ok(content.includes('id="queue-soon-section"'));
+      assert.ok(content.includes('id="detail-status-chip"'));
+      assert.ok(content.includes('id="detail-amount"'));
+      assert.ok(content.includes('id="detail-paid"'));
+      assert.ok(content.includes('id="detail-remaining"'));
       assert.ok(content.includes('id="home-overview-grid"'));
       assert.ok(content.includes('id="allocation-planner"'));
       assert.ok(content.includes('id="available-now-input"'));
@@ -2536,6 +2611,94 @@ async function run() {
       assert.ok(raw.includes(".drawer-panel.detail-state-done"), `${path.basename(file)} missing done detail panel style`);
       assert.ok(raw.includes(".detail-year-month.done"), `${path.basename(file)} missing done year month style`);
       assert.ok(raw.includes("--success-bg"), `${path.basename(file)} missing success color tokens`);
+    }
+  });
+
+  test("action-first Today hierarchy is wired in both builds", () => {
+    const appFiles = [
+      path.join(__dirname, "..", "public", "app.js"),
+      path.join(__dirname, "..", "docs", "app.js"),
+    ];
+    const styleFiles = [
+      path.join(__dirname, "..", "public", "styles.css"),
+      path.join(__dirname, "..", "docs", "styles.css"),
+    ];
+    for (const file of appFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes("function renderNextAction("), `${path.basename(file)} missing next-action renderer`);
+      assert.ok(raw.includes("function getUrgencyContext("), `${path.basename(file)} missing shared urgency context`);
+      assert.ok(raw.includes("function classifyInstanceUrgency("), `${path.basename(file)} missing urgency classifier`);
+      assert.ok(raw.includes("function getUrgencyBuckets("), `${path.basename(file)} missing urgency buckets`);
+      assert.ok(!raw.includes("daysUntil <= 7"), `${path.basename(file)} hardcodes the due-soon window`);
+      assert.ok(raw.includes("renderNextAction(base);"), `${path.basename(file)} does not render next action`);
+      assert.ok(raw.includes("showCompletedItems"), `${path.basename(file)} missing completed-list collapse state`);
+      assert.ok(raw.includes("queue-row-${urgency}"), `${path.basename(file)} missing urgency row state`);
+      assert.ok(raw.includes("detailStatusChip"), `${path.basename(file)} missing detail status binding`);
+      assert.ok(raw.includes("statusProgressBar"), `${path.basename(file)} missing command-header progress binding`);
+      assert.ok(raw.includes("dateBadge.className = \"item-date-badge\""), `${path.basename(file)} missing chronological date marker`);
+      assert.ok(raw.includes('kind: "group"'), `${path.basename(file)} missing chronological list groups`);
+      assert.ok(raw.includes('heading.className = `timeline-group-row'), `${path.basename(file)} missing grouped ledger renderer`);
+      assert.ok(raw.includes("state.itemsScrollTop = scrollTop"), `${path.basename(file)} missing virtual-list scroll persistence`);
+      assert.ok(raw.includes("planner.open = true"), `${path.basename(file)} does not open the planner on command`);
+    }
+    for (const file of styleFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes("#next-action-card { order: 6; }"), `${path.basename(file)} missing action-first order`);
+      assert.ok(raw.includes("#action-queue { order: 7; }"), `${path.basename(file)} missing queue order`);
+      assert.ok(raw.includes("#items-card { order: 8; }"), `${path.basename(file)} missing bill-list order`);
+      assert.ok(raw.includes(".next-action-card"), `${path.basename(file)} missing next-action styling`);
+      assert.ok(raw.includes(".detail-financial-strip"), `${path.basename(file)} missing detail totals styling`);
+      assert.ok(raw.includes(".status-headline"), `${path.basename(file)} missing month command header`);
+      assert.ok(raw.includes(".item-date-badge"), `${path.basename(file)} missing timeline date styling`);
+      assert.ok(raw.includes(".timeline-group-row"), `${path.basename(file)} missing grouped ledger styling`);
+      assert.ok(raw.includes("#assistant-inline {\n  display: none;"), `${path.basename(file)} still reserves permanent Mamdou space`);
+    }
+  });
+
+  test("mobile shell keeps four primary destinations and moves advanced tools to overflow", () => {
+    const htmlFiles = [
+      path.join(__dirname, "..", "public", "index.html"),
+      path.join(__dirname, "..", "docs", "index.html"),
+    ];
+    const appFiles = [
+      path.join(__dirname, "..", "public", "app.js"),
+      path.join(__dirname, "..", "docs", "app.js"),
+    ];
+    const styleFiles = [
+      path.join(__dirname, "..", "public", "styles.css"),
+      path.join(__dirname, "..", "docs", "styles.css"),
+    ];
+    for (const file of htmlFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes('id="mobile-more-sheet"'), `${path.basename(file)} missing mobile overflow sheet`);
+      assert.ok(raw.includes('id="mobile-more-advanced"'), `${path.basename(file)} missing advanced overflow action`);
+      assert.ok(raw.includes('<details id="setup-advanced-section"'), `${path.basename(file)} missing Setup advanced disclosure`);
+    }
+    for (const file of appFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes("function openMobileMoreSheet()"), `${path.basename(file)} missing mobile overflow open helper`);
+      assert.ok(raw.includes("function closeMobileMoreSheet()"), `${path.basename(file)} missing mobile overflow close helper`);
+      assert.ok(raw.includes('els.setupAdvancedSection.open = true'), `${path.basename(file)} does not reveal Setup advanced tools`);
+      assert.ok(raw.includes('state.view = "janitor"'), `${path.basename(file)} cannot open Janitor from Setup`);
+    }
+    for (const file of styleFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes("#mobile-nav-janitor"), `${path.basename(file)} does not remove Janitor from mobile primary navigation`);
+      assert.ok(raw.includes(".mobile-more-row"), `${path.basename(file)} missing native overflow row styling`);
+      assert.ok(raw.includes("body.split-view:not(.detail-open) .today-layout"), `${path.basename(file)} missing adaptive split-view collapse`);
+    }
+  });
+
+  test("secondary Today tools are collapsed disclosures", () => {
+    const files = [
+      path.join(__dirname, "..", "public", "index.html"),
+      path.join(__dirname, "..", "docs", "index.html"),
+    ];
+    for (const file of files) {
+      const raw = fs.readFileSync(file, "utf8");
+      assert.ok(raw.includes('<details id="home-overview"'), `${path.basename(file)} home map must be collapsible`);
+      assert.ok(raw.includes('<details id="allocation-planner"'), `${path.basename(file)} planner must be collapsible`);
+      assert.ok(raw.includes('class="secondary-tool-summary"'), `${path.basename(file)} missing secondary tool summary`);
     }
   });
 

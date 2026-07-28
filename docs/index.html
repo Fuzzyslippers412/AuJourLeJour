@@ -33,7 +33,13 @@
         <button id="next-month" class="icon-btn" aria-label="Next month">&#x203A;</button>
       </div>
 
+      <button id="mobile-more-open" class="icon-btn mobile-more-button" aria-label="More options">&#x22EF;</button>
+
       <div class="top-actions">
+        <div id="runtime-trust-pill" class="runtime-trust-pill" role="status" aria-live="polite">
+          <span id="runtime-trust-dot" class="runtime-trust-dot" aria-hidden="true"></span>
+          <span id="runtime-trust-label">Checking storage…</span>
+        </div>
         <button id="share-open" class="ghost-btn">Read-only link</button>
         <label class="toggle">
           <input id="essentials-toggle" type="checkbox" checked />
@@ -85,18 +91,31 @@
         <div class="today-layout">
           <div class="today-main">
             <div id="status-bar" class="status-bar">
-              <div class="status-metrics">
-                <div class="status-count"><span id="count-remaining">0</span> Remaining</div>
-                <div class="status-count overdue"><span id="count-overdue">0</span> Overdue</div>
-                <div class="status-count soon"><span id="count-soon">0</span> Due soon</div>
-                <div class="status-count shared"><span id="count-shared">0</span> Shared</div>
-                <div class="status-amount"><span id="mini-remaining-amount">$0.00</span> Remaining $</div>
-                <div class="status-amount"><span id="mini-done-amount">$0.00</span> Done $</div>
+              <div class="status-primary">
+                <div id="status-period" class="status-period">This month</div>
+                <div class="status-headline"><span id="mini-remaining-amount">$0.00</span> remaining</div>
+                <div class="status-progress-row">
+                  <div class="status-progress-track" aria-hidden="true">
+                    <span id="status-progress-bar" style="width: 0%"></span>
+                  </div>
+                  <div id="status-progress-label" class="status-progress-label">0% done</div>
+                </div>
               </div>
-              <div id="status-period" class="status-period"></div>
-              <button id="status-expand" class="ghost-btn">View summary</button>
+              <div class="status-metrics" aria-label="Month status">
+                <div class="status-count"><span id="count-remaining">0</span><small>Remaining</small></div>
+                <div class="status-count overdue"><span id="count-overdue">0</span><small>Overdue</small></div>
+                <div class="status-count soon"><span id="count-soon">0</span><small>Due soon</small></div>
+                <div class="status-count shared"><span id="count-shared">0</span><small>Shared</small></div>
+                <div class="status-amount"><span id="mini-done-amount">$0.00</span><small>Done</small></div>
+              </div>
+              <button id="status-expand" class="status-summary-button">View summary</button>
             </div>
             <div id="ledger-scope-note" class="ledger-scope-note hidden">My ledger shows everything this month. Bills marked Shared household also appear in Shared household.</div>
+            <div id="ledger-origin-legend" class="ledger-origin-legend hidden" aria-label="Ledger visibility legend">
+              <span><i class="origin-dot personal" aria-hidden="true"></i> Personal</span>
+              <span><i class="origin-dot shared" aria-hidden="true"></i> Shared household</span>
+              <button id="ledger-origin-open-shared" class="text-link" type="button">Open shared ledger</button>
+            </div>
 
             <section id="setup-handoff-card" class="card setup-handoff-card hidden">
               <div class="card-header setup-handoff-header">
@@ -183,23 +202,40 @@
               </div>
             </div>
 
-            <section id="home-overview" class="card essentials-map">
-              <div class="card-header">
+            <section id="next-action-card" class="next-action-card" aria-live="polite">
+              <div class="next-action-copy">
+                <div id="next-action-eyebrow" class="next-action-eyebrow">Next up</div>
+                <div id="next-action-title" class="next-action-title">Your month is clear.</div>
+                <div id="next-action-meta" class="next-action-meta">Nothing needs attention right now.</div>
+              </div>
+              <div class="next-action-side">
+                <div id="next-action-amount" class="next-action-amount"></div>
+                <div class="next-action-buttons">
+                  <button id="next-action-open" class="ghost-btn">View details</button>
+                  <button id="next-action-done" class="primary-btn readonly-hide">Mark done</button>
+                </div>
+              </div>
+            </section>
+
+            <details id="home-overview" class="card essentials-map secondary-tool">
+              <summary class="secondary-tool-summary">
                 <div>
                   <div class="card-title">What keeps the home running</div>
                   <div class="card-sub">A household view of essentials by system.</div>
                 </div>
-              </div>
+                <span class="secondary-tool-action">Open map</span>
+              </summary>
               <div id="home-overview-grid" class="systems-grid"></div>
-            </section>
+            </details>
 
-            <section id="allocation-planner" class="card allocation-planner">
-              <div class="card-header">
+            <details id="allocation-planner" class="card allocation-planner secondary-tool">
+              <summary class="secondary-tool-summary">
                 <div>
                   <div class="card-title">Available now planner</div>
                   <div class="card-sub">Enter what you can allocate right now. AJL will rank what to handle next from urgency and your payment history.</div>
                 </div>
-              </div>
+                <span class="secondary-tool-action">Open planner</span>
+              </summary>
               <div class="allocation-controls readonly-hide">
                 <label class="allocation-label">
                   <span>Available now</span>
@@ -213,7 +249,7 @@
               </div>
               <div id="allocation-summary" class="meta">Save an amount to see a recommended order.</div>
               <div id="allocation-plan-list" class="allocation-plan-list"></div>
-            </section>
+            </details>
 
             <div id="first-visit-hero" class="first-visit-hero hidden">
               <div class="first-visit-card">
@@ -268,7 +304,7 @@
             <section class="card action-queue" id="action-queue">
               <div class="queue-header">
                 <div>
-                  <div class="queue-title">Action Queue</div>
+                  <div class="queue-title">Needs attention</div>
                   <div id="queue-subtitle" class="queue-sub">Overdue: 0 items</div>
                 </div>
                 <div class="queue-actions">
@@ -277,15 +313,15 @@
                 </div>
               </div>
 
-              <div class="queue-section">
+              <div id="queue-overdue-section" class="queue-section">
                 <div class="queue-section-title">Overdue</div>
                 <div id="queue-overdue" class="queue-list"></div>
               </div>
-              <div class="queue-section">
+              <div id="queue-soon-section" class="queue-section">
                 <div class="queue-section-title">Due next 7 days</div>
                 <div id="queue-soon" class="queue-list"></div>
               </div>
-              <div class="queue-section">
+              <div id="queue-later-section" class="queue-section hidden">
                 <div class="queue-section-title">
                   <span>Later</span>
                   <button id="toggle-later" class="ghost-btn small">Hide</button>
@@ -297,7 +333,13 @@
             <section id="recent-strip" class="recent-strip hidden"></section>
 
             <section id="items-card" class="card all-items">
-              <div class="card-title">Bills list</div>
+              <div class="all-items-head">
+                <div>
+                  <div class="card-title">Bills list</div>
+                  <div id="items-list-subtitle" class="card-sub">Open items for this month.</div>
+                </div>
+                <button id="items-done-toggle" class="ghost-btn small" type="button">Show completed</button>
+              </div>
               <div class="filter-bar">
                 <input id="search-input" class="search-input" type="search" placeholder="Search bills..." />
               <div id="preset-chips" class="chip-group preset-chips">
@@ -675,6 +717,27 @@
         <div class="page-title">Setup</div>
         <div class="page-sub">Recurring bills first. Import, sharing, and recovery after that.</div>
         <div class="disclaimer">This app tracks bills. You pay outside the app.</div>
+        <section id="setup-runtime-card" class="setup-block runtime-card" aria-labelledby="runtime-mode">
+          <div class="runtime-card-main">
+            <div>
+              <div id="runtime-mode" class="runtime-mode">Checking edition…</div>
+              <div id="runtime-storage" class="runtime-storage">Confirming where this ledger is saved.</div>
+            </div>
+            <div id="runtime-save-state" class="runtime-save-state">Loading…</div>
+          </div>
+          <div id="runtime-capabilities" class="runtime-capabilities"></div>
+          <div id="runtime-backup-state" class="runtime-backup-state">No backup status yet.</div>
+        </section>
+
+        <nav id="setup-job-nav" class="setup-job-nav" aria-label="Setup sections">
+          <button type="button" data-setup-target="setup-guide">Get started</button>
+          <button type="button" data-setup-target="setup-builder">Add bills</button>
+          <button type="button" data-setup-target="setup-recurring-section">Recurring bills</button>
+          <button type="button" data-setup-target="backup-section">Backup &amp; transfer</button>
+          <button type="button" data-setup-target="shared">Sharing</button>
+          <button type="button" data-setup-target="setup-defaults-section">Preferences</button>
+          <button type="button" data-setup-target="setup-safety-section">Data safety</button>
+        </nav>
         <section id="setup-guide" class="setup-block setup-guide">
           <div class="block-header">
             <div>
@@ -849,6 +912,18 @@ cd AuJourLeJour
         <section id="backup-section" class="setup-block">
           <div class="block-title">Import / Export</div>
           <div class="block-sub">Bring existing AJL data in or export a clean backup copy whenever you want.</div>
+          <div class="portable-backup-card">
+            <div class="portable-backup-copy">
+              <div class="portable-backup-title">One file. Both editions.</div>
+              <div class="portable-backup-sub">AJL backup JSON is portable between the browser and local SQLite editions. It is a manual transfer, not automatic sync.</div>
+            </div>
+            <ol class="portable-backup-steps">
+              <li><strong>Export</strong><span>Save a complete AJL backup from this device.</span></li>
+              <li><strong>Move</strong><span>Send the JSON file to your other device securely.</span></li>
+              <li><strong>Import</strong><span>Preview it, then choose Merge or Replace.</span></li>
+            </ol>
+            <div id="portable-backup-status" class="portable-backup-status">Compatible with web and local editions.</div>
+          </div>
           <div class="migration-callout">
             <div class="migration-title">Move data from the local app</div>
             <div class="migration-copy">
@@ -1104,6 +1179,16 @@ cd AuJourLeJour
             <button id="start-safe-mode" class="ghost-btn">Start in safe mode</button>
           </div>
         </section>
+
+        <details id="setup-advanced-section" class="setup-block setup-advanced local-only">
+          <summary>
+            <span>Advanced tools</span>
+            <small>Janitor, diagnostics, and engineering checks</small>
+          </summary>
+          <div class="setup-advanced-actions">
+            <button id="setup-open-janitor" class="ghost-btn" type="button">Open Janitor</button>
+          </div>
+        </details>
       </section>
 
       <section id="janitor-view" class="view hidden local-only" role="tabpanel" tabindex="-1" aria-labelledby="nav-janitor" aria-hidden="true">
@@ -1265,6 +1350,37 @@ cd AuJourLeJour
         <span class="mobile-tab-label">Janitor</span>
       </button>
     </nav>
+
+    <div id="mobile-more-sheet" class="sheet hidden">
+      <div class="sheet-card mobile-more-card">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-header">
+          <div>
+            <div class="sheet-title">Ledger options</div>
+            <div class="sheet-sub">Sharing, scope, and advanced tools.</div>
+          </div>
+          <button id="mobile-more-close" class="icon-btn" aria-label="Close">&times;</button>
+        </div>
+        <div class="mobile-more-list">
+          <button id="mobile-more-share" class="mobile-more-row" type="button">
+            <span><strong>Read-only link</strong><small>Share this month without edit access</small></span>
+            <span aria-hidden="true">&#x203A;</span>
+          </button>
+          <label class="mobile-more-row mobile-more-toggle">
+            <span><strong>Essentials only</strong><small>Focus the ledger on required bills</small></span>
+            <input id="mobile-more-essentials" type="checkbox" checked />
+          </label>
+          <button id="mobile-more-advanced" class="mobile-more-row local-only" type="button">
+            <span><strong>Advanced</strong><small>Janitor and runtime diagnostics</small></span>
+            <span aria-hidden="true">&#x203A;</span>
+          </button>
+          <div class="mobile-more-row mobile-runtime-row" role="status">
+            <span><strong id="mobile-runtime-title">Storage</strong><small id="mobile-runtime-label">Checking where data is saved…</small></span>
+            <span id="mobile-runtime-dot" class="runtime-trust-dot" aria-hidden="true"></span>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div id="install-sheet" class="sheet hidden">
       <div class="sheet-card install-sheet-card">
@@ -1505,9 +1621,26 @@ cd AuJourLeJour
             <div id="detail-name" class="drawer-title">Bill</div>
             <div id="detail-meta" class="drawer-sub">Due</div>
           </div>
-          <button class="icon-btn" data-close="details" aria-label="Close">&times;</button>
+          <div class="drawer-header-actions">
+            <span id="detail-status-chip" class="status-pill">Pending</span>
+            <button class="icon-btn" data-close="details" aria-label="Close">&times;</button>
+          </div>
         </div>
         <div class="drawer-body">
+          <div class="detail-financial-strip" aria-label="Bill tracking totals">
+            <div class="detail-financial-item">
+              <span>Scheduled</span>
+              <strong id="detail-amount">$0.00</strong>
+            </div>
+            <div class="detail-financial-item">
+              <span>Done so far</span>
+              <strong id="detail-paid">$0.00</strong>
+            </div>
+            <div class="detail-financial-item emphasis">
+              <span>Remaining</span>
+              <strong id="detail-remaining">$0.00</strong>
+            </div>
+          </div>
           <div class="drawer-actions readonly-hide">
             <button id="detail-mark-done" class="btn-primary">Mark done</button>
             <button id="detail-skip" class="ghost-btn">Mark skipped</button>

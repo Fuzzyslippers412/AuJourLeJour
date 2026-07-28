@@ -1,5 +1,17 @@
 (() => {
   window.AJL_WEB_MODE = true;
+  window.AJL_CAPABILITIES = Object.freeze({
+    mode: "web",
+    storage: "browser",
+    assistant: false,
+    offline: true,
+    sharing: true,
+    sharedHousehold: true,
+    multiDevice: "relay",
+    installable: true,
+    portableBackup: true,
+    janitor: false,
+  });
   const DB_KEY = "AJL_WEB_DB_V1";
   const META_KEY = "AJL_WEB_META_V1";
   const MAX_BYTES = 4_500_000;
@@ -12,6 +24,15 @@
   const SHARE_OWNER_KEY = "ajl_share_owner_key";
 
   const realFetch = window.fetch.bind(window);
+
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("storage", (event) => {
+      if (event.key !== DB_KEY || event.newValue === event.oldValue) return;
+      if (typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
+        window.dispatchEvent(new CustomEvent("ajl:external-storage-update"));
+      }
+    });
+  }
 
   function now() {
     return Date.now();
