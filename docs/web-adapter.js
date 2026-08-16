@@ -63,6 +63,7 @@
             monthlyGoalAmount: 0,
             yearlyGoalAmount: 0,
             yearScope: "ytd",
+            language: "system",
             locale: "en-US",
             currency: "USD",
           },
@@ -202,6 +203,11 @@
     return /^[A-Z]{3}$/.test(raw) ? raw : "USD";
   }
 
+  function normalizeLanguage(value) {
+    const raw = String(value || "system").trim().toLowerCase();
+    return ["system", "en", "fr", "de", "pt"].includes(raw) ? raw : "system";
+  }
+
   function normalizeLedgerScope(value) {
     const raw = String(value || "").trim().toLowerCase();
     if (raw === "personal") return "personal";
@@ -238,6 +244,7 @@
       monthlyGoalAmount: sanitizeGoalAmount(defaults.monthlyGoalAmount),
       yearlyGoalAmount: sanitizeGoalAmount(defaults.yearlyGoalAmount),
       yearScope: normalizeYearScope(defaults.yearScope),
+      language: normalizeLanguage(defaults.language),
       locale: normalizeLocale(defaults.locale),
       currency: normalizeCurrency(defaults.currency),
     };
@@ -742,10 +749,18 @@
     return instances.map((inst) => {
       const amountPaid = Number(totals.get(inst.id) || 0);
       const amountDue = Number(inst.amount || 0);
+      const statusDerived = inst.status === "skipped"
+        ? "skipped"
+        : amountPaid <= 0
+          ? "pending"
+          : amountPaid < amountDue
+            ? "partial"
+            : "paid";
       return {
         ...inst,
         amount_paid: amountPaid,
         amount_remaining: Math.max(0, amountDue - amountPaid),
+        status_derived: statusDerived,
       };
     });
   }
@@ -1299,14 +1314,13 @@
       const defaults = settings.defaults || normalizeSettingsDefaults({});
       const basis = normalizeProgressBasis(defaults.progressBasis);
       const yearScope = normalizeYearScope(params.get("year_scope") || defaults.yearScope);
+      const ledgerScope = normalizeLedgerScope(params.get("ledger_scope") || "all");
       const essentialsOnly = params.get("essentials_only") !== "false";
       const templates = getTemplates(db).filter((template) => template.active !== false);
 
-      const monthRows = getProgressInstancesForMonth(
-        db,
-        parsed.year,
-        parsed.month,
-        templates
+      const monthRows = filterLedgerScopeRows(
+        getProgressInstancesForMonth(db, parsed.year, parsed.month, templates),
+        ledgerScope
       );
       const monthTotals = computeProgressTotals(monthRows, essentialsOnly);
 
@@ -1316,13 +1330,47 @@
       let yearDoneScope = 0;
       let yearRemaining = 0;
       let yearDoneOutsideScope = 0;
+      const months = [];
+      const yearCounts = { total: 0, done: 0, partial: 0, open: 0, skipped: 0 };
       for (let m = monthStart; m <= 12; m += 1) {
-        const rows = getProgressInstancesForMonth(db, parsed.year, m, templates);
-        const totals = computeProgressTotals(rows, essentialsOnly);
-        if (m <= monthEnd) {
+        const scopedRows = filterLedgerScopeRows(
+          getProgressInstancesForMonth(db, parsed.year, m, templates),
+          ledgerScope
+        );
+        const eligibleRows = essentialsOnly
+          ? scopedRows.filter((item) => !!item.essential_snapshot)
+          : scopedRows;
+        const totals = computeProgressTotals(eligibleRows, false);
+        const counts = { total: 0, done: 0, partial: 0, open: 0, skipped: 0 };
+        eligibleRows.forEach((item) => {
+          if (item.status_derived === "skipped") {
+            counts.skipped += 1;
+            return;
+          }
+          counts.total += 1;
+          const paid = Number(item.amount_paid || 0);
+          const remaining = Number(item.amount_remaining || 0);
+          if (remaining <= 0) counts.done += 1;
+          else if (paid > 0) counts.partial += 1;
+          else counts.open += 1;
+        });
+        const inScope = m <= monthEnd;
+        months.push({
+          month: m,
+          in_scope: inScope,
+          required: totals.required,
+          done: totals.done,
+          remaining: totals.remaining,
+          percent: totals.required > 0 ? roundMoney((totals.done / totals.required) * 100) : 0,
+          counts,
+        });
+        if (inScope) {
           yearRequired += totals.required;
           yearDoneScope += totals.done;
           yearRemaining += totals.remaining;
+          Object.keys(yearCounts).forEach((key) => {
+            yearCounts[key] += Number(counts[key] || 0);
+          });
         } else {
           yearDoneOutsideScope += totals.done;
         }
@@ -1352,6 +1400,7 @@
         period: `${parsed.year}-${pad2(parsed.month)}`,
         basis,
         year_scope: yearScope,
+        ledger_scope: ledgerScope,
         essentials_only: essentialsOnly,
         month: {
           required: monthTotals.required,
@@ -1364,6 +1413,7 @@
         year: {
           required: yearTotals.required,
           done: yearTotals.done,
+          done_in_scope: roundMoney(yearDoneScope),
           remaining: yearTotals.remaining,
           target: roundMoney(yearTarget),
           target_remaining: roundMoney(Math.max(0, yearTarget - yearTotals.done)),
@@ -1372,7 +1422,9 @@
           months_in_scope: monthEnd,
           start_month: monthStart,
           end_month: monthEnd,
+          counts: yearCounts,
         },
+        months,
       });
     }
 
@@ -1905,6 +1957,9 @@
       const essentialsOnly = params.get("essentials_only") !== "false";
       const settings = getSettings(db);
       const defaults = settings.defaults || normalizeSettingsDefaults({});
+      const receiptLanguage = normalizeLanguage(params.get("lang") || defaults.language);
+      const activeReceiptLanguage = receiptLanguage === "system" ? "en" : receiptLanguage;
+      const rt = (key, vars = {}) => window.AJL_I18N?.t(key, vars, activeReceiptLanguage) || key;
       const basis = normalizeProgressBasis(defaults.progressBasis);
       const activeTemplates = getTemplates(db).filter((template) => template.active !== false);
       const monthEnd = scope === "full" ? 12 : month;
@@ -1953,7 +2008,12 @@
       }
       const monthPercent = monthTarget > 0 ? (monthTotals.done / monthTarget) * 100 : 0;
       const yearPercent = yearTarget > 0 ? (yearDoneIncludingPrepaid / yearTarget) * 100 : 0;
-      const scopeLabel = scope === "full" ? "Full Year" : `YTD (through month ${monthEnd})`;
+      const scopeLabel = scope === "full" ? rt("receipt.fullYear") : rt("receipt.ytdThrough", { month: monthEnd });
+      const ledgerScopeLabel = ledgerScope === "personal"
+        ? rt("receipt.personalOnly")
+        : ledgerScope === "shared"
+          ? rt("receipt.sharedHousehold")
+          : rt("receipt.allBills");
       const attachedYearRows = filterLedgerScopeRows(
         attachPayments(db, getInstances(db).filter((inst) => inst.year === yearRaw)),
         ledgerScope
@@ -1966,35 +2026,35 @@
         .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
       remainingRows.sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
       const lines = [];
-      lines.push("Au Jour Le Jour - Yearly Receipt");
-      lines.push(`Generated: ${nowIsoLocal()}`);
-      lines.push(`Year: ${yearRaw}`);
-      lines.push(`Scope: ${scopeLabel}`);
-      lines.push(`Ledger scope: ${getLedgerScopeLabel(ledgerScope)}`);
-      lines.push(`Essentials only: ${essentialsOnly ? "Yes" : "No"}`);
+      lines.push(`Au Jour Le Jour - ${rt("receipt.title")}`);
+      lines.push(`${rt("receipt.generated")}: ${nowIsoLocal()}`);
+      lines.push(`${rt("receipt.year")}: ${yearRaw}`);
+      lines.push(`${rt("receipt.scope")}: ${scopeLabel}`);
+      lines.push(`${rt("receipt.ledgerScope")}: ${ledgerScopeLabel}`);
+      lines.push(`${rt("receipt.essentialsOnly")}: ${essentialsOnly ? rt("common.yes") : rt("common.no")}`);
       lines.push(" ");
-      lines.push("Confirmed Totals");
-      lines.push(`- Month progress: ${Math.round(monthPercent)}% (${formatMoney(monthTotals.done, settings)} of ${formatMoney(monthTarget, settings)})`);
-      lines.push(`- Year progress: ${Math.round(yearPercent)}% (${formatMoney(yearDoneIncludingPrepaid, settings)} of ${formatMoney(yearTarget, settings)})`);
-      lines.push(`- Remaining in scope: ${formatMoney(yearTotals.remaining, settings)}`);
-      lines.push(`- Prepaid future months: ${formatMoney(prepaidFutureDone, settings)}`);
+      lines.push(rt("receipt.confirmedTotals"));
+      lines.push(`- ${rt("receipt.monthProgress")}: ${Math.round(monthPercent)}% (${formatMoney(monthTotals.done, settings)} ${rt("receipt.of")} ${formatMoney(monthTarget, settings)})`);
+      lines.push(`- ${rt("receipt.yearProgress")}: ${Math.round(yearPercent)}% (${formatMoney(yearDoneIncludingPrepaid, settings)} ${rt("receipt.of")} ${formatMoney(yearTarget, settings)})`);
+      lines.push(`- ${rt("receipt.remainingScope")}: ${formatMoney(yearTotals.remaining, settings)}`);
+      lines.push(`- ${rt("receipt.prepaid")}: ${formatMoney(prepaidFutureDone, settings)}`);
       lines.push(" ");
-      lines.push(`Confirmed paid items (${paidRows.length})`);
+      lines.push(`${rt("receipt.paidItems")} (${paidRows.length})`);
       if (paidRows.length === 0) {
-        lines.push("- None");
+        lines.push(`- ${rt("receipt.none")}`);
       } else {
         paidRows.forEach((row) => {
-          const line = `- ${row.due_date} | ${row.name_snapshot} | paid ${formatMoney(Number(row.amount_paid || 0), settings)} of ${formatMoney(Number(row.amount || 0), settings)}`;
+          const line = `- ${row.due_date} | ${row.name_snapshot} | ${rt("receipt.paid")} ${formatMoney(Number(row.amount_paid || 0), settings)} ${rt("receipt.of")} ${formatMoney(Number(row.amount || 0), settings)}`;
           wrapPdfLine(line).forEach((wrapped) => lines.push(wrapped));
         });
       }
       lines.push(" ");
-      lines.push(`Remaining items in scope (${remainingRows.length})`);
+      lines.push(`${rt("receipt.remainingItems")} (${remainingRows.length})`);
       if (remainingRows.length === 0) {
-        lines.push("- None");
+        lines.push(`- ${rt("receipt.none")}`);
       } else {
         remainingRows.forEach((row) => {
-          const line = `- ${row.due_date} | ${row.name_snapshot} | remaining ${formatMoney(Number(row.amount_remaining || 0), settings)}`;
+          const line = `- ${row.due_date} | ${row.name_snapshot} | ${rt("receipt.remaining")} ${formatMoney(Number(row.amount_remaining || 0), settings)}`;
           wrapPdfLine(line).forEach((wrapped) => lines.push(wrapped));
         });
       }

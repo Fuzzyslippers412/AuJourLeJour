@@ -8,6 +8,7 @@ const CHECK_ONLY = process.argv.includes("--check");
 
 const pairs = [
   ["public/app.js", "docs/app.js"],
+  ["public/i18n.js", "docs/i18n.js"],
   ["public/styles.css", "docs/styles.css"],
   ["public/favicon.svg", "docs/favicon.svg"],
   ["public/apple-touch-icon.png", "docs/apple-touch-icon.png"],
@@ -63,8 +64,8 @@ function syncIndexHtml() {
     '<link rel="stylesheet" href="./styles.css" />'
   );
   raw = raw.replace(
-    '<script src="/app.js"></script>',
-    '<script src="./web-adapter.js"></script>\n    <script src="./app.js"></script>'
+    '<script src="/i18n.js"></script>\n    <script src="/app.js"></script>',
+    '<script src="./web-adapter.js"></script>\n    <script src="./i18n.js"></script>\n    <script src="./app.js"></script>'
   );
 
   if (CHECK_ONLY) {

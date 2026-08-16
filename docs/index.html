@@ -29,13 +29,26 @@
 
       <div class="month-nav">
         <button id="prev-month" class="icon-btn" aria-label="Previous month">&#x2039;</button>
-        <input id="month-picker" class="month-input" type="month" />
+        <label class="month-picker-shell">
+          <span id="month-picker-label" class="month-picker-label" aria-hidden="true"></span>
+          <input id="month-picker" class="month-input" type="month" aria-label="Select month" />
+        </label>
         <button id="next-month" class="icon-btn" aria-label="Next month">&#x203A;</button>
       </div>
 
       <button id="mobile-more-open" class="icon-btn mobile-more-button" aria-label="More options">&#x22EF;</button>
 
       <div class="top-actions">
+        <label class="language-control language-control-compact">
+          <span class="sr-only">App language</span>
+          <select id="quick-language" aria-label="App language">
+            <option value="system">System</option>
+            <option value="en">English</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="pt">Português</option>
+          </select>
+        </label>
         <div id="runtime-trust-pill" class="runtime-trust-pill" role="status" aria-live="polite">
           <span id="runtime-trust-dot" class="runtime-trust-dot" aria-hidden="true"></span>
           <span id="runtime-trust-label">Checking storage…</span>
@@ -443,6 +456,7 @@
           <div class="card-header">
             <div class="card-title">Month review</div>
             <div class="review-card-actions">
+              <button id="review-export-image" class="ghost-btn small review-image-export">Save year image</button>
               <button id="review-export-receipt" class="ghost-btn small">Year receipt PDF</button>
               <button id="review-export" class="ghost-btn small">Export review CSV</button>
             </div>
@@ -1076,6 +1090,16 @@ cd AuJourLeJour
               </select>
             </label>
             <label>
+              App language
+              <select id="defaults-language" class="select">
+                <option value="system">System default</option>
+                <option value="en">English</option>
+                <option value="fr">Français</option>
+                <option value="de">Deutsch</option>
+                <option value="pt">Português</option>
+              </select>
+            </label>
+            <label>
               Display locale
               <input id="defaults-locale" type="text" placeholder="en-US" autocomplete="language" />
             </label>
@@ -1369,6 +1393,16 @@ cd AuJourLeJour
           <label class="mobile-more-row mobile-more-toggle">
             <span><strong>Essentials only</strong><small>Focus the ledger on required bills</small></span>
             <input id="mobile-more-essentials" type="checkbox" checked />
+          </label>
+          <label class="mobile-more-row mobile-language-row">
+            <span><strong>App language</strong><small>Change the interface language</small></span>
+            <select id="mobile-language" aria-label="App language">
+              <option value="system">System</option>
+              <option value="en">English</option>
+              <option value="fr">Français</option>
+              <option value="de">Deutsch</option>
+              <option value="pt">Português</option>
+            </select>
           </label>
           <button id="mobile-more-advanced" class="mobile-more-row local-only" type="button">
             <span><strong>Advanced</strong><small>Janitor and runtime diagnostics</small></span>
@@ -1700,7 +1734,7 @@ cd AuJourLeJour
       <button id="toast-action" class="toast-action hidden">Undo</button>
     </div>
 
-    <button id="assistant-fab" class="fab local-only" aria-label="Open Mamadou">
+    <button id="assistant-fab" class="fab local-only" aria-label="Open Mamdou">
       <span class="fab-label">Mamdou</span>
       <span id="assistant-fab-status" class="fab-status">Ready</span>
     </button>
@@ -1763,6 +1797,7 @@ cd AuJourLeJour
     </div>
 
     <script src="./web-adapter.js"></script>
+    <script src="./i18n.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

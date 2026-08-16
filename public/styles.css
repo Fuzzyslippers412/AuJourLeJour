@@ -189,10 +189,47 @@ body.scrolled .topbar {
   border: 1px solid var(--border);
 }
 
-.month-input {
-  border: none;
-  background: transparent;
+.month-picker-shell {
+  position: relative;
+  display: grid;
+  min-width: 142px;
+  min-height: 32px;
+  place-items: center;
+  cursor: pointer;
+}
+
+.month-picker-label {
   font-size: 14px;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+.month-picker-label::after {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 12px;
+  vertical-align: -1px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.72;
+}
+
+.month-picker-shell:focus-within {
+  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 1px;
+  border-radius: 8px;
+}
+
+.month-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .month-input:focus,
@@ -218,6 +255,33 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.language-control {
+  display: inline-flex;
+  align-items: center;
+}
+
+.language-control select,
+.mobile-language-row select {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
+  padding: 7px 28px 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.language-control-compact select {
+  max-width: 108px;
+}
+
+.mobile-language-row select {
+  flex: 0 0 126px;
+  max-width: 42%;
 }
 
 .runtime-trust-pill {
@@ -3056,6 +3120,39 @@ body.scrolled .status-bar {
   justify-content: flex-end;
 }
 
+.review-image-export {
+  border-color: #b9d4fb;
+  background: #eef5ff;
+  color: #0b57b5;
+  font-weight: 600;
+}
+
+.review-image-export:hover {
+  border-color: #83b4f2;
+  background: #e1eeff;
+}
+
+.review-image-export:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+@media (max-width: 640px) {
+  #review-card > .card-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .review-card-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .review-card-actions .ghost-btn {
+    min-height: 44px;
+  }
+}
+
 .review-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -4626,11 +4723,14 @@ body.landing #assistant-inline {
     background: transparent;
   }
   .month-input {
-    min-width: 0;
-    width: 128px;
+    width: 100%;
+  }
+  .month-picker-shell {
+    min-width: 126px;
+  }
+  .month-picker-label {
     font-size: 13px;
     font-weight: 600;
-    text-align: center;
   }
   .mobile-more-button {
     display: grid;

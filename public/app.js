@@ -13,6 +13,7 @@ const state = {
       monthlyGoalAmount: 0,
       yearlyGoalAmount: 0,
       yearScope: "ytd",
+      language: "system",
       locale: "en-US",
       currency: "USD",
     },
@@ -174,6 +175,7 @@ const MAX_ALLOCATION_PLAN_ITEMS = 6;
 const NUDGE_CACHE_TTL_MS = 45_000;
 const AGENT_DUPLICATE_WINDOW_MS = 1200;
 const AJL_WEB_MODE = !!window.AJL_WEB_MODE;
+const AJL_I18N = window.AJL_I18N || null;
 const AJL_CAPABILITIES = Object.freeze({
   mode: AJL_WEB_MODE ? "web" : "local",
   storage: AJL_WEB_MODE ? "browser" : "sqlite",
@@ -238,8 +240,36 @@ const STARTER_CATEGORIES = [
   "Other",
 ];
 
+function formatCategoryLabel(value) {
+  const category = String(value || "").trim();
+  return STARTER_CATEGORIES.includes(category) ? t(category) : category;
+}
+
 function hasCapability(name) {
   return !!AJL_CAPABILITIES[name];
+}
+
+function normalizeLanguagePreference(value) {
+  if (!AJL_I18N) return "system";
+  return AJL_I18N.normalizeLanguage(value);
+}
+
+function t(keyOrSource, vars = {}) {
+  return AJL_I18N ? AJL_I18N.t(keyOrSource, vars) : String(keyOrSource);
+}
+
+function applyLanguagePreference(value, options = {}) {
+  const preference = normalizeLanguagePreference(value);
+  const active = AJL_I18N ? AJL_I18N.setLanguage(preference, { persist: options.persist !== false }) : "en";
+  document.documentElement.lang = active || "en";
+  document.title = `Au Jour Le Jour — ${t("app.tagline")}`;
+  const description = document.querySelector('meta[name="description"]');
+  if (description) description.setAttribute("content", t("Essentials bill tracker."));
+  [els?.quickLanguage, els?.mobileLanguage, els?.defaultsLanguage].forEach((select) => {
+    if (select && select.value !== preference) select.value = preference;
+  });
+  updateMonthPickerLabel();
+  return active;
 }
 
 let deferredInstallPrompt = null;
@@ -345,11 +375,11 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = SHARE_RELAY_TIMEO
 }
 
 function getErrorMessage(data, fallback) {
-  if (!data) return fallback;
-  if (typeof data.error === "string") return data.error;
-  if (data.error && typeof data.error.message === "string") return data.error.message;
-  if (typeof data.message === "string") return data.message;
-  return fallback;
+  if (!data) return t(fallback);
+  if (typeof data.error === "string") return t(data.error);
+  if (data.error && typeof data.error.message === "string") return t(data.error.message);
+  if (typeof data.message === "string") return t(data.message);
+  return t(fallback);
 }
 
 function setLlmUnavailableStateFromPayload(payload, fallback) {
@@ -545,12 +575,14 @@ function announceAppUpdate(message) {
 const els = {
   appLiveRegion: document.getElementById("app-live-region"),
   monthPicker: document.getElementById("month-picker"),
+  monthPickerLabel: document.getElementById("month-picker-label"),
   prevMonth: document.getElementById("prev-month"),
   nextMonth: document.getElementById("next-month"),
   systemBanner: document.getElementById("system-banner"),
   runtimeTrustPill: document.getElementById("runtime-trust-pill"),
   runtimeTrustDot: document.getElementById("runtime-trust-dot"),
   runtimeTrustLabel: document.getElementById("runtime-trust-label"),
+  quickLanguage: document.getElementById("quick-language"),
   essentialsToggle: document.getElementById("essentials-toggle"),
   navToday: document.getElementById("nav-today"),
   navShared: document.getElementById("nav-shared"),
@@ -568,6 +600,7 @@ const els = {
   mobileMoreShare: document.getElementById("mobile-more-share"),
   mobileMoreEssentials: document.getElementById("mobile-more-essentials"),
   mobileMoreAdvanced: document.getElementById("mobile-more-advanced"),
+  mobileLanguage: document.getElementById("mobile-language"),
   mobileRuntimeTitle: document.getElementById("mobile-runtime-title"),
   mobileRuntimeLabel: document.getElementById("mobile-runtime-label"),
   mobileRuntimeDot: document.getElementById("mobile-runtime-dot"),
@@ -939,6 +972,7 @@ const els = {
   reviewSummary: document.getElementById("review-summary"),
   reviewList: document.getElementById("review-list"),
   reviewExport: document.getElementById("review-export"),
+  reviewExportImage: document.getElementById("review-export-image"),
   reviewExportReceipt: document.getElementById("review-export-receipt"),
   reviewFilters: Array.from(document.querySelectorAll("[data-review-range]")),
   reviewScopeFilters: Array.from(document.querySelectorAll("[data-review-scope]")),
@@ -949,6 +983,7 @@ const els = {
   defaultsMonthlyGoal: document.getElementById("defaults-monthly-goal"),
   defaultsYearlyGoal: document.getElementById("defaults-yearly-goal"),
   defaultsYearScope: document.getElementById("defaults-year-scope"),
+  defaultsLanguage: document.getElementById("defaults-language"),
   defaultsLocale: document.getElementById("defaults-locale"),
   defaultsCurrency: document.getElementById("defaults-currency"),
   saveDefaults: document.getElementById("save-defaults"),
@@ -1221,7 +1256,7 @@ function isSharedHouseholdItem(item) {
 }
 
 function getSharedHouseholdSuffix(item, prefix = " · ") {
-  return isSharedHouseholdItem(item) ? `${prefix}Shared household` : "";
+  return isSharedHouseholdItem(item) ? `${prefix}${t("household.title")}` : "";
 }
 
 function normalizeLedgerScope(value) {
@@ -2043,6 +2078,7 @@ function normalizeDefaults(rawDefaults = {}) {
     monthlyGoalAmount: sanitizeGoalAmount(defaults.monthlyGoalAmount),
     yearlyGoalAmount: sanitizeGoalAmount(defaults.yearlyGoalAmount),
     yearScope: normalizeYearScope(defaults.yearScope),
+    language: normalizeLanguagePreference(defaults.language),
     locale: normalizeLocale(defaults.locale),
     currency: normalizeCurrency(defaults.currency),
   };
@@ -2937,10 +2973,10 @@ function recordBackupSaved() {
 
 function getTimeGreeting() {
   const hour = new Date().getHours();
-  if (hour < 5) return "Good night";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
+  if (hour < 5) return t("Good night");
+  if (hour < 12) return t("Good morning");
+  if (hour < 18) return t("Good afternoon");
+  return t("Good evening");
 }
 
 function updateAssistantGreeting() {
@@ -3506,6 +3542,15 @@ function setMonth(year, month) {
   state.selectedMonth = month;
   state.itemsScrollTop = 0;
   els.monthPicker.value = `${year}-${pad2(month)}`;
+  updateMonthPickerLabel();
+}
+
+function updateMonthPickerLabel() {
+  if (!els?.monthPickerLabel || !state.selectedYear || !state.selectedMonth) return;
+  els.monthPickerLabel.textContent = new Intl.DateTimeFormat(
+    normalizeLocale(state.settings?.defaults?.locale),
+    { month: "long", year: "numeric" }
+  ).format(new Date(state.selectedYear, state.selectedMonth - 1, 1));
 }
 
 function setMonthWithLock(year, month, lock = true) {
@@ -3523,7 +3568,11 @@ function enterSafeMode(reason) {
   state.safeMode = true;
   state.safeReason = reason || "Safe mode enabled.";
   state.integrityStatus = "safe";
-  showSystemBanner(`Safe mode: ${state.safeReason} Use Setup → Reset local data or refresh without ?safe=1.`);
+  showSystemBanner(
+    t("Safe mode: {reason} Use Setup → Reset local data or refresh without ?safe=1.", {
+      reason: t(state.safeReason),
+    })
+  );
   renderIntegrityStatus();
 }
 
@@ -3644,6 +3693,7 @@ async function loadSettings() {
       firstRunCompleted: !!data.firstRunCompleted,
       hasCompletedOnboarding: !!(data.hasCompletedOnboarding ?? data.firstRunCompleted),
     };
+    applyLanguagePreference(state.settings.defaults.language || "system");
     state.filters.sort = state.settings.defaults.sort || state.filters.sort;
     if (els.sortFilter) els.sortFilter.value = state.filters.sort;
     if (els.summaryYearScope) {
@@ -4956,26 +5006,26 @@ function getBehaviorFeatureMap() {
 function describePlannerReason(item, feature, dueDiff, plannedAmount, fullyCovered) {
   const parts = [];
   if (dueDiff < 0) {
-    parts.push(`${Math.abs(dueDiff)} day${Math.abs(dueDiff) === 1 ? "" : "s"} overdue`);
+    parts.push(t(`${Math.abs(dueDiff)} day${Math.abs(dueDiff) === 1 ? "" : "s"} overdue`));
   } else if (dueDiff === 0) {
-    parts.push("due today");
+    parts.push(t("due today"));
   } else {
-    parts.push(`due in ${dueDiff} day${dueDiff === 1 ? "" : "s"}`);
+    parts.push(t(`due in ${dueDiff} day${dueDiff === 1 ? "" : "s"}`));
   }
   if (item.essential_snapshot) {
-    parts.push("essential");
+    parts.push(t("essential"));
   }
   if (feature) {
     const rank = Number(feature.typical_payment_order_rank || 0);
     const lateness = Number(feature.lateness_trend || 0);
     if (lateness >= 0.34) {
-      parts.push("often drifts late");
+      parts.push(t("often drifts late"));
     } else if (rank > 0 && rank <= 2.5) {
-      parts.push("usually handled early");
+      parts.push(t("usually handled early"));
     }
   }
   if (plannedAmount > 0) {
-    parts.push(fullyCovered ? "fits your amount" : "good partial candidate");
+    parts.push(t(fullyCovered ? "fits your amount" : "good partial candidate"));
   }
   return parts.slice(0, 3).join(" · ");
 }
@@ -5056,10 +5106,10 @@ function buildAllocationPlan(list) {
       reason: describePlannerReason(entry.item, entry.feature, entry.dueDiff, plannedAmount, fully),
       urgencyLabel:
         entry.dueDiff < 0
-          ? "Overdue"
+          ? t("status.overdue")
           : entry.dueDiff <= dueSoonDays
-          ? "Due soon"
-          : "Later",
+          ? t("status.dueSoon")
+          : t("today.later"),
     };
   });
 
@@ -5463,6 +5513,7 @@ function buildAgentPayload(userText) {
   }));
   return {
     user_text: userText,
+    ui_language: AJL_I18N?.getLanguage?.() || "en",
     period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
     context: buildLlmContext(),
     selected_instance:
@@ -5572,7 +5623,7 @@ function parseFastAmount(text) {
 function splitTargetNames(raw) {
   if (!raw) return [];
   const normalized = String(raw)
-    .replace(/\s+and\s+/gi, ",")
+    .replace(/\s+(?:and|et|und|e)\s+/gi, ",")
     .replace(/\s*&\s*/g, ",")
     .replace(/\s*;\s*/g, ",");
   const seen = new Set();
@@ -5586,6 +5637,29 @@ function splitTargetNames(raw) {
     values.push(name);
   });
   return values;
+}
+
+function normalizeLocalizedAgentCommand(value) {
+  const input = String(value || "").trim();
+  const rules = [
+    [/^(?:afficher|ouvrir)\s+(?:le\s+)?résumé$/i, "show summary"],
+    [/^(?:afficher|ouvrir)\s+(?:les\s+)?retards?$/i, "show overdue"],
+    [/^(?:afficher|ouvrir)\s+(?:les\s+)?échéances?\s+proches?$/i, "show due soon"],
+    [/^marquer\s+(.+?)\s+(?:comme\s+)?terminé(?:e)?$/i, "mark $1 done"],
+    [/^(?:ignorer|sauter)\s+(.+)$/i, "skip $1"],
+    [/^(?:zeige|öffne)\s+(?:die\s+)?(?:übersicht|zusammenfassung)$/i, "show summary"],
+    [/^(?:zeige|öffne)\s+(?:die\s+)?überfälligen?$/i, "show overdue"],
+    [/^(.+?)\s+als\s+erledigt\s+markieren$/i, "mark $1 done"],
+    [/^(?:überspringe|ignoriere)\s+(.+)$/i, "skip $1"],
+    [/^(?:mostrar|abrir)\s+(?:o\s+)?resumo$/i, "show summary"],
+    [/^(?:mostrar|abrir)\s+(?:os\s+)?atrasados?$/i, "show overdue"],
+    [/^marcar\s+(.+?)\s+como\s+conclu[ií]d[oa]$/i, "mark $1 done"],
+    [/^(?:ignorar|pular)\s+(.+)$/i, "skip $1"],
+  ];
+  for (const [pattern, replacement] of rules) {
+    if (pattern.test(input)) return input.replace(pattern, replacement);
+  }
+  return input;
 }
 
 function parseFastTemplateIntent(input) {
@@ -6263,7 +6337,7 @@ function parseFastQuestionIntent(input) {
 }
 
 function parseFastCommand(userText) {
-  const text = String(userText || "").trim();
+  const text = normalizeLocalizedAgentCommand(userText);
   if (!text) return null;
   const lower = text.toLowerCase();
 
@@ -6617,7 +6691,7 @@ function renderNextAction(baseList) {
   } else {
     els.nextActionCard.classList.add("later");
   }
-  const category = next.category_snapshot ? ` · ${next.category_snapshot}` : "";
+  const category = next.category_snapshot ? ` · ${formatCategoryLabel(next.category_snapshot)}` : "";
   if (els.nextActionEyebrow) els.nextActionEyebrow.textContent = eyebrow;
   if (els.nextActionTitle) els.nextActionTitle.textContent = next.name_snapshot || "Bill";
   if (els.nextActionMeta) {
@@ -6783,17 +6857,17 @@ function progressColor(ratio) {
 }
 
 function statusLabel(status) {
-  if (status === "ready") return "Ready";
-  if (status === "behind") return "Behind";
-  if (status === "due") return "Due";
-  return "On track";
+  if (status === "ready") return t("common.ready");
+  if (status === "behind") return t("Behind");
+  if (status === "due") return t("Due");
+  return t("On track");
 }
 
 function formatStatusLabel(status) {
-  if (status === "paid") return "Done";
-  if (status === "partial") return "Partial";
-  if (status === "skipped") return "Skipped";
-  return "Pending";
+  if (status === "paid") return t("status.done");
+  if (status === "partial") return t("status.partial");
+  if (status === "skipped") return t("status.skipped");
+  return t("status.pending");
 }
 
 async function handlePiggyEvent(fundId, type, amount) {
@@ -7160,6 +7234,7 @@ async function fetchNudges(events) {
       body: JSON.stringify({
         task: "nudges",
         payload: {
+          ui_language: AJL_I18N?.getLanguage?.() || "en",
           period: `${state.selectedYear}-${pad2(state.selectedMonth)}`,
           essentials_only: state.essentialsOnly,
           trigger_events: events,
@@ -7214,12 +7289,14 @@ function scheduleNudgeRefresh() {
 
 function pushLlmMessage(role, text, meta = "") {
   if (!text) return;
-  state.llmHistory.push({ role, text, meta });
+  const rawText = String(text);
+  const rawMeta = String(meta || "");
+  state.llmHistory.push({ role, text: rawText, meta: rawMeta });
   if (state.llmHistory.length > 10) {
     state.llmHistory = state.llmHistory.slice(-10);
   }
   renderLlmHistory();
-  saveChatMessage(role, text, meta);
+  saveChatMessage(role, rawText, rawMeta);
 }
 
 function renderCommandLog() {
@@ -7260,12 +7337,12 @@ function renderLlmHistory() {
     const row = document.createElement("div");
     row.className = `assistant-message ${entry.role}`;
     const text = document.createElement("div");
-    text.textContent = entry.text;
+    text.textContent = entry.role === "assistant" ? t(entry.text) : entry.text;
     row.appendChild(text);
     if (entry.meta) {
       const meta = document.createElement("div");
       meta.className = "assistant-meta";
-      meta.textContent = entry.meta;
+      meta.textContent = entry.role === "assistant" ? t(entry.meta) : entry.meta;
       row.appendChild(meta);
     }
     els.llmAgentHistory.appendChild(row);
@@ -9205,10 +9282,10 @@ function renderNudges() {
     const left = document.createElement("div");
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = message.title || "Nudge";
+    title.textContent = t(message.title || "Nudge");
     const body = document.createElement("div");
     body.className = "meta";
-    body.textContent = message.body || "";
+    body.textContent = message.body ? t(message.body) : "";
     left.appendChild(title);
     left.appendChild(body);
 
@@ -9271,14 +9348,14 @@ function renderCategoryFilter(list) {
     .forEach((cat) => {
       const option = document.createElement("option");
       option.value = cat;
-      option.textContent = cat;
+      option.textContent = formatCategoryLabel(cat);
       if (cat === current) option.selected = true;
       els.categoryFilter.appendChild(option);
 
       if (els.filterCategory) {
         const sheetOpt = document.createElement("option");
         sheetOpt.value = cat;
-        sheetOpt.textContent = cat;
+        sheetOpt.textContent = formatCategoryLabel(cat);
         els.filterCategory.appendChild(sheetOpt);
       }
     });
@@ -9340,6 +9417,9 @@ function renderDefaults() {
   }
   if (els.defaultsYearScope) {
     els.defaultsYearScope.value = defaults.yearScope || "ytd";
+  }
+  if (els.defaultsLanguage) {
+    els.defaultsLanguage.value = defaults.language || "system";
   }
   if (els.defaultsLocale) {
     els.defaultsLocale.value = defaults.locale || "en-US";
@@ -10611,7 +10691,7 @@ function renderHouseholdItems() {
     const meta = document.createElement("div");
     meta.className = "household-item-meta";
     const parts = [`Due ${formatShortDate(item.due_date)}`];
-    if (item.category_snapshot) parts.push(item.category_snapshot);
+    if (item.category_snapshot) parts.push(formatCategoryLabel(item.category_snapshot));
     meta.textContent = parts.join(" · ");
     left.appendChild(name);
     left.appendChild(meta);
@@ -10620,10 +10700,10 @@ function renderHouseholdItems() {
     status.className = `household-status-pill ${item.shared_status || "open"}`;
     status.textContent =
       item.shared_status === "done"
-        ? "Done"
+        ? t("status.done")
         : item.shared_status === "partial"
-          ? "Partial"
-          : "Open";
+          ? t("status.partial")
+          : t("status.pending");
 
     head.appendChild(left);
     head.appendChild(status);
@@ -10717,7 +10797,7 @@ function renderHouseholdAttention() {
     const meta = document.createElement("div");
     meta.className = "household-item-meta";
     const parts = [`Due ${formatShortDate(item.due_date)}`];
-    if (item.category_snapshot) parts.push(item.category_snapshot);
+    if (item.category_snapshot) parts.push(formatCategoryLabel(item.category_snapshot));
     meta.textContent = parts.join(" · ");
     left.appendChild(name);
     left.appendChild(meta);
@@ -10726,10 +10806,10 @@ function renderHouseholdAttention() {
     status.className = `household-status-pill ${item.shared_status || "open"}`;
     status.textContent =
       item.shared_status === "partial"
-        ? "Partial"
+        ? t("status.partial")
         : item.shared_status === "done"
-          ? "Done"
-          : "Open";
+          ? t("status.done")
+          : t("status.pending");
 
     head.appendChild(left);
     head.appendChild(status);
@@ -11709,6 +11789,31 @@ async function saveSettings(updates) {
   }
 }
 
+async function changeAppLanguage(value) {
+  const preference = normalizeLanguagePreference(value);
+  const localeByLanguage = { en: "en-US", fr: "fr-FR", de: "de-DE", pt: "pt-PT" };
+  const previousLanguage = normalizeLanguagePreference(state.settings.defaults?.language);
+  const previousLocale = normalizeLocale(state.settings.defaults?.locale);
+  const languageLocales = new Set(Object.values(localeByLanguage));
+  const shouldFollowLanguage = languageLocales.has(previousLocale) || previousLanguage === "system";
+  state.settings.defaults = normalizeDefaults({
+    ...state.settings.defaults,
+    language: preference,
+    locale:
+      preference !== "system" && shouldFollowLanguage
+        ? localeByLanguage[preference] || previousLocale
+        : previousLocale,
+  });
+  applyLanguagePreference(preference);
+  await saveSettings({ defaults: state.settings.defaults });
+  renderDefaults();
+  renderView();
+  renderDashboard();
+  renderLlmHistory();
+  renderNudges();
+  renderMamdouChrome();
+}
+
 async function addCategory() {
   if (!els.categoryInput) return;
   const value = String(els.categoryInput.value || "").trim();
@@ -11947,7 +12052,7 @@ function renderItems(baseList) {
     appendSharedHouseholdPill(title, item);
     const sub = document.createElement("div");
     sub.className = "item-sub";
-    const category = item.category_snapshot || "Tracked bill";
+    const category = item.category_snapshot ? formatCategoryLabel(item.category_snapshot) : t("Tracked bill");
     sub.textContent = `${category}${getSharedHouseholdSuffix(item)}`;
     main.appendChild(title);
     main.appendChild(sub);
@@ -14008,6 +14113,10 @@ function renderMonthReview(baseList) {
     els.reviewExportReceipt.textContent = receiptLabel;
     els.reviewExportReceipt.title = `Export a receipt for ${getReviewScopeLabel(state.reviewScope).toLowerCase()}.`;
   }
+  if (els.reviewExportImage) {
+    els.reviewExportImage.textContent = t("review.image");
+    els.reviewExportImage.title = `${t("review.image")} · ${getYearReviewScopeLabel(state.reviewScope)}`;
+  }
 
   const addRow = (title, body) => {
     const row = document.createElement("div");
@@ -14137,6 +14246,381 @@ function exportReviewCsv() {
   URL.revokeObjectURL(url);
 }
 
+async function loadYearReviewExportData() {
+  const params = new URLSearchParams({
+    year: String(state.selectedYear),
+    month: String(state.selectedMonth),
+    year_scope: normalizeYearScope(state.settings.defaults?.yearScope || "ytd"),
+    ledger_scope: normalizeLedgerScope(state.reviewScope),
+    essentials_only: state.essentialsOnly ? "true" : "false",
+  });
+  const res = await apiFetch(`/api/progress?${params.toString()}`);
+  const data = await readApiData(res);
+  if (!res.ok || !data || !Array.isArray(data.months) || !data.year) {
+    throw new Error("Year review data is unavailable.");
+  }
+  return data;
+}
+
+function roundCanvasRect(ctx, x, y, width, height, radius) {
+  const r = Math.max(0, Math.min(Number(radius || 0), width / 2, height / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+
+function fillCanvasRoundedRect(ctx, x, y, width, height, radius, fillStyle) {
+  ctx.save();
+  ctx.fillStyle = fillStyle;
+  roundCanvasRect(ctx, x, y, width, height, radius);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCanvasText(ctx, text, x, y, options = {}) {
+  const {
+    font = '400 28px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color = "#0F172A",
+    align = "left",
+    baseline = "alphabetic",
+    maxWidth,
+  } = options;
+  ctx.save();
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.textBaseline = baseline;
+  if (Number.isFinite(maxWidth)) ctx.fillText(String(text), x, y, maxWidth);
+  else ctx.fillText(String(text), x, y);
+  ctx.restore();
+}
+
+function getYearReviewScopeLabel(scope) {
+  const normalized = normalizeLedgerScope(scope);
+  if (normalized === "personal") return t("receipt.personalOnly");
+  if (normalized === "shared") return t("receipt.sharedHousehold");
+  return t("receipt.allBills");
+}
+
+function formatReviewMonthName(year, month) {
+  const locale = state.settings.defaults?.locale || "en-US";
+  try {
+    return new Intl.DateTimeFormat(locale, { month: "short" })
+      .format(new Date(year, Number(month) - 1, 1))
+      .replace(/\.$/, "");
+  } catch (err) {
+    return new Date(year, Number(month) - 1, 1).toLocaleString("en-US", { month: "short" });
+  }
+}
+
+function buildYearReviewCanvas(progress) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1200;
+  canvas.height = 1500;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas is unavailable.");
+
+  const colors = {
+    ink: "#0F172A",
+    muted: "#64748B",
+    faint: "#94A3B8",
+    surface: "#FFFFFF",
+    background: "#F4F7FB",
+    line: "#E7ECF3",
+    blue: "#1769E0",
+    blueSoft: "#EAF2FF",
+    green: "#16845B",
+    greenSoft: "#E8F7F0",
+    amber: "#B56408",
+    amberSoft: "#FFF3DE",
+  };
+  const year = Number(state.selectedYear);
+  const yearData = progress.year || {};
+  const counts = yearData.counts || {};
+  const months = Array.isArray(progress.months) ? progress.months : [];
+  const required = Number(yearData.required || 0);
+  const doneInScope = Number(yearData.done_in_scope ?? yearData.done ?? 0);
+  const remaining = Number(yearData.remaining || 0);
+  const progressPercent = required > 0 ? Math.max(0, (doneInScope / required) * 100) : 0;
+  const progressLabel = `${Math.round(progressPercent)}%`;
+  const scopeLabel = getYearReviewScopeLabel(progress.ledger_scope || state.reviewScope);
+  const endMonth = Number(yearData.end_month || state.selectedMonth);
+  const yearScopeLabel = progress.year_scope === "full"
+    ? t("receipt.fullYear")
+    : t("receipt.ytdThrough", { month: formatReviewMonthName(year, endMonth) });
+
+  ctx.fillStyle = colors.background;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const headerGradient = ctx.createLinearGradient(0, 0, canvas.width, 330);
+  headerGradient.addColorStop(0, "#0B4FAE");
+  headerGradient.addColorStop(0.58, "#1769E0");
+  headerGradient.addColorStop(1, "#3A86E8");
+  ctx.fillStyle = headerGradient;
+  ctx.fillRect(0, 0, canvas.width, 330);
+
+  fillCanvasRoundedRect(ctx, 64, 54, 72, 72, 20, "rgba(255,255,255,0.18)");
+  drawCanvasText(ctx, "AJ", 100, 91, {
+    font: '600 28px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: "#FFFFFF",
+    align: "center",
+    baseline: "middle",
+  });
+  drawCanvasText(ctx, "AU JOUR LE JOUR", 156, 82, {
+    font: '600 22px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: "#FFFFFF",
+  });
+  drawCanvasText(ctx, t("review.trackerSummary").toUpperCase(), 156, 112, {
+    font: '500 16px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: "rgba(255,255,255,0.72)",
+  });
+  drawCanvasText(ctx, `${year} ${t("review.yearInReview")}`, 64, 210, {
+    font: '600 54px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: "#FFFFFF",
+  });
+  drawCanvasText(ctx, `${scopeLabel}  ·  ${yearScopeLabel}`, 66, 258, {
+    font: '500 22px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: "rgba(255,255,255,0.82)",
+  });
+
+  ctx.save();
+  ctx.shadowColor = "rgba(15, 23, 42, 0.10)";
+  ctx.shadowBlur = 32;
+  ctx.shadowOffsetY = 10;
+  fillCanvasRoundedRect(ctx, 64, 300, 1072, 376, 28, colors.surface);
+  ctx.restore();
+
+  const ringX = 246;
+  const ringY = 483;
+  const ringRadius = 102;
+  ctx.save();
+  ctx.lineWidth = 22;
+  ctx.lineCap = "round";
+  ctx.strokeStyle = colors.blueSoft;
+  ctx.beginPath();
+  ctx.arc(ringX, ringY, ringRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  if (progressPercent > 0) {
+    ctx.strokeStyle = colors.blue;
+    ctx.beginPath();
+    ctx.arc(
+      ringX,
+      ringY,
+      ringRadius,
+      -Math.PI / 2,
+      -Math.PI / 2 + Math.PI * 2 * Math.min(1, progressPercent / 100)
+    );
+    ctx.stroke();
+  }
+  ctx.restore();
+  drawCanvasText(ctx, progressLabel, ringX, ringY - 8, {
+    font: '600 47px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: colors.ink,
+    align: "center",
+    baseline: "middle",
+  });
+  drawCanvasText(ctx, t("today.yearProgress"), ringX, ringY + 40, {
+    font: '500 18px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: colors.muted,
+    align: "center",
+    baseline: "middle",
+  });
+
+  const amountMetrics = [
+    { label: t("status.required"), value: formatMoneyDisplay(required), color: colors.ink },
+    { label: t("status.done"), value: formatMoneyDisplay(doneInScope), color: colors.green },
+    { label: t("status.remaining"), value: formatMoneyDisplay(remaining), color: remaining > 0 ? colors.amber : colors.green },
+  ];
+  amountMetrics.forEach((metric, index) => {
+    const x = 430 + index * 225;
+    drawCanvasText(ctx, metric.label.toUpperCase(), x, 420, {
+      font: '600 15px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+      color: colors.faint,
+    });
+    drawCanvasText(ctx, metric.value, x, 470, {
+      font: '600 30px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+      color: metric.color,
+      maxWidth: 205,
+    });
+  });
+  ctx.fillStyle = colors.line;
+  ctx.fillRect(430, 524, 645, 2);
+  const prepaid = Number(yearData.prepaid_future_done || 0);
+  const detailLine = prepaid > 0
+    ? `${t("receipt.prepaid")}: ${formatMoneyDisplay(prepaid)}`
+    : t("today.referenceTotals");
+  drawCanvasText(ctx, detailLine, 430, 575, {
+    font: '500 19px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: colors.muted,
+    maxWidth: 645,
+  });
+  drawCanvasText(ctx, `${t("receipt.generated")}: ${new Intl.DateTimeFormat(state.settings.defaults?.locale || "en-US", { dateStyle: "medium" }).format(new Date())}`, 430, 615, {
+    font: '400 17px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: colors.faint,
+    maxWidth: 645,
+  });
+
+  const countMetrics = [
+    { label: t("review.itemsDone"), value: Number(counts.done || 0), fill: colors.greenSoft, color: colors.green },
+    { label: t("review.openItems"), value: Number(counts.open || 0), fill: colors.amberSoft, color: colors.amber },
+    { label: t("status.partial"), value: Number(counts.partial || 0), fill: colors.blueSoft, color: colors.blue },
+    { label: t("review.monthsReviewed"), value: Number(yearData.months_in_scope || 0), fill: "#F1F5F9", color: colors.ink },
+  ];
+  countMetrics.forEach((metric, index) => {
+    const x = 64 + index * 268;
+    fillCanvasRoundedRect(ctx, x, 708, 250, 136, 22, metric.fill);
+    drawCanvasText(ctx, metric.value, x + 24, 764, {
+      font: '600 36px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+      color: metric.color,
+    });
+    drawCanvasText(ctx, metric.label, x + 24, 807, {
+      font: '500 17px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+      color: colors.muted,
+      maxWidth: 202,
+    });
+  });
+
+  drawCanvasText(ctx, t("today.yearProgress"), 64, 910, {
+    font: '600 27px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: colors.ink,
+  });
+  const cardWidth = 250;
+  const cardHeight = 132;
+  const cardGapX = 24;
+  const cardGapY = 18;
+  months.slice(0, 12).forEach((monthData, index) => {
+    const column = index % 4;
+    const row = Math.floor(index / 4);
+    const x = 64 + column * (cardWidth + cardGapX);
+    const y = 944 + row * (cardHeight + cardGapY);
+    const inScope = monthData.in_scope !== false;
+    const percent = Math.max(0, Number(monthData.percent || 0));
+    const monthCounts = monthData.counts || {};
+    fillCanvasRoundedRect(ctx, x, y, cardWidth, cardHeight, 18, inScope ? colors.surface : "#F8FAFC");
+    ctx.save();
+    ctx.strokeStyle = colors.line;
+    ctx.lineWidth = 2;
+    roundCanvasRect(ctx, x, y, cardWidth, cardHeight, 18);
+    ctx.stroke();
+    ctx.restore();
+    drawCanvasText(ctx, formatReviewMonthName(year, monthData.month), x + 18, y + 34, {
+      font: '600 18px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+      color: inScope ? colors.ink : colors.faint,
+    });
+    drawCanvasText(ctx, `${Math.round(percent)}%`, x + cardWidth - 18, y + 34, {
+      font: '600 17px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+      color: inScope ? colors.blue : colors.faint,
+      align: "right",
+    });
+    fillCanvasRoundedRect(ctx, x + 18, y + 54, cardWidth - 36, 10, 5, "#E8EDF4");
+    if (percent > 0) {
+      fillCanvasRoundedRect(
+        ctx,
+        x + 18,
+        y + 54,
+        (cardWidth - 36) * Math.min(1, percent / 100),
+        10,
+        5,
+        inScope ? colors.blue : colors.faint
+      );
+    }
+    drawCanvasText(
+      ctx,
+      `${Number(monthCounts.done || 0)}/${Number(monthCounts.total || 0)} ${t("status.done").toLowerCase()}`,
+      x + 18,
+      y + 97,
+      {
+        font: '500 16px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+        color: inScope ? colors.muted : colors.faint,
+        maxWidth: cardWidth - 36,
+      }
+    );
+    drawCanvasText(ctx, formatMoneyDisplay(Number(monthData.remaining || 0)), x + 18, y + 120, {
+      font: '500 14px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+      color: inScope ? colors.faint : "#CBD5E1",
+      maxWidth: cardWidth - 36,
+    });
+  });
+
+  drawCanvasText(ctx, t("review.imageFooter"), 600, 1450, {
+    font: '500 17px "Avenir Next", "Helvetica Neue", Arial, sans-serif',
+    color: colors.muted,
+    align: "center",
+    maxWidth: 1072,
+  });
+  return canvas;
+}
+
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Unable to encode PNG."));
+    }, "image/png", 1);
+  });
+}
+
+function downloadYearReviewBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function saveYearReviewImage() {
+  if (state.readOnly) {
+    showToast(t("Read-only preview."));
+    return;
+  }
+  const button = els.reviewExportImage;
+  const previousLabel = button?.textContent || t("review.image");
+  if (button) {
+    button.disabled = true;
+    button.textContent = t("common.loading");
+  }
+  try {
+    const progress = await loadYearReviewExportData();
+    const canvas = buildYearReviewCanvas(progress);
+    const blob = await canvasToPngBlob(canvas);
+    const scope = normalizeLedgerScope(progress.ledger_scope || state.reviewScope);
+    const filename = `au-jour-le-jour-year-review-${state.selectedYear}-${scope}.png`;
+    const file = typeof File === "function" ? new File([blob], filename, { type: "image/png" }) : null;
+    const canNativeShare = !!(
+      state.installState?.mobile &&
+      file &&
+      navigator.share &&
+      navigator.canShare &&
+      navigator.canShare({ files: [file] })
+    );
+    if (canNativeShare) {
+      await navigator.share({
+        files: [file],
+        title: `${state.selectedYear} ${t("review.yearInReview")}`,
+      });
+    } else {
+      downloadYearReviewBlob(blob, filename);
+    }
+    showToast(t("review.imageReady"));
+  } catch (err) {
+    if (err?.name !== "AbortError") {
+      console.error("Year review image export failed", err);
+      showToast(t("review.imageFailed"));
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousLabel;
+    }
+  }
+}
+
 function exportReceiptPdf(options = {}) {
   const now = new Date();
   const yearRaw = Number(options.year ?? state.selectedYear ?? now.getFullYear());
@@ -14151,6 +14635,7 @@ function exportReceiptPdf(options = {}) {
     scope,
     ledger_scope: ledgerScope,
     essentials_only: state.essentialsOnly ? "true" : "false",
+    lang: AJL_I18N?.getLanguage?.() || "en",
   });
   const url = `/api/export/receipt.pdf?${params.toString()}`;
   if (AJL_WEB_MODE) {
@@ -14946,6 +15431,13 @@ async function refreshAll() {
 }
 
 function bindEvents() {
+  [els.quickLanguage, els.mobileLanguage].filter(Boolean).forEach((select) => {
+    select.addEventListener("change", () => {
+      changeAppLanguage(select.value).catch((err) => {
+        showTemporarySystemBanner(err?.message || t("Unable to save language preference."));
+      });
+    });
+  });
   document.querySelectorAll('[role="tablist"]').forEach((tabList) => {
     tabList.addEventListener("keydown", handleTabListKeydown);
   });
@@ -15761,10 +16253,12 @@ function bindEvents() {
         monthlyGoalAmount: monthlyGoal,
         yearlyGoalAmount: yearlyGoal,
         yearScope: els.defaultsYearScope?.value || "ytd",
+        language: els.defaultsLanguage?.value || "system",
         locale: els.defaultsLocale?.value || "en-US",
         currency: els.defaultsCurrency?.value || "USD",
       });
       await saveSettings({ defaults: state.settings.defaults });
+      applyLanguagePreference(state.settings.defaults.language || "system");
       await loadProgressData();
       renderDefaults();
       renderDashboard();
@@ -15970,6 +16464,11 @@ function bindEvents() {
   if (els.reviewExport) {
     els.reviewExport.addEventListener("click", () => {
       exportReviewCsv();
+    });
+  }
+  if (els.reviewExportImage) {
+    els.reviewExportImage.addEventListener("click", () => {
+      saveYearReviewImage();
     });
   }
   if (els.reviewExportReceipt) {
@@ -16855,6 +17354,7 @@ function bindEvents() {
 }
 
 async function init() {
+  applyLanguagePreference(AJL_I18N?.getPreference?.() || "system", { persist: false });
   const flags = getQueryFlags();
   const crashGuard = checkCrashGuard();
   const shareToken = getShareTokenFromPath();

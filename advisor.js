@@ -252,6 +252,17 @@ ${input}`;
   }
 }
 
+function getOutputLanguage(payload) {
+  const language = String(payload?.ui_language || payload?.language || "en").trim().toLowerCase();
+  return ["en", "fr", "de", "pt"].includes(language) ? language : "en";
+}
+
+function getLanguageInstruction(payload) {
+  const names = { en: "English", fr: "French", de: "German", pt: "Portuguese" };
+  const language = getOutputLanguage(payload);
+  return `Write every user-visible string in ${names[language]}. Keep JSON keys, action names, enum values, IDs, and schema fields unchanged.`;
+}
+
 function buildMockTaskData(task, payload) {
   if (task === "intake") {
     return {
@@ -727,8 +738,9 @@ async function callAnthropic(prompt, providerCredentials, systemPrompt, profile)
 }
 
 async function query(task, payload, options = {}) {
-  const prompt = buildPrompt(task, payload);
-  const systemPrompt = task === "agent" ? SYSTEM_PROMPT_AGENT : SYSTEM_PROMPT;
+  const languageInstruction = getLanguageInstruction(payload);
+  const prompt = `${buildPrompt(task, payload)}\n\n${languageInstruction}`;
+  const systemPrompt = `${task === "agent" ? SYSTEM_PROMPT_AGENT : SYSTEM_PROMPT}\n${languageInstruction}`;
   const profile = getTaskProfile(task);
   let response;
   const provider = (options.provider || PROVIDER).toLowerCase();

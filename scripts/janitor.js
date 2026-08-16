@@ -425,13 +425,14 @@ async function run() {
     assert.ok(res.data.defaults && typeof res.data.defaults === "object");
     assert.ok(["auto", "manual"].includes(String(res.data.defaults.progressBasis || "")));
     assert.ok(["ytd", "full"].includes(String(res.data.defaults.yearScope || "")));
+    assert.ok(["system", "en", "fr", "de", "pt"].includes(String(res.data.defaults.language || "")));
     assert.strictEqual(typeof res.data.defaults.locale, "string");
     assert.strictEqual(typeof res.data.defaults.currency, "string");
     assert.strictEqual(typeof Number(res.data.defaults.monthlyGoalAmount), "number");
     assert.strictEqual(typeof Number(res.data.defaults.yearlyGoalAmount), "number");
   });
 
-  test("locale and currency settings roundtrip", async () => {
+  test("language, locale, and currency settings roundtrip", async () => {
     const save = await request("POST", "/api/settings", {
       defaults: {
         sort: "due_date",
@@ -441,6 +442,7 @@ async function run() {
         monthlyGoalAmount: 0,
         yearlyGoalAmount: 0,
         yearScope: "ytd",
+        language: "fr",
         locale: "fr-FR",
         currency: "EUR",
       },
@@ -450,6 +452,7 @@ async function run() {
     assert.strictEqual(save.status, 200);
     const res = await request("GET", "/api/settings");
     assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.defaults.language, "fr");
     assert.strictEqual(res.data.defaults.locale, "fr-FR");
     assert.strictEqual(res.data.defaults.currency, "EUR");
   });
@@ -463,6 +466,10 @@ async function run() {
     assert.strictEqual(typeof res.data.essentials_only, "boolean");
     assert.ok(res.data.month && typeof res.data.month === "object");
     assert.ok(res.data.year && typeof res.data.year === "object");
+    assert.strictEqual(res.data.ledger_scope, "all");
+    assert.ok(Array.isArray(res.data.months), "progress.months must be an array");
+    assert.strictEqual(res.data.months.length, 12, "progress must include all 12 month cards");
+    assert.ok(res.data.year.counts && typeof res.data.year.counts === "object");
     ["required", "done", "remaining", "target", "target_remaining", "percent"].forEach((key) => {
       assert.strictEqual(typeof Number(res.data.month[key]), "number", `month.${key} must be numeric`);
       assert.strictEqual(typeof Number(res.data.year[key]), "number", `year.${key} must be numeric`);
@@ -2111,6 +2118,7 @@ async function run() {
       assert.ok(content.includes('id="builder-review-edit"'));
       assert.ok(content.includes('id="builder-review-save"'));
       assert.ok(content.includes('id="review-note"'));
+      assert.ok(content.includes('id="review-export-image"'));
       assert.ok(content.includes('id="review-export-receipt"'));
       assert.ok(content.includes('id="export-readable-backup"'));
       assert.ok(content.includes('id="detail-year-summary"'));
@@ -2544,6 +2552,24 @@ async function run() {
     assert.ok(adapter.includes("function buildInstanceYearBreakdown"), "web-adapter missing year breakdown helper");
   });
 
+  test("year review PNG export is wired for local and web builds", () => {
+    const appFiles = [
+      path.join(__dirname, "..", "public", "app.js"),
+      path.join(__dirname, "..", "docs", "app.js"),
+    ];
+    appFiles.forEach((file) => {
+      const source = fs.readFileSync(file, "utf8");
+      assert.ok(source.includes("async function saveYearReviewImage"), `${path.basename(file)} missing PNG export`);
+      assert.ok(source.includes("function buildYearReviewCanvas"), `${path.basename(file)} missing image renderer`);
+      assert.ok(source.includes('canvas.toBlob'), `${path.basename(file)} must encode the image in-browser`);
+      assert.ok(source.includes('"image/png"'), `${path.basename(file)} must export PNG`);
+      assert.ok(source.includes("ledger_scope"), `${path.basename(file)} must respect the selected ledger scope`);
+    });
+    const adapter = fs.readFileSync(path.join(__dirname, "..", "docs", "web-adapter.js"), "utf8");
+    assert.ok(adapter.includes("const months = []"), "web progress must expose monthly image data");
+    assert.ok(adapter.includes("done_in_scope"), "web progress must distinguish in-scope yearly completion");
+  });
+
   test("money and locale hardening hooks exist", () => {
     const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
     const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
@@ -2925,6 +2951,7 @@ async function run() {
       publicIndex.includes('<script src="/app.js"></script>'),
       "public/index.html must load /app.js"
     );
+    assert.ok(publicIndex.includes('<script src="/i18n.js"></script>'));
     assert.ok(
       !publicIndex.includes("web-adapter.js"),
       "public/index.html must not load web-adapter.js"
@@ -2933,6 +2960,7 @@ async function run() {
       docsIndex.includes('<script src="./web-adapter.js"></script>'),
       "docs/index.html must load ./web-adapter.js"
     );
+    assert.ok(docsIndex.includes('<script src="./i18n.js"></script>'));
     assert.ok(
       docsIndex.includes('<script src="./app.js"></script>'),
       "docs/index.html must load ./app.js"
@@ -3022,8 +3050,8 @@ async function run() {
         '<link rel="stylesheet" href="./styles.css" />'
       )
       .replace(
-        '<script src="/app.js"></script>',
-        '<script src="./web-adapter.js"></script>\n    <script src="./app.js"></script>'
+        '<script src="/i18n.js"></script>\n    <script src="/app.js"></script>',
+        '<script src="./web-adapter.js"></script>\n    <script src="./i18n.js"></script>\n    <script src="./app.js"></script>'
       );
 
     assert.strictEqual(
@@ -3036,6 +3064,7 @@ async function run() {
   test("docs mirrored assets match public source", () => {
     const pairs = [
       ["public/app.js", "docs/app.js"],
+      ["public/i18n.js", "docs/i18n.js"],
       ["public/styles.css", "docs/styles.css"],
       ["public/favicon.svg", "docs/favicon.svg"],
     ];
@@ -3050,6 +3079,113 @@ async function run() {
         `${to} differs from ${from}. Run: npm run sync:web`
       );
     }
+  });
+
+  test("localization catalogs and entrypoints cover all supported languages", () => {
+    const i18n = require(path.join(__dirname, "..", "public", "i18n.js"));
+    const englishKeys = Object.keys(i18n.catalogs.en).sort();
+    assert.deepStrictEqual(i18n.SUPPORTED, ["en", "fr", "de", "pt"]);
+    for (const language of i18n.SUPPORTED) {
+      const missing = englishKeys.filter((key) => !i18n.catalogs[language]?.[key]);
+      assert.deepStrictEqual(missing, [], `${language} is missing translations: ${missing.join(", ")}`);
+      if (language !== "en") {
+        assert.notStrictEqual(i18n.t("nav.setup", {}, language), i18n.catalogs.en["nav.setup"]);
+        assert.notStrictEqual(i18n.t("receipt.title", {}, language), i18n.catalogs.en["receipt.title"]);
+        assert.notStrictEqual(i18n.t("Know what’s due. Stay in control.", {}, language), "Know what’s due. Stay in control.");
+      }
+    }
+    const localIndex = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+    ["quick-language", "mobile-language", "defaults-language"].forEach((id) => {
+      assert.ok(localIndex.includes(`id="${id}"`), `missing language selector ${id}`);
+    });
+    const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+    const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    const advisorSource = fs.readFileSync(path.join(__dirname, "..", "advisor.js"), "utf8");
+    assert.ok(appSource.includes("ui_language"), "Mamdou payload must include UI language");
+    assert.ok(appSource.includes("lang: AJL_I18N"), "receipt export must include language");
+    assert.ok(serverSource.includes("language: normalizeLanguage"), "server settings must preserve language");
+    assert.ok(advisorSource.includes("getLanguageInstruction"), "advisor must honor output language");
+
+    const staticSource = localIndex
+      .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+      .replace(/<style\b[\s\S]*?<\/style>/gi, "");
+    const staticStrings = new Set();
+    const decodeUiText = (value) =>
+      String(value || "")
+        .replace(/&amp;/g, "&")
+        .replace(/&#10;/g, "\n")
+        .replace(/&times;/g, "×")
+        .replace(/&#x[0-9a-f]+;/gi, "")
+        .replace(/[ \t\r\f\v]+/g, " ")
+        .trim();
+    const addStaticString = (value) => {
+      const normalized = decodeUiText(value);
+      if (normalized && /[A-Za-zÀ-ÿ]/.test(normalized)) staticStrings.add(normalized);
+    };
+    let match;
+    const textPattern = />\s*([^<>]+?)\s*</g;
+    while ((match = textPattern.exec(staticSource))) addStaticString(match[1]);
+    const attributePattern = /(?:placeholder|title|aria-label)=(?:"([^"]+)"|'([^']+)')/g;
+    while ((match = attributePattern.exec(staticSource))) addStaticString(match[1] || match[2]);
+
+    const invariantStrings = new Set([
+      "Anthropic", "Au Jour Le Jour", "Deutsch", "English", "Français", "Janitor", "LLM",
+      "Mamdou", "OpenAI", "Português", "Erika", "Chef", "×", "en-US", "USD",
+      "https://aujourlejour.xyz/?household_invite=...", "https://api.provider.com/v1",
+      "http://127.0.0.1:6709", "ajl-owner:household_id:owner_key",
+      "git clone https://github.com/Fuzzyslippers412/AuJourLeJour.git\ncd AuJourLeJour\n./start.sh",
+    ]);
+    const validSameLanguageWords = {
+      fr: new Set(["Notes", "Auto"]),
+      de: new Set(["BLOCKER", "Hygiene", "Import / Export", "Name", "Status", "System", "1. Start"]),
+      pt: new Set(["Status"]),
+    };
+    for (const language of ["fr", "de", "pt"]) {
+      const untranslated = Array.from(staticStrings).filter(
+        (source) =>
+          i18n.t(source, {}, language) === source &&
+          !invariantStrings.has(source) &&
+          !validSameLanguageWords[language].has(source)
+      );
+      assert.deepStrictEqual(
+        untranslated,
+        [],
+        `${language} has untranslated static UI or accessibility copy: ${untranslated.join(" | ")}`
+      );
+    }
+
+    const runtimeSamples = [
+      "Period: August 2026",
+      "Mark all 2 overdue done",
+      "2 more urgent items after Next up · 3 total",
+      "Draft: 4 bills · $800.00 scheduled",
+      "Planning avg: $25.00/day",
+      "$50.00 of $100.00 target",
+      "3 days overdue",
+      "due in 4 days",
+      "Mamdou ready (Qwen).",
+      "Active provider: Qwen.",
+      "Done in 1.2s",
+      "2/3 passed",
+      "1 failed · 2 skipped",
+      "1 open item; completed items are tucked away.",
+      "Next up: Electricity. Save an amount to see what you can fully cover right now.",
+      "Month close view: $50.00 still open in My ledger and $20.00 still open in Shared household. Exports follow the current review scope.",
+      "0 update(s)",
+      "Last backup: Never.",
+    ];
+    for (const language of ["fr", "de", "pt"]) {
+      const untranslated = runtimeSamples.filter((source) => i18n.t(source, {}, language) === source);
+      assert.deepStrictEqual(
+        untranslated,
+        [],
+        `${language} has untranslated generated UI samples: ${untranslated.join(" | ")}`
+      );
+    }
+    assert.notStrictEqual(
+      i18n.t("Safe mode: {reason} Use Setup → Reset local data or refresh without ?safe=1.", { reason: "test" }, "fr"),
+      "Safe mode: test Use Setup → Reset local data or refresh without ?safe=1."
+    );
   });
 
   test("server bootstrap functions are not duplicated", () => {

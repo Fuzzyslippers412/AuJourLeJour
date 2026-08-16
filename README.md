@@ -14,6 +14,7 @@ Repo: [github.com/Fuzzyslippers412/AuJourLeJour](https://github.com/Fuzzyslipper
 - Partial updates reflected in monthly totals and summary math
 - Action Queue (`Overdue`, `Due next 7 days`, `Later`)
 - Sticky mini-summary + inline expanded summary panel (no modal required)
+- System-wide interface languages: English, French, German, and Portuguese
 - Monthly + yearly progress overview with auto or manual goal targets
 - Sinking funds (“Piggy Banks”) for non-monthly obligations
 - Backup/export/import (`JSON` + month `CSV`)
@@ -29,6 +30,8 @@ Repo: [github.com/Fuzzyslippers412/AuJourLeJour](https://github.com/Fuzzyslipper
 - `Today`: action-first workflow, queue + list + sticky summary
 - `Review`: activity and month-level review context
 - `Setup`: templates, backups, storage controls, read-only preview mode
+
+Language can follow the device automatically or be selected from the header, mobile menu, or `Setup → Preferences`. The preference is saved independently in the web and local editions. Mamdou responses and yearly PDF receipts follow the active language; locale and currency formatting remain configurable.
 
 ## Sharing (Web <-> Local)
 
